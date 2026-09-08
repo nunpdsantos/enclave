@@ -35,9 +35,15 @@ export class GameState {
   totalTurns = 0;
   claims = 0;
   cellsClaimed = 0;
+  /** Rooms sealed. Higher than `claims` when one piece closes several at once. */
+  roomsClaimed = 0;
   biggestRoom = 0;
+  /** Room area → count. Feeds the telemetry histogram used to tune the clock. */
+  roomSizes: Record<number, number> = {};
   doubleCloses = 0;
   maxStreak = 0;
+  /** Hold-slot swaps this run */
+  holds = 0;
   newBestReached = false;
 
   private bag = new PieceBag();
@@ -87,9 +93,12 @@ export class GameState {
     this.totalTurns = 0;
     this.claims = 0;
     this.cellsClaimed = 0;
+    this.roomsClaimed = 0;
     this.biggestRoom = 0;
+    this.roomSizes = {};
     this.doubleCloses = 0;
     this.maxStreak = 0;
+    this.holds = 0;
     this.newBestReached = false;
     this.held = null;
     this.holdUsed = false;
@@ -142,6 +151,7 @@ export class GameState {
     }
     this.held = outgoing;
     this.holdUsed = true;
+    this.holds++;
     events.push({ type: 'hold' });
     events.push({ type: 'newHand' });
     if (this.checkGameOver()) {
@@ -242,7 +252,11 @@ export class GameState {
       this.maxStreak = Math.max(this.maxStreak, this.streakCount);
       this.claims++;
       this.cellsClaimed += claim.totalArea;
-      for (const r of claim.regions) this.biggestRoom = Math.max(this.biggestRoom, r.area);
+      this.roomsClaimed += claim.regions.length;
+      for (const r of claim.regions) {
+        this.biggestRoom = Math.max(this.biggestRoom, r.area);
+        this.roomSizes[r.area] = (this.roomSizes[r.area] ?? 0) + 1;
+      }
       if (claim.regions.length >= 2) this.doubleCloses++;
 
       const breakdown: ScoreBreakdown = {
@@ -298,13 +312,17 @@ export class GameState {
     if (endCauseOverride === 'quit') this.finalizeBest();
     return {
       score: this.score,
+      difficulty: this.difficulty,
       endCause: endCauseOverride ?? this.deathCause ?? 'board_lock',
       totalTurns: this.totalTurns,
       claims: this.claims,
       cellsClaimed: this.cellsClaimed,
+      roomsClaimed: this.roomsClaimed,
       biggestRoom: this.biggestRoom,
+      roomSizes: { ...this.roomSizes },
       doubleCloses: this.doubleCloses,
       maxStreak: this.maxStreak,
+      holds: this.holds,
       gameElapsed: this.gameElapsed,
       previousBest: this.highScore,
       isNewBest: this.score > this.highScore,

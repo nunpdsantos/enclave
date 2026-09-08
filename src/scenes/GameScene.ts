@@ -11,10 +11,11 @@ import { AnimationManager } from '../rendering/AnimationManager';
 import { FXManager } from '../rendering/FXManager';
 import { DragController, DragState } from '../input/DragController';
 import { AudioManager } from '../audio/AudioManager';
-import { FeedbackEvent, GridPos, RunSummary } from '../core/types';
+import { FeedbackEvent, GridPos, RunEndCause, RunSummary } from '../core/types';
 import { Difficulty, DIFFICULTY_LABELS, GameConfig } from '../core/Config';
 import { getProgressStatus } from '../core/Progression';
 import { loadSettings, updateSettings } from '../core/Settings';
+import { reportRun } from '../core/Telemetry';
 import { FONT_DISPLAY, THEME, drawPanel } from '../rendering/Theme';
 import { createButton, createToggle, createBodyText } from '../rendering/Widgets';
 
@@ -57,6 +58,8 @@ export class GameScene implements Scene {
 
   private gameOverSequenceActive = false;
   private gameOverElapsed = 0;
+  /** Guards the one telemetry report per run (quit and death share a path) */
+  private runReported = false;
 
   private onVisibilityChange = () => {
     if (document.hidden && this.phase === 'playing' && !this.paused) this.pause();
@@ -154,6 +157,7 @@ export class GameScene implements Scene {
     this.progressTierIndex = getProgressStatus(this.gameState.difficulty, this.gameState.score).tierIndex;
     this.gameOverSequenceActive = false;
     this.gameOverElapsed = 0;
+    this.runReported = false;
 
     document.addEventListener('visibilitychange', this.onVisibilityChange);
     window.addEventListener('keydown', this.onKeyDown);
@@ -438,8 +442,21 @@ export class GameScene implements Scene {
     this.gameOverElapsed += dt;
     if (this.gameOverElapsed >= 1.1) {
       this.gameOverSequenceActive = false;
-      this.onGameOver(this.gameState.buildRunSummary());
+      this.onGameOver(this.endRun());
     }
+  }
+
+  /**
+   * The one place a run finishes, whether by death or by quitting. Telemetry
+   * hangs off here so it can neither be missed nor sent twice.
+   */
+  private endRun(endCauseOverride?: RunEndCause): RunSummary {
+    const summary = this.gameState.buildRunSummary(endCauseOverride);
+    if (!this.runReported) {
+      this.runReported = true;
+      reportRun(summary);
+    }
+    return summary;
   }
 
   private haptic(pattern: number | number[]): void {
@@ -505,7 +522,8 @@ export class GameScene implements Scene {
     this.removePauseOverlay();
     this.paused = false;
     this.audioManager.stopMusic();
-    if (this.gameState.score > 0) this.onGameOver(this.gameState.buildRunSummary('quit'));
+    const summary = this.endRun('quit');
+    if (this.gameState.score > 0) this.onGameOver(summary);
     else this.onQuit();
   }
 

@@ -150,7 +150,7 @@ export class GameOverScene implements Scene {
     const totalW = chipW * 4 + gap * 3;
     const startX = cx - totalW / 2 + chipW / 2;
     const stats: [string, string, number][] = [
-      ['ROOMS', String(summary.claims), THEME.textPrimary],
+      ['ROOMS', String(summary.roomsClaimed), THEME.textPrimary],
       ['BIGGEST', summary.biggestRoom > 0 ? `${summary.biggestRoom}` : '—', THEME.gold],
       ['STREAK', `×${summary.maxStreak}`, THEME.cyan],
       ['TIER', tier.label, tier.color],

@@ -41,6 +41,12 @@ npm install
 npm run dev
 ```
 
+Run the rule tests (Vitest, in `tests/`):
+
+```bash
+npm test
+```
+
 Build for production:
 
 ```bash
@@ -50,6 +56,7 @@ npm run build
 ## Deployment
 
 - Deploy on Vercel. The leaderboard API lives in `api/leaderboard.ts`.
+- Anonymous run telemetry lives in `api/runs.ts` and shares the same credentials. `POST /api/runs` stores one finished run; `GET /api/runs` returns aggregates only — never raw runs and never player ids. Without credentials it answers 503 and the client, which is fire-and-forget, simply ignores it.
 - To enable the shared leaderboard, set these in the Vercel project's environment variables:
   - `KV_REST_API_URL`
   - `KV_REST_API_TOKEN`

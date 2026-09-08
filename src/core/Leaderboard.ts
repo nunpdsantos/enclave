@@ -9,6 +9,20 @@ function storageKey(difficulty: Difficulty): string {
   return `enclave_${difficulty}_top10`;
 }
 
+/**
+ * The anonymous id already stored for this browser, or null.
+ *
+ * Read-only on purpose: telemetry must never be the thing that mints an id,
+ * so a player who has never submitted a score stays unidentified.
+ */
+export function getStoredPlayerId(): string | null {
+  try {
+    return localStorage.getItem(PLAYER_ID_KEY);
+  } catch {
+    return null;
+  }
+}
+
 export interface LeaderboardEntry {
   id?: string;
   name: string;

@@ -1,3 +1,5 @@
+import { Difficulty } from './Config';
+
 // ── Grid ──
 export const GRID_SIZE = 9;
 
@@ -64,13 +66,21 @@ export type RunEndCause = 'timeout' | 'board_lock' | 'quit';
 
 export interface RunSummary {
   score: number;
+  /** Which mode the run was played in — needed to read the score's tier */
+  difficulty: Difficulty;
   endCause: RunEndCause;
   totalTurns: number;
   claims: number;
   cellsClaimed: number;
+  /** Rooms sealed, which is >= claims because one piece can close several */
+  roomsClaimed: number;
   biggestRoom: number;
+  /** Room area → how many rooms of that area were sealed */
+  roomSizes: Record<number, number>;
   doubleCloses: number;
   maxStreak: number;
+  /** How many times the hold slot was used */
+  holds: number;
   gameElapsed: number;
   previousBest: number;
   isNewBest: boolean;

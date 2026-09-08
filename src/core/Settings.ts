@@ -17,6 +17,8 @@ export interface GameSettings {
   haptics: boolean;
   /** Whether the first-run tutorial has been dismissed */
   tutorialSeen: boolean;
+  /** Send anonymous end-of-run stats. On by default; no UI toggle yet. */
+  telemetry: boolean;
 }
 
 const SETTINGS_KEY = 'enclave_settings_v1';
@@ -26,6 +28,7 @@ const DEFAULT_SETTINGS: GameSettings = {
   music: true,
   haptics: true,
   tutorialSeen: false,
+  telemetry: true,
 };
 
 function bestKey(difficulty: Difficulty): string {
