@@ -345,19 +345,21 @@ export class MenuScene implements Scene {
     const guideBtnH = 34;
     const guideBtnY = top + panelH - guideBtnH / 2 - 12;
     let y = top + 48;
+    const textLimit = guideBtnY - guideBtnH / 2 - 14;
     for (const line of lines) {
-      const bullet = new Graphics();
-      bullet.circle(cx - panelW / 2 + 22, y + 9, 3);
-      bullet.fill({ color: THEME.accentGlow });
-      group.addChild(bullet);
       const t = createBodyText(line, cx - panelW / 2 + 34, y, {
         fontSize: 11.5,
         wrapWidth: panelW - 54,
         align: 'left',
       });
+      // Only draw lines that fit above the FULL GUIDE button
+      if (y + t.height > textLimit) { t.destroy(); break; }
+      const bullet = new Graphics();
+      bullet.circle(cx - panelW / 2 + 22, y + 9, 3);
+      bullet.fill({ color: THEME.accentGlow });
+      group.addChild(bullet);
       group.addChild(t);
       y += t.height + 10;
-      if (y > top + panelH - guideBtnH - 42) break;
     }
 
     // Full interactive guide (public/how-to-play.html, served at /how-to-play)
