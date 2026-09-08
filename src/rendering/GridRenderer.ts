@@ -1,7 +1,7 @@
 import { Container, Graphics } from 'pixi.js';
 import { GRID_SIZE, Grid, GridPos, CellColor, Region } from '../core/types';
 import { Layout } from './LayoutManager';
-import { THEME, drawBeveledBlock, drawWallBlock, darken, lerpColor, lighten, luminance, easeOutBack } from './Theme';
+import { THEME, drawBeveledBlock, drawWallBlock, darken, getBoardTokens, lerpColor, lighten, luminance, easeOutBack } from './Theme';
 
 const BLOCK_INSET = 3;
 const CELL_RADIUS = 5;
@@ -70,6 +70,7 @@ export class GridRenderer {
     const g = this.bgGraphics;
     g.clear();
     const { gridOriginX, gridOriginY, cellSize, gridSize } = this.layout;
+    const { cellWell, cellWellBorder } = getBoardTokens();
     const pad = 8;
 
     g.roundRect(gridOriginX - pad + 2, gridOriginY - pad + 5, gridSize + pad * 2, gridSize + pad * 2, 14);
@@ -77,7 +78,7 @@ export class GridRenderer {
     g.roundRect(gridOriginX - pad, gridOriginY - pad, gridSize + pad * 2, gridSize + pad * 2, 14);
     g.fill({ color: THEME.gridBg });
     g.roundRect(gridOriginX - pad, gridOriginY - pad, gridSize + pad * 2, gridSize + pad * 2, 14);
-    g.stroke({ width: 1.5, color: THEME.cellWellBorder, alpha: 0.6 });
+    g.stroke({ width: 1.5, color: cellWellBorder, alpha: 0.6 });
 
     for (let r = 0; r < GRID_SIZE; r++) {
       for (let c = 0; c < GRID_SIZE; c++) {
@@ -85,7 +86,7 @@ export class GridRenderer {
         const y = gridOriginY + r * cellSize + CELL_GAP;
         const s = cellSize - CELL_GAP * 2;
         g.roundRect(x, y, s, s, CELL_RADIUS);
-        g.fill({ color: THEME.cellWell });
+        g.fill({ color: cellWell });
         g.roundRect(x, y, s, Math.max(2, s * 0.12), CELL_RADIUS);
         g.fill({ color: 0x000000, alpha: 0.18 });
       }

@@ -1,4 +1,5 @@
-import { PieceInstance, PieceType, ShapeMatrix, PIECE_COLORS } from './types';
+import { getPiecePalette } from './Accessibility';
+import { PieceInstance, PieceType, ShapeMatrix } from './types';
 
 /**
  * Piece definitions, rotation, and the "bag" randomiser.
@@ -107,11 +108,13 @@ export class PieceBag {
     const typeId = this.bag.pop()!;
     const t = TYPE_BY_ID.get(typeId)!;
     const rotation = Math.floor(Math.random() * t.rotations.length);
+    // Read the palette at deal time so a colour setting applies to new pieces
+    const palette = getPiecePalette();
     // Avoid two identical colors in a row so the hand reads clearly
-    let color = Math.floor(Math.random() * PIECE_COLORS.length);
-    if (color === this.lastColor) color = (color + 1) % PIECE_COLORS.length;
+    let color = Math.floor(Math.random() * palette.length);
+    if (color === this.lastColor) color = (color + 1) % palette.length;
     this.lastColor = color;
-    return makePiece(typeId, rotation, PIECE_COLORS[color]);
+    return makePiece(typeId, rotation, palette[color]);
   }
 
   private refill(): void {

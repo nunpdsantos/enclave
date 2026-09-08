@@ -1,3 +1,4 @@
+import { loadSettings } from '../core/Settings';
 import { GRID_SIZE, GridPos } from '../core/types';
 
 export interface Rect {
@@ -75,8 +76,14 @@ export class LayoutManager {
     // button sits right under the piece instead of at the bottom of the screen
     const currentH = Math.max(80, Math.min(handHeight - rotateH - 8, handCellSize * 5 + 28));
 
-    const holdRect: Rect = { x: gridOriginX, y: handOriginY + 18, w: sideW - 6, h: sideW - 6 };
-    const nextRect: Rect = { x: gridOriginX + gridSize - sideW + 6, y: handOriginY + 18, w: sideW - 6, h: Math.min(handHeight - 24, (sideW - 6) * 2 + 10) };
+    // Left-handed play swaps the two side slots so HOLD falls under the left
+    // thumb. Only their x moves: the piece in hand and ROTATE stay centred.
+    const leftHanded = loadSettings().leftHanded;
+    const leftX = gridOriginX;
+    const rightX = gridOriginX + gridSize - sideW + 6;
+
+    const holdRect: Rect = { x: leftHanded ? rightX : leftX, y: handOriginY + 18, w: sideW - 6, h: sideW - 6 };
+    const nextRect: Rect = { x: leftHanded ? leftX : rightX, y: handOriginY + 18, w: sideW - 6, h: Math.min(handHeight - 24, (sideW - 6) * 2 + 10) };
     const currentRect: Rect = { x: gridOriginX + sideW, y: handOriginY, w: centerW, h: currentH };
     const rotateRect: Rect = {
       x: gridOriginX + sideW + centerW / 2 - 64,

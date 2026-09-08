@@ -44,6 +44,8 @@ export class AnimationManager {
   private speedLineGraphics: Graphics;
   private ringGraphics: Graphics;
   private layout!: Layout;
+  /** 1 is full density; reduced motion thins every burst by this factor */
+  private particleScale = 1;
 
   constructor() {
     this.container = new Container();
@@ -65,14 +67,30 @@ export class AnimationManager {
     this.layout = layout;
   }
 
-  /** Burst from each cell — 15 particles per cell */
+  /**
+   * The single density seam. Shockwaves, outlines and score popups are left
+   * alone: they carry information, the particles are decoration.
+   */
+  setParticleScale(scale: number): void {
+    this.particleScale = Math.max(0, Math.min(1, scale));
+  }
+
+  /** Round up, and never to nothing, so a thinned burst still reads as one */
+  private scaled(count: number): number {
+    if (this.particleScale >= 1) return count;
+    return Math.max(1, Math.ceil(count * this.particleScale));
+  }
+
+  /** Burst from each cell — 15 particles per cell at full density */
   spawnClearEffect(cells: GridPos[], color: number): void {
     const { gridOriginX, gridOriginY, cellSize } = this.layout;
     const glowColor = lighten(color, 0.4);
+    const glowCount = this.scaled(8);
+    const coreCount = this.scaled(7);
     for (const cell of cells) {
       const cx = gridOriginX + cell.col * cellSize + cellSize / 2;
       const cy = gridOriginY + cell.row * cellSize + cellSize / 2;
-      for (let i = 0; i < 8; i++) {
+      for (let i = 0; i < glowCount; i++) {
         const angle = Math.random() * Math.PI * 2;
         const speed = 30 + Math.random() * 50;
         this.addParticle({
@@ -81,7 +99,7 @@ export class AnimationManager {
           size: 2 + Math.random() * 3, color: glowColor, alpha: 1, life: 0, maxLife: 0.5 + Math.random() * 0.5,
         });
       }
-      for (let i = 0; i < 7; i++) {
+      for (let i = 0; i < coreCount; i++) {
         const angle = Math.random() * Math.PI * 2;
         const speed = 50 + Math.random() * 100;
         this.addParticle({
@@ -95,10 +113,11 @@ export class AnimationManager {
   /** Gold sparkles rising from a claimed room's cells */
   spawnClaimSparkles(cells: GridPos[], perCell: number = 6): void {
     const { gridOriginX, gridOriginY, cellSize } = this.layout;
+    const count = this.scaled(perCell);
     for (const cell of cells) {
       const cx = gridOriginX + cell.col * cellSize + cellSize / 2;
       const cy = gridOriginY + cell.row * cellSize + cellSize / 2;
-      for (let i = 0; i < perCell; i++) {
+      for (let i = 0; i < count; i++) {
         this.addParticle({
           x: cx + (Math.random() - 0.5) * cellSize * 0.8,
           y: cy + (Math.random() - 0.5) * cellSize * 0.8,
@@ -113,7 +132,8 @@ export class AnimationManager {
   }
 
   spawnExplosion(cx: number, cy: number, count: number): void {
-    for (let i = 0; i < count; i++) {
+    const n = this.scaled(count);
+    for (let i = 0; i < n; i++) {
       const angle = Math.random() * Math.PI * 2;
       const speed = 100 + Math.random() * 200;
       this.addParticle({
@@ -127,7 +147,8 @@ export class AnimationManager {
   }
 
   spawnSpeedLines(cx: number, cy: number, count: number = 10): void {
-    for (let i = 0; i < count; i++) {
+    const n = this.scaled(count);
+    for (let i = 0; i < n; i++) {
       const angle = Math.random() * Math.PI * 2;
       const speed = 200 + Math.random() * 300;
       this.speedLines.push({

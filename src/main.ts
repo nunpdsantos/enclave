@@ -87,6 +87,9 @@ async function boot() {
   }
 
   function startGame(skipCountdown: boolean = false) {
+    // Recompute the layout on the way in: handedness may have been changed
+    // in the menu since it was last measured.
+    layoutManager.recalculate(window.innerWidth, window.innerHeight);
     const config = DIFFICULTY_CONFIGS[selectedDifficulty];
     incrementGamesPlayed(selectedDifficulty);
     const gameScene = new GameScene(

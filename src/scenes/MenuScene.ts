@@ -2,17 +2,22 @@ import { Container, Graphics, Text, TextStyle } from 'pixi.js';
 import { Scene } from './SceneManager';
 import { Leaderboard } from '../core/Leaderboard';
 import { Difficulty, DIFFICULTY_LABELS, DIFFICULTY_CONFIGS } from '../core/Config';
-import { getPersonalBest, getGamesPlayed, loadSettings, updateSettings } from '../core/Settings';
+import { PaletteSetting, getPersonalBest, getGamesPlayed, loadSettings, updateSettings } from '../core/Settings';
+import { MOTION_LABELS, MOTION_ORDER, getPiecePalette, remapColor } from '../core/Accessibility';
 import { AudioManager } from '../audio/AudioManager';
 import { FONT_DISPLAY, FONT_MONO, THEME, DIFFICULTY_COLORS, drawPanel, drawBeveledBlock, easeOutBack } from '../rendering/Theme';
-import { createButton, createToggle, createSectionLabel, createBodyText } from '../rendering/Widgets';
-import { PIECE_COLORS } from '../core/types';
+import { createButton, createToggle, createCycleToggle, createSectionLabel, createBodyText } from '../rendering/Widgets';
 
 const DIFFICULTIES: Difficulty[] = ['classic', 'blitz'];
 const DIFFICULTY_DESCRIPTIONS: Record<Difficulty, string> = {
   classic: 'A minute on the clock. Build big rooms, close them with care.',
   blitz: 'Thirty-five seconds. Fence fast, claim faster.',
 };
+
+// Cycle orders for the OPTIONS panel. Index 0 is the default in each.
+const PALETTE_ORDER: PaletteSetting[] = ['standard', 'highContrast'];
+const PALETTE_LABELS = ['STANDARD', 'HIGH'];
+const HAND_LABELS = ['RIGHT', 'LEFT'];
 
 interface FloatingBlock {
   x: number;
@@ -35,6 +40,7 @@ export class MenuScene implements Scene {
   private audio: AudioManager;
   private selectedDifficulty: Difficulty;
   private showingHelp = false;
+  private showingOptions = false;
 
   // Rebuildable sections
   private difficultyContainer: Container | null = null;
@@ -77,12 +83,13 @@ export class MenuScene implements Scene {
 
   private spawnBlock(anywhere: boolean): FloatingBlock {
     const size = 14 + Math.random() * 26;
+    const palette = getPiecePalette();
     return {
       x: Math.random() * this.width,
       y: anywhere ? Math.random() * this.height : this.height + size,
       vy: -(8 + Math.random() * 14),
       size,
-      color: PIECE_COLORS[Math.floor(Math.random() * PIECE_COLORS.length)],
+      color: palette[Math.floor(Math.random() * palette.length)],
       alpha: 0.10 + Math.random() * 0.12,
       rot: Math.random() * Math.PI,
       vrot: (Math.random() - 0.5) * 0.4,
@@ -156,10 +163,17 @@ export class MenuScene implements Scene {
       return v;
     }, pillW));
 
-    // Help / refresh (top corners)
+    // Help / options / refresh (top corners)
     this.addCornerButton('?', 30, () => {
       this.audio.playUiClick();
       this.showingHelp = !this.showingHelp;
+      if (this.showingHelp) this.showingOptions = false;
+      this.buildLowerSection();
+    });
+    this.addCornerButton('⚙', 70, () => {
+      this.audio.playUiClick();
+      this.showingOptions = !this.showingOptions;
+      if (this.showingOptions) this.showingHelp = false;
       this.buildLowerSection();
     });
     this.addCornerButton('↻', this.width - 30, () => {
@@ -305,7 +319,7 @@ export class MenuScene implements Scene {
     group.addChild(stats);
   }
 
-  // ── Lower section: leaderboard or help ──
+  // ── Lower section: leaderboard, help or options ──
 
   private buildLowerSection(): void {
     if (this.lowerContainer) {
@@ -319,9 +333,90 @@ export class MenuScene implements Scene {
 
     if (this.showingHelp) {
       this.buildHelp(group);
+    } else if (this.showingOptions) {
+      this.buildOptions(group);
     } else {
       this.buildLeaderboard(group);
     }
+  }
+
+  /**
+   * Accessibility and comfort settings. Each row applies on the spot and is
+   * persisted, so there is nothing to confirm.
+   */
+  private buildOptions(group: Container): void {
+    const cx = this.width / 2;
+    const top = this.height * 0.47;
+    const panelW = Math.min(360, this.width - 32);
+    const rowW = Math.min(240, panelW - 48);
+    const captionW = panelW - 56;
+    const settings = loadSettings();
+
+    group.addChild(createSectionLabel('OPTIONS', cx, top + 14, panelW - 60));
+
+    // Rows are stacked off measured text height rather than a fixed pitch, so
+    // a caption that wraps on a narrow phone pushes the next row down instead
+    // of colliding with it.
+    let y = top + 58;
+    const addRow = (control: Container, note: string): void => {
+      group.addChild(control);
+      const caption = createBodyText(note, cx, y + 20, {
+        fontSize: 10,
+        color: THEME.textMuted,
+        wrapWidth: captionW,
+      });
+      group.addChild(caption);
+      y += caption.height + 48;
+    };
+
+    addRow(createCycleToggle(
+      'MOTION', cx, y, MOTION_LABELS, Math.max(0, MOTION_ORDER.indexOf(settings.motion)),
+      (i) => {
+        updateSettings({ motion: MOTION_ORDER[i] });
+        this.audio.playUiClick();
+      }, rowW,
+    ), 'Shake, flashes, slow-motion.');
+
+    addRow(createCycleToggle(
+      'COLOURS', cx, y, PALETTE_LABELS, Math.max(0, PALETTE_ORDER.indexOf(settings.palette)),
+      (i) => {
+        // Remap what is already drifting on screen, so the switch is visible
+        const from = getPiecePalette();
+        updateSettings({ palette: PALETTE_ORDER[i] });
+        const to = getPiecePalette();
+        for (const b of this.blocks) b.color = remapColor(b.color, from, to);
+        this.audio.playUiClick();
+      }, rowW,
+    ), 'Colour-blind safe piece colours.');
+
+    addRow(createCycleToggle(
+      'LAYOUT', cx, y, HAND_LABELS, settings.leftHanded ? 1 : 0,
+      (i) => {
+        updateSettings({ leftHanded: i === 1 });
+        this.audio.playUiClick();
+      }, rowW,
+    ), 'HOLD and NEXT sides. Next run.');
+
+    // The footer is the one droppable line, so a short screen loses it rather
+    // than pushing the panel over the build number in the corner
+    const footerY = y - 20;
+    const footer = createBodyText('SYSTEM follows your device.', cx, footerY, {
+      fontSize: 10,
+      color: THEME.textMuted,
+      wrapWidth: captionW,
+    });
+    let bottom = footerY + footer.height + 14;
+    if (bottom <= this.height - 24) {
+      group.addChild(footer);
+    } else {
+      footer.destroy();
+      bottom = footerY;
+    }
+
+    // Drawn last so its height can follow the rows, added behind them
+    const panel = new Graphics();
+    drawPanel(panel, cx - panelW / 2, top, panelW, bottom - top, 16, 0.55);
+    group.addChildAt(panel, 0);
   }
 
   private buildHelp(group: Container): void {
@@ -519,7 +614,7 @@ export class MenuScene implements Scene {
 
   /** Called when remote leaderboard data arrives after the menu was built */
   refreshLeaderboard(): void {
-    if (!this.showingHelp) this.buildLowerSection();
+    if (!this.showingHelp && !this.showingOptions) this.buildLowerSection();
   }
 
   enter(): void {}

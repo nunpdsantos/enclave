@@ -125,3 +125,21 @@ export const PIECE_COLORS: number[] = [
   0x45aaf2, // light blue
   0xf7b731, // yellow
 ];
+
+/**
+ * High-contrast palette — the Okabe–Ito set, which stays distinguishable
+ * under deuteranopia, protanopia and tritanopia. Okabe–Ito's eighth colour is
+ * black, which would disappear against the board, so light grey takes its
+ * place. Same length and same order semantics as PIECE_COLORS, so a colour
+ * can be remapped index-to-index between the two.
+ */
+export const HIGH_CONTRAST_PIECE_COLORS: number[] = [
+  0xe69f00, // orange
+  0x56b4e9, // sky blue
+  0x009e73, // bluish green
+  0xf0e442, // yellow
+  0x0072b2, // blue
+  0xd55e00, // vermilion
+  0xcc79a7, // reddish purple
+  0xe5e5e5, // light grey
+];

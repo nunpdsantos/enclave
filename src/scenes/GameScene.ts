@@ -15,9 +15,12 @@ import { FeedbackEvent, GridPos, PieceInstance, Region, RunEndCause, RunSummary 
 import { Difficulty, DIFFICULTY_LABELS, GameConfig } from '../core/Config';
 import { getProgressStatus } from '../core/Progression';
 import { loadSettings, updateSettings } from '../core/Settings';
+import {
+  MOTION_LABELS, MOTION_ORDER, REDUCED_PARTICLE_SCALE, isReducedMotion, onReducedMotionChange,
+} from '../core/Accessibility';
 import { reportRun } from '../core/Telemetry';
 import { FONT_DISPLAY, THEME, drawPanel } from '../rendering/Theme';
-import { createButton, createToggle, createBodyText } from '../rendering/Widgets';
+import { createButton, createToggle, createCycleToggle, createBodyText } from '../rendering/Widgets';
 
 type Phase = 'tutorial' | 'countdown' | 'playing' | 'gameOver';
 
@@ -61,6 +64,8 @@ export class GameScene implements Scene {
   private progressTierIndex = 0;
   private skipCountdown: boolean;
   private hapticsEnabled: boolean;
+  /** Unsubscribes the OS reduced-motion watcher while this scene is on screen */
+  private stopMotionWatch: (() => void) | null = null;
 
   private gameOverSequenceActive = false;
   private gameOverElapsed = 0;
@@ -137,8 +142,20 @@ export class GameScene implements Scene {
     this.fxManager.setShakeTarget(this.gameContent);
     this.fxManager.setDifficultyMood(difficulty);
     if (this.bgColorSetter) this.fxManager.setBgColorSetter(this.bgColorSetter);
+    this.applyMotionSetting();
 
     this.setupInput();
+  }
+
+  /**
+   * Push the resolved motion preference into the two seams that own it: the
+   * FX intensity and the particle density. Claim outlines, dissolves and the
+   * score popups are untouched, because they say what just happened.
+   */
+  private applyMotionSetting(): void {
+    const reduced = isReducedMotion();
+    this.fxManager.setIntensityScale(reduced ? 0 : 1);
+    this.animationManager.setParticleScale(reduced ? REDUCED_PARTICLE_SCALE : 1);
   }
 
   enter(): void {
@@ -177,6 +194,8 @@ export class GameScene implements Scene {
 
     document.addEventListener('visibilitychange', this.onVisibilityChange);
     window.addEventListener('keydown', this.onKeyDown);
+    // Follow the OS switch too, so flipping it mid-run applies immediately
+    this.stopMotionWatch = onReducedMotionChange(() => this.applyMotionSetting());
 
     // Debug hook for automated tests: ?debug in the URL exposes the run state
     if (new URLSearchParams(window.location.search).has('debug')) {
@@ -204,6 +223,8 @@ export class GameScene implements Scene {
     this.audioManager.stopMusic();
     document.removeEventListener('visibilitychange', this.onVisibilityChange);
     window.removeEventListener('keydown', this.onKeyDown);
+    this.stopMotionWatch?.();
+    this.stopMotionWatch = null;
     if (this.countdownText) {
       this.container.removeChild(this.countdownText);
       this.countdownText.destroy();
@@ -572,8 +593,23 @@ export class GameScene implements Scene {
     overlay.addChild(createToggle('SOUND', cx - 66, toggleY, this.audioManager.isSfxEnabled, (v) => { this.audioManager.setSfxEnabled(v); this.audioManager.playUiClick(); return v; }, 120));
     overlay.addChild(createToggle('MUSIC', cx + 66, toggleY, this.audioManager.isMusicEnabled, (v) => { this.audioManager.setMusicEnabled(v); this.audioManager.playUiClick(); return v; }, 120));
     overlay.addChild(createToggle('HAPTICS', cx, toggleY + 42, this.hapticsEnabled, (v) => { this.hapticsEnabled = v; updateSettings({ haptics: v }); this.audioManager.playUiClick(); if (v) this.haptic(20); return v; }, 140));
-    overlay.addChild(createButton('QUIT', cx, layout.height * 0.72, () => { this.audioManager.playUiClick(); this.quit(); }, { width: 200, height: 46, color: THEME.btnSecondary, glow: false, fontSize: 16 }));
-    overlay.addChild(createBodyText('Desktop: R rotate · H hold · ESC pause', cx, layout.height * 0.72 + 40, { fontSize: 10, color: THEME.textMuted }));
+
+    // Motion is the one comfort setting worth reaching mid-run; colours and
+    // handedness stay in the menu, where there is room to explain them.
+    const motionY = toggleY + 84;
+    overlay.addChild(createCycleToggle(
+      'MOTION', cx, motionY, MOTION_LABELS, Math.max(0, MOTION_ORDER.indexOf(loadSettings().motion)),
+      (i) => {
+        updateSettings({ motion: MOTION_ORDER[i] });
+        this.applyMotionSetting();
+        this.audioManager.playUiClick();
+      }, 180,
+    ));
+
+    // Keep QUIT clear of the new row on short screens
+    const quitY = Math.max(layout.height * 0.72, motionY + 52);
+    overlay.addChild(createButton('QUIT', cx, quitY, () => { this.audioManager.playUiClick(); this.quit(); }, { width: 200, height: 46, color: THEME.btnSecondary, glow: false, fontSize: 16 }));
+    overlay.addChild(createBodyText('Desktop: R rotate · H hold · ESC pause', cx, quitY + 40, { fontSize: 10, color: THEME.textMuted }));
 
     this.pauseOverlay = overlay;
     this.container.addChild(overlay);

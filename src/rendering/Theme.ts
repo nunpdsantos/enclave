@@ -1,5 +1,6 @@
 import type { Graphics } from 'pixi.js';
 import { Difficulty } from '../core/Config';
+import { loadSettings } from '../core/Settings';
 
 // ── Visual Identity ──
 
@@ -39,6 +40,27 @@ export const DIFFICULTY_COLORS: Record<Difficulty, number> = {
   classic: THEME.accent,
   blitz: 0xf97316,
 };
+
+export interface BoardTokens {
+  cellWell: number;
+  cellWellBorder: number;
+}
+
+/** The board tokens high contrast overrides: a deeper well, a brighter rim */
+const HIGH_CONTRAST_BOARD: BoardTokens = {
+  cellWell: 0x0d1030,
+  cellWellBorder: 0x4a5590,
+};
+
+/**
+ * Board tokens for the active palette. A helper rather than a second THEME,
+ * because high contrast only moves the well and its border — everything else
+ * on the board is a piece colour.
+ */
+export function getBoardTokens(): BoardTokens {
+  if (loadSettings().palette === 'highContrast') return HIGH_CONTRAST_BOARD;
+  return { cellWell: THEME.cellWell, cellWellBorder: THEME.cellWellBorder };
+}
 
 // ── Color utilities ──
 

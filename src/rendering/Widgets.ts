@@ -132,6 +132,70 @@ export function createToggle(
   return root;
 }
 
+/**
+ * The same pill as createToggle, but cycling through named values instead of
+ * on/off: "MOTION: SYSTEM" → "MOTION: REDUCED" → "MOTION: FULL". Index 0 is
+ * the default and reads muted, so a highlighted pill means "you changed this".
+ */
+export function createCycleToggle(
+  label: string,
+  cx: number,
+  cy: number,
+  values: string[],
+  initialIndex: number,
+  onChange: (index: number) => void,
+  width: number = 180,
+): Container {
+  const root = new Container();
+  const h = 32;
+  const bg = new Graphics();
+  const text = new Text({
+    text: '',
+    style: new TextStyle({
+      fontFamily: FONT_DISPLAY,
+      fontSize: 10,
+      fontWeight: '700',
+      fill: THEME.textPrimary,
+      letterSpacing: 1.5,
+    }),
+  });
+  text.anchor.set(0.5);
+  text.x = cx;
+  text.y = cy;
+
+  let index = Math.max(0, Math.min(values.length - 1, initialIndex));
+  const render = () => {
+    const changed = index > 0;
+    bg.clear();
+    const x = cx - width / 2;
+    const y = cy - h / 2;
+    bg.roundRect(x, y, width, h, h / 2);
+    bg.fill({ color: changed ? THEME.accent : 0x000000, alpha: changed ? 0.85 : 0.35 });
+    bg.roundRect(x, y, width, h, h / 2);
+    bg.stroke({ color: changed ? THEME.accentGlow : THEME.textMuted, alpha: changed ? 0.8 : 0.5, width: 1 });
+    // Indicator dot
+    bg.circle(x + 12, cy, 3.5);
+    bg.fill({ color: changed ? THEME.cyan : THEME.textMuted, alpha: 1 });
+    text.text = `${label}: ${values[index]}`;
+    text.style.fill = changed ? THEME.textPrimary : THEME.textSecondary;
+    text.x = cx + 7;
+  };
+  render();
+
+  root.addChild(bg);
+  root.addChild(text);
+  root.eventMode = 'static';
+  root.cursor = 'pointer';
+  root.on('pointerdown', (e) => e.stopPropagation());
+  root.on('pointerup', (e) => {
+    e.stopPropagation();
+    index = (index + 1) % values.length;
+    render();
+    onChange(index);
+  });
+  return root;
+}
+
 /** Labelled statistic chip: big value, small caption underneath */
 export function createStatChip(
   caption: string,

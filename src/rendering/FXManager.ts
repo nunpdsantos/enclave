@@ -61,6 +61,9 @@ export class FXManager {
   private flowIntensity = 0;
   private flowDecayTarget = 0;
 
+  /** 1 is full strength; 0 is reduced motion, where nothing here moves */
+  private intensityScale = 1;
+
   private layout!: Layout;
 
   constructor() {
@@ -97,6 +100,23 @@ export class FXManager {
     this.bgColorSetter = setter;
   }
 
+  /**
+   * The single motion seam. At 0 the shake, flash, zoom pulse and slow-motion
+   * triggers all become no-ops; the vignette and the ambient background are
+   * left alone because they carry state, not motion.
+   */
+  setIntensityScale(scale: number): void {
+    this.intensityScale = Math.max(0, Math.min(1, scale));
+    if (this.intensityScale === 0) {
+      // Cancel whatever is mid-flight, so switching mid-run takes effect now
+      this.shakeDuration = 0;
+      this.shakeElapsed = 0;
+      this.flashAlpha = 0;
+      this.impactDuration = 0;
+      this.impactElapsed = 0;
+    }
+  }
+
   setDifficultyMood(difficulty: Difficulty): void {
     switch (difficulty) {
       case 'blitz':
@@ -119,19 +139,22 @@ export class FXManager {
   // ── Triggers ──
 
   triggerShake(intensity: number, duration: number): void {
-    this.shakeIntensity = intensity;
+    if (this.intensityScale <= 0) return;
+    this.shakeIntensity = intensity * this.intensityScale;
     this.shakeDuration = duration;
     this.shakeElapsed = 0;
   }
 
   triggerImpactFrame(timeScale: number, duration: number): void {
+    if (this.intensityScale <= 0) return;
     this.impactTimeScale = timeScale;
     this.impactDuration = duration;
     this.impactElapsed = 0;
   }
 
   triggerFlash(alpha: number = 0.4, decayRate: number = 8): void {
-    this.flashAlpha = alpha;
+    if (this.intensityScale <= 0) return;
+    this.flashAlpha = alpha * this.intensityScale;
     this.flashDecay = decayRate;
   }
 
@@ -294,6 +317,7 @@ export class FXManager {
   // ── Zoom pulse ──
 
   triggerZoomPulse(target: Container, pivotX: number, pivotY: number): void {
+    if (this.intensityScale <= 0) return;
     target.pivot.set(pivotX, pivotY);
     target.position.set(pivotX, pivotY);
     target.scale.set(1.02);

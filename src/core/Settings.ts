@@ -8,6 +8,12 @@ import { Difficulty } from './Config';
  * Nothing here is sensitive — it's only local convenience state.
  */
 
+/** How much motion the player wants. 'system' follows prefers-reduced-motion. */
+export type MotionSetting = 'full' | 'reduced' | 'system';
+
+/** Which eight-colour piece palette is in use */
+export type PaletteSetting = 'standard' | 'highContrast';
+
 export interface GameSettings {
   /** Sound effects on/off */
   sfx: boolean;
@@ -19,6 +25,12 @@ export interface GameSettings {
   tutorialSeen: boolean;
   /** Send anonymous end-of-run stats. On by default; no UI toggle yet. */
   telemetry: boolean;
+  /** Screen shake, flashes, zoom pulses and slow-motion */
+  motion: MotionSetting;
+  /** High contrast swaps in a palette that survives colour-vision deficiency */
+  palette: PaletteSetting;
+  /** Mirror the HOLD slot and NEXT column for left-thumb play */
+  leftHanded: boolean;
 }
 
 const SETTINGS_KEY = 'enclave_settings_v1';
@@ -29,6 +41,9 @@ const DEFAULT_SETTINGS: GameSettings = {
   haptics: true,
   tutorialSeen: false,
   telemetry: true,
+  motion: 'system',
+  palette: 'standard',
+  leftHanded: false,
 };
 
 function bestKey(difficulty: Difficulty): string {
