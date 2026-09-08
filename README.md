@@ -30,8 +30,8 @@ Two modes: Classic (60 s clock) and Blitz (35 s), each with its own leaderboard 
 ## Tech stack
 
 - Vite + TypeScript
-- PixiJS for rendering
-- Web Audio API for all sound (synthesized at runtime, no audio files)
+- PixiJS for rendering, with `pixi-filters` for the bloom on particles and shockwaves
+- Web Audio API for all sound (synthesized at runtime, no audio files), including a convolution reverb built from a generated impulse response, sidechain pumping, and an A/B-section generative loop
 - Vercel edge function + Upstash Redis for the leaderboard (optional; the game falls back to a local leaderboard)
 
 ## Local development

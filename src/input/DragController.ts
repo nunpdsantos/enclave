@@ -151,12 +151,15 @@ export class DragController {
       this.onRotate();
     } else if (this.dragging) {
       this.updateGridSnap(px, py);
-      const valid = this.dragging.gridPos !== null && this.dragging.isValid;
+      const state = this.dragging;
+      const valid = state.gridPos !== null && state.isValid;
       const layout = this.layoutManager.layout;
       const pieceCenterY = py + layout.dragOffsetY;
-      this.dragging.cancelled = !valid && pieceCenterY >= layout.handOriginY;
-      this.onDragEnd(this.dragging);
+      state.cancelled = !valid && pieceCenterY >= layout.handOriginY;
+      // Clear the drag BEFORE notifying: the scene will hand us the next piece
+      // during onDragEnd, and that must not be treated as a mid-drag rotation.
       this.dragging = null;
+      this.onDragEnd(state);
     }
 
     this.pointerDownPos = null;

@@ -4,7 +4,7 @@ import { Leaderboard } from '../core/Leaderboard';
 import { Difficulty, DIFFICULTY_LABELS, DIFFICULTY_CONFIGS } from '../core/Config';
 import { getPersonalBest, getGamesPlayed, loadSettings, updateSettings } from '../core/Settings';
 import { AudioManager } from '../audio/AudioManager';
-import { FONT_DISPLAY, FONT_MONO, THEME, DIFFICULTY_COLORS, drawPanel, drawBeveledBlock } from '../rendering/Theme';
+import { FONT_DISPLAY, FONT_MONO, THEME, DIFFICULTY_COLORS, drawPanel, drawBeveledBlock, easeOutBack } from '../rendering/Theme';
 import { createButton, createToggle, createSectionLabel, createBodyText } from '../rendering/Widgets';
 import { PIECE_COLORS } from '../core/types';
 
@@ -92,6 +92,11 @@ export class MenuScene implements Scene {
   private build(): void {
     const cx = this.width / 2;
 
+    // Animated logo: a fence of blocks assembling around a gold room
+    this.logoGfx = new Graphics();
+    this.container.addChild(this.logoGfx);
+    this.logoT = 0;
+
     // Title
     this.title = new Text({
       text: 'ENCLAVE',
@@ -106,10 +111,10 @@ export class MenuScene implements Scene {
     });
     this.title.anchor.set(0.5);
     this.title.x = cx;
-    this.title.y = this.height * 0.09;
+    this.title.y = this.height * 0.115;
     this.container.addChild(this.title);
 
-    const tagline = createBodyText('FENCE IT IN · CLAIM THE ROOM · BEAT THE CLOCK', cx, this.height * 0.09 + 26, {
+    const tagline = createBodyText('FENCE IT IN · CLAIM THE ROOM · BEAT THE CLOCK', cx, this.height * 0.115 + 26, {
       fontSize: 10,
       color: THEME.textMuted,
       wrapWidth: this.width - 32,
@@ -437,12 +442,53 @@ export class MenuScene implements Scene {
     }
   }
 
+  private logoGfx: Graphics | null = null;
+  private logoT = 0;
+
+  /** Draw the logo: 16 fence blocks fly in with a stagger, the gold room pulses */
+  private drawLogo(): void {
+    const g = this.logoGfx;
+    if (!g) return;
+    g.clear();
+    const cell = Math.max(7, Math.min(10, this.width / 40));
+    const cx = this.width / 2;
+    const cy = this.height * 0.045;
+    const x0 = cx - cell * 2.5;
+    const y0 = cy - cell * 2.5;
+    let idx = 0;
+    for (let r = 0; r < 5; r++) {
+      for (let c = 0; c < 5; c++) {
+        const ring = r === 0 || r === 4 || c === 0 || c === 4;
+        const center = r === 2 && c === 2;
+        if (!ring && !center) continue;
+        const delay = center ? 1.0 : idx * 0.05;
+        const t = Math.max(0, Math.min(1, (this.logoT - delay) / 0.35));
+        const k = easeOutBack(t);
+        if (t <= 0) { if (ring) idx++; continue; }
+        const angle = (idx / 16) * Math.PI * 2;
+        const fly = (1 - k) * cell * 4;
+        const x = x0 + c * cell + Math.cos(angle) * fly;
+        const y = y0 + r * cell + Math.sin(angle) * fly;
+        const pulse = center ? 1 + Math.sin(this.logoT * 3) * 0.08 : 1;
+        const s = (cell - 1) * pulse;
+        drawBeveledBlock(g, x + (cell - 1 - s) / 2, y + (cell - 1 - s) / 2, s, center ? THEME.gold : THEME.accent, 2, Math.min(1, t * 2));
+        if (center && t >= 1) {
+          g.roundRect(x - 3, y - 3, cell + 5, cell + 5, 4);
+          g.stroke({ color: THEME.gold, alpha: 0.25 + Math.sin(this.logoT * 3) * 0.15, width: 2 });
+        }
+        if (ring) idx++;
+      }
+    }
+  }
+
   update(dt: number): void {
     // Title breathing glow
     this.titlePhase += dt;
     if (this.title) {
       this.title.scale.set(1 + Math.sin(this.titlePhase * 1.6) * 0.012);
     }
+    this.logoT += dt;
+    this.drawLogo();
 
     // Floating blocks
     const g = this.bgGfx;

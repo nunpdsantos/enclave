@@ -18,6 +18,10 @@ const DIE_DURATION = 0.34;
 interface ClaimCell { row: number; col: number; delay: number; life: number }
 const CLAIM_DURATION = 0.7;
 
+/** Glowing outline traced around a claimed room */
+interface RoomOutline { segments: [number, number, number, number][]; life: number; maxLife: number }
+const OUTLINE_DURATION = 0.9;
+
 export class GridRenderer {
   container: Container;
   private bgGraphics: Graphics;
@@ -32,6 +36,7 @@ export class GridRenderer {
   private pops: PopCell[] = [];
   private dying: DyingCell[] = [];
   private claiming: ClaimCell[] = [];
+  private outlines: RoomOutline[] = [];
   private closingCells: GridPos[] = [];
 
   private glowPhase = 0;
@@ -117,11 +122,23 @@ export class GridRenderer {
    * and fence blocks dissolve just behind the wave.
    */
   animateClaim(regions: Region[], fence: GridPos[], fenceColors: CellColor[], origin: GridPos): void {
+    const { gridOriginX, gridOriginY, cellSize } = this.layout;
     for (const region of regions) {
+      const inRoom = new Set(region.cells.map(c => `${c.row},${c.col}`));
+      const segments: [number, number, number, number][] = [];
       for (const cell of region.cells) {
         const dist = Math.abs(cell.col - origin.col) + Math.abs(cell.row - origin.row);
         this.claiming.push({ row: cell.row, col: cell.col, delay: dist * 0.03, life: 0 });
+
+        // Outline: every side of the cell that doesn't face another room cell
+        const x = gridOriginX + cell.col * cellSize;
+        const y = gridOriginY + cell.row * cellSize;
+        if (!inRoom.has(`${cell.row - 1},${cell.col}`)) segments.push([x, y, x + cellSize, y]);
+        if (!inRoom.has(`${cell.row + 1},${cell.col}`)) segments.push([x, y + cellSize, x + cellSize, y + cellSize]);
+        if (!inRoom.has(`${cell.row},${cell.col - 1}`)) segments.push([x, y, x, y + cellSize]);
+        if (!inRoom.has(`${cell.row},${cell.col + 1}`)) segments.push([x + cellSize, y, x + cellSize, y + cellSize]);
       }
+      this.outlines.push({ segments, life: 0, maxLife: OUTLINE_DURATION });
     }
     for (let i = 0; i < fence.length; i++) {
       const cell = fence[i];
@@ -174,6 +191,25 @@ export class GridRenderer {
       cg.fill({ color: THEME.gold, alpha });
       cg.roundRect(cx - size / 2 + 2, cy - size / 2 + 2, size - 4, size * 0.35, CELL_RADIUS - 1);
       cg.fill({ color: 0xffffff, alpha: alpha * 0.5 });
+    }
+
+    // Room outlines: bright gold stroke that fades as the room dissolves
+    for (let i = this.outlines.length - 1; i >= 0; i--) {
+      const o = this.outlines[i];
+      o.life += dt;
+      const t = o.life / o.maxLife;
+      if (t >= 1) { this.outlines.splice(i, 1); continue; }
+      const alpha = t < 0.2 ? t / 0.2 : 1 - (t - 0.2) / 0.8;
+      for (const [x1, y1, x2, y2] of o.segments) {
+        cg.moveTo(x1, y1);
+        cg.lineTo(x2, y2);
+      }
+      cg.stroke({ color: THEME.goldGlow, alpha: alpha * 0.95, width: 3 });
+      for (const [x1, y1, x2, y2] of o.segments) {
+        cg.moveTo(x1, y1);
+        cg.lineTo(x2, y2);
+      }
+      cg.stroke({ color: 0xffffff, alpha: alpha * 0.5, width: 1 });
     }
 
     // Dissolving fence

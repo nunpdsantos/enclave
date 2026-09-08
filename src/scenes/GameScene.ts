@@ -1,6 +1,7 @@
 import { Container, Graphics, Text, TextStyle } from 'pixi.js';
 import { Scene } from './SceneManager';
 import { GameState } from '../core/GameState';
+import { makePiece } from '../core/Pieces';
 import { LayoutManager } from '../rendering/LayoutManager';
 import { GridRenderer } from '../rendering/GridRenderer';
 import { HandRenderer } from '../rendering/HandRenderer';
@@ -156,6 +157,15 @@ export class GameScene implements Scene {
 
     document.addEventListener('visibilitychange', this.onVisibilityChange);
     window.addEventListener('keydown', this.onKeyDown);
+
+    // Debug hook for automated tests: ?debug in the URL exposes the run state
+    if (new URLSearchParams(window.location.search).has('debug')) {
+      (window as unknown as { __enclave: unknown }).__enclave = {
+        state: this.gameState,
+        makePiece,
+        refresh: () => { this.refreshBoard(); this.refreshHand(false); this.syncInput(); },
+      };
+    }
 
     if (!loadSettings().tutorialSeen) {
       this.phase = 'tutorial';
@@ -627,13 +637,11 @@ export class GameScene implements Scene {
   private showTimeBonusPopup(timeBonus: number, big: boolean): void {
     if (timeBonus <= 0) return;
     if (!big && timeBonus < 1.6) return;
+    // Time gained always appears by the clock, bigger for claims, so it never
+    // collides with the score and room popups in the middle of the board
     const label = `+${timeBonus.toFixed(1)}s`;
-    if (big) {
-      this.animationManager.showStreakPopup(0, label);
-    } else {
-      const layout = this.layoutManager.layout;
-      this.animationManager.showTimeBonusPopup(label, layout.gridOriginX + 28, layout.gridOriginY - 30);
-    }
+    const layout = this.layoutManager.layout;
+    this.animationManager.showTimeBonusPopup(label, layout.gridOriginX + (big ? 46 : 28), layout.gridOriginY - 32, big ? 24 : 16);
   }
 
   // ── Feedback ──
@@ -676,22 +684,21 @@ export class GameScene implements Scene {
           const claim = event.claim!;
           const rooms = claim.regions.length;
           const biggest = Math.max(...claim.regions.map(r => r.area));
-          // Sound scales with the size of the claim; multi-close gets the combo sparkle
-          const intensity = Math.min(1 + Math.floor(Math.sqrt(biggest)), 5);
-          if (rooms >= 2) this.audioManager.playCombo(intensity, this.gameState.streakCount);
-          else this.audioManager.playClear(intensity, this.gameState.streakCount);
+          // Sound scales with the size of the claim; double closes add a higher run
+          this.audioManager.playClaim(claim.totalArea, rooms, this.gameState.streakCount);
           if (this.gameState.streakCount >= 3) this.audioManager.playComboReverb(this.gameState.streakCount);
           this.haptic(biggest >= 9 ? [40, 30, 60] : 30);
 
           this.fxManager.triggerShake(Math.min(8, 2 + biggest * 0.4), 0.12);
           this.fxManager.triggerImpactFrame(0.1, 0.05);
           if (biggest >= 9 || rooms >= 2) this.fxManager.triggerZoomPulse(this.gameContent, gridCenterX, gridCenterY);
+          if (biggest >= 6) this.fxManager.triggerFlash(Math.min(0.35, 0.1 + biggest * 0.015), 6);
 
           const o = origin ?? { row: 4, col: 4 };
           this.gridRenderer.animateClaim(claim.regions, claim.fenceCleared, claim.fenceColors, o);
           this.animationManager.spawnClearEffect(claim.fenceCleared, biggest >= 9 ? 0xF1C40F : 0x4A90D9);
 
-          // Score popup at each room's centre
+          // Per room: sparkles, a shockwave ring, and a score popup at its centre
           for (const region of claim.regions) {
             let cx = 0, cy = 0;
             for (const c of region.cells) {
@@ -700,6 +707,10 @@ export class GameScene implements Scene {
             }
             cx /= region.cells.length;
             cy /= region.cells.length;
+            this.animationManager.spawnClaimSparkles(region.cells, region.area >= 9 ? 8 : 5);
+            const ringRadius = layout.cellSize * (1.5 + Math.sqrt(region.area) * 1.1);
+            this.animationManager.spawnShockwave(cx, cy, ringRadius, THEME.gold, 5, 0.45 + region.area * 0.02);
+            if (region.area >= 9) this.animationManager.spawnShockwave(cx, cy, ringRadius * 1.6, 0xffffff, 3, 0.7);
             const pts = region.area * region.area * this.gameState.config.scoring.pointsPerAreaSquared;
             this.animationManager.showScorePopup(pts, cx, cy, region.area >= 9);
           }

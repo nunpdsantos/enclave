@@ -3,32 +3,31 @@ import { loadSettings, updateSettings } from '../core/Settings';
 /**
  * AudioManager — everything the player hears, synthesized with the Web Audio API.
  *
- * No audio files are shipped. Every sound is generated from oscillators and
- * filtered noise, which keeps the bundle tiny and lets the sounds react to
- * game state (pitch climbs with the streak, music speeds up with the clock).
- *
  * Signal chain:
- *   SFX  → sfxBus  ─┐
- *                    ├→ compressor → master → speakers
- *   Music→ musicBus → lowpass ─┘
+ *   SFX voices ─┬→ sfxBus ─────────────┐
+ *               └→ reverbSend ─┐       ├→ compressor → master → speakers
+ *   Music layers ┬→ musicBus → lowpass ┤
+ *                └→ reverbSend → convolver ┘
  *
- * The music engine is a step sequencer scheduled ahead of time on the audio
- * clock (the "two clocks" pattern): a JS timer wakes every 25ms and books
- * every note that falls inside the next 200ms, so timing stays sample-accurate
- * even when the render loop hitches.
+ * The reverb is a ConvolverNode fed with a synthetic impulse response
+ * (two seconds of decaying stereo noise), which is what gives the sounds
+ * space and a "produced" feel without shipping any audio files.
+ *
+ * The music is a 16th-note step sequencer scheduled ahead on the audio clock.
+ * It has an A section (Am F C G) and a B section (Am C G F) and reacts to the
+ * game: tempo follows the timer drain, layers fade in with the streak, the
+ * kick "pumps" the pads (sidechain), and a low-pass filter closes as time
+ * runs out.
  */
 
 // ── Musical material ──
 
-/** Semitone offsets of the A minor pentatonic scale within one octave */
 const PENTATONIC = [0, 3, 5, 7, 10];
 
-/** Frequency for a semitone offset from A3 (220 Hz) */
 function noteHz(semitonesFromA3: number): number {
   return 220 * Math.pow(2, semitonesFromA3 / 12);
 }
 
-/** Pentatonic scale degree (can exceed 5 → next octave) to semitone offset */
 function degreeToSemitone(degree: number): number {
   const octave = Math.floor(degree / PENTATONIC.length);
   const idx = ((degree % PENTATONIC.length) + PENTATONIC.length) % PENTATONIC.length;
@@ -36,26 +35,28 @@ function degreeToSemitone(degree: number): number {
 }
 
 interface Chord {
-  /** Bass root, semitones from A2 (110 Hz) */
-  bassRoot: number;
-  /** Arpeggio pool, semitones from A3 */
-  arp: number[];
-  /** Pad voicing, semitones from A3 */
-  pad: number[];
+  bassRoot: number;   // semitones from A2 (110 Hz)
+  arp: number[];      // semitones from A3
+  pad: number[];      // semitones from A3
 }
 
-/** Four-bar loop: Am – F – C – G */
-const PROGRESSION: Chord[] = [
+const SECTION_A: Chord[] = [
   { bassRoot: 0,  arp: [0, 3, 7, 12, 7, 3, 15, 12],  pad: [0, 3, 7] },
   { bassRoot: -4, arp: [-4, 0, 3, 8, 3, 0, 12, 8],   pad: [-4, 0, 3] },
   { bassRoot: 3,  arp: [3, 7, 10, 15, 10, 7, 19, 15], pad: [3, 7, 10] },
   { bassRoot: -2, arp: [-2, 2, 5, 10, 5, 2, 14, 10],  pad: [-2, 2, 5] },
 ];
+const SECTION_B: Chord[] = [
+  { bassRoot: 0,  arp: [12, 7, 3, 0, 3, 7, 12, 15],   pad: [0, 3, 7, 12] },
+  { bassRoot: 3,  arp: [15, 10, 7, 3, 7, 10, 15, 19], pad: [3, 7, 10, 15] },
+  { bassRoot: -2, arp: [14, 10, 5, 2, 5, 10, 14, 17], pad: [-2, 2, 5, 10] },
+  { bassRoot: -4, arp: [12, 8, 3, 0, 3, 8, 12, 15],   pad: [-4, 0, 3, 8] },
+];
 
-const STEPS_PER_BAR = 16; // 16th notes
-const BARS = PROGRESSION.length;
+const STEPS_PER_BAR = 16;
+const BARS_PER_SECTION = 4;
+const LOOP_STEPS = STEPS_PER_BAR * BARS_PER_SECTION * 2;
 
-// ── Timing constants ──
 const SCHEDULER_INTERVAL_MS = 25;
 const SCHEDULE_AHEAD_SEC = 0.2;
 
@@ -69,15 +70,17 @@ export class AudioManager {
   private sfxBus: GainNode | null = null;
   private musicBus: GainNode | null = null;
   private musicFilter: BiquadFilterNode | null = null;
+  private reverbSend: GainNode | null = null;
   private noiseBuffer: AudioBuffer | null = null;
 
-  // Music layer gains (smoothly faded in/out with intensity)
+  // Music layers
   private layerKick: GainNode | null = null;
   private layerBass: GainNode | null = null;
   private layerHat: GainNode | null = null;
   private layerArp: GainNode | null = null;
   private layerPad: GainNode | null = null;
   private layerSnare: GainNode | null = null;
+  private sidechain: GainNode | null = null;
   private arpDelay: DelayNode | null = null;
 
   // Sequencer state
@@ -88,6 +91,7 @@ export class AudioManager {
   private bpm = 100;
   private intensity = 0;
   private tension = 0;
+  private wantsMusic = false;
 
   constructor() {
     const s = loadSettings();
@@ -97,15 +101,9 @@ export class AudioManager {
 
   // ── Context / graph ──
 
-  /**
-   * Browsers only allow audio to start after a user gesture. Call this from
-   * a pointer/keyboard handler so the context is created and resumed in time.
-   */
   unlock(): void {
     const ctx = this.getContext();
-    if (ctx && ctx.state === 'suspended') {
-      ctx.resume().catch(() => { /* ignored */ });
-    }
+    if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => { /* ignored */ });
   }
 
   private getContext(): AudioContext | null {
@@ -117,9 +115,7 @@ export class AudioManager {
         return null;
       }
     }
-    if (this.ctx.state === 'suspended') {
-      this.ctx.resume().catch(() => { /* ignored */ });
-    }
+    if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => { /* ignored */ });
     return this.ctx;
   }
 
@@ -135,8 +131,6 @@ export class AudioManager {
     this.compressor.release.value = 0.18;
 
     this.sfxBus = ctx.createGain();
-    this.sfxBus.gain.value = 1;
-
     this.musicBus = ctx.createGain();
     this.musicBus.gain.value = 0.7;
 
@@ -145,45 +139,92 @@ export class AudioManager {
     this.musicFilter.frequency.value = 9000;
     this.musicFilter.Q.value = 0.7;
 
+    // Reverb: convolver fed by a synthetic impulse response
+    this.reverbSend = ctx.createGain();
+    this.reverbSend.gain.value = 0.9;
+    const convolver = ctx.createConvolver();
+    convolver.buffer = this.makeImpulseResponse(ctx, 2.2, 2.6);
+    const reverbTone = ctx.createBiquadFilter();
+    reverbTone.type = 'lowpass';
+    reverbTone.frequency.value = 5000;
+    const reverbReturn = ctx.createGain();
+    reverbReturn.gain.value = 0.32;
+    this.reverbSend.connect(convolver);
+    convolver.connect(reverbTone);
+    reverbTone.connect(reverbReturn);
+    reverbReturn.connect(this.compressor);
+
     this.sfxBus.connect(this.compressor);
     this.musicBus.connect(this.musicFilter);
     this.musicFilter.connect(this.compressor);
     this.compressor.connect(this.master);
     this.master.connect(ctx.destination);
 
-    // Music layers
-    const mk = (v: number) => {
+    // Sidechain: pads + arp run through a gain the kick briefly dips
+    this.sidechain = ctx.createGain();
+    this.sidechain.gain.value = 1;
+    this.sidechain.connect(this.musicBus);
+
+    const mk = (v: number, into: AudioNode) => {
       const g = ctx.createGain();
       g.gain.value = v;
-      g.connect(this.musicBus!);
+      g.connect(into);
       return g;
     };
-    this.layerKick = mk(0);
-    this.layerBass = mk(0);
-    this.layerHat = mk(0);
-    this.layerArp = mk(0);
-    this.layerPad = mk(0);
-    this.layerSnare = mk(0);
+    this.layerKick = mk(0, this.musicBus);
+    this.layerBass = mk(0, this.musicBus);
+    this.layerHat = mk(0, this.musicBus);
+    this.layerSnare = mk(0, this.musicBus);
+    this.layerArp = mk(0, this.sidechain);
+    this.layerPad = mk(0, this.sidechain);
 
-    // Dotted-eighth echo for the arpeggio: gives the plucks space
+    // Arp echo (dotted eighth) with a little reverb on the wet path
     this.arpDelay = ctx.createDelay(1.0);
     this.arpDelay.delayTime.value = this.dottedEighth();
     const feedback = ctx.createGain();
-    feedback.gain.value = 0.32;
+    feedback.gain.value = 0.3;
     const delayTone = ctx.createBiquadFilter();
     delayTone.type = 'lowpass';
-    delayTone.frequency.value = 3200;
+    delayTone.frequency.value = 3000;
     this.layerArp.connect(this.arpDelay);
     this.arpDelay.connect(delayTone);
     delayTone.connect(feedback);
     feedback.connect(this.arpDelay);
-    delayTone.connect(this.musicBus);
+    delayTone.connect(this.sidechain);
+    const arpVerb = ctx.createGain();
+    arpVerb.gain.value = 0.35;
+    this.layerArp.connect(arpVerb);
+    arpVerb.connect(this.reverbSend);
+    const padVerb = ctx.createGain();
+    padVerb.gain.value = 0.5;
+    this.layerPad.connect(padVerb);
+    padVerb.connect(this.reverbSend);
+    const snareVerb = ctx.createGain();
+    snareVerb.gain.value = 0.25;
+    this.layerSnare.connect(snareVerb);
+    snareVerb.connect(this.reverbSend);
 
-    // One second of white noise, reused for hats and snares
+    // Noise source for hats / snares / sweeps
     const len = ctx.sampleRate;
     this.noiseBuffer = ctx.createBuffer(1, len, ctx.sampleRate);
     const data = this.noiseBuffer.getChannelData(0);
     for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+  }
+
+  /** Stereo decaying-noise impulse response: a believable medium hall */
+  private makeImpulseResponse(ctx: AudioContext, seconds: number, decay: number): AudioBuffer {
+    const rate = ctx.sampleRate;
+    const length = Math.floor(rate * seconds);
+    const buffer = ctx.createBuffer(2, length, rate);
+    for (let ch = 0; ch < 2; ch++) {
+      const data = buffer.getChannelData(ch);
+      for (let i = 0; i < length; i++) {
+        const t = i / length;
+        const env = Math.pow(1 - t, decay) * (i < rate * 0.02 ? 0.6 : 1);
+        data[i] = (Math.random() * 2 - 1) * env;
+      }
+    }
+    return buffer;
   }
 
   private dottedEighth(): number {
@@ -203,31 +244,21 @@ export class AudioManager {
   setMusicEnabled(on: boolean): void {
     this.musicEnabled = on;
     updateSettings({ music: on });
-    if (!on) {
-      this.stopMusic();
-    } else if (this.wantsMusic) {
-      this.startMusic();
-    }
+    if (!on) this.stopMusic();
+    else if (this.wantsMusic) this.startMusic();
   }
 
-  toggleSfx(): boolean {
-    this.setSfxEnabled(!this.sfxEnabled);
-    return this.sfxEnabled;
-  }
+  toggleSfx(): boolean { this.setSfxEnabled(!this.sfxEnabled); return this.sfxEnabled; }
+  toggleMusic(): boolean { this.setMusicEnabled(!this.musicEnabled); return this.musicEnabled; }
 
-  toggleMusic(): boolean {
-    this.setMusicEnabled(!this.musicEnabled);
-    return this.musicEnabled;
-  }
-
-  // ── Generic voice helpers ──
+  // ── Voice helpers ──
 
   private sfxReady(): AudioContext | null {
     if (!this.sfxEnabled) return null;
     return this.getContext();
   }
 
-  /** Simple enveloped oscillator voice into a bus */
+  /** Enveloped oscillator. `pan` -1..1, `verb` 0..1 send amount. */
   private tone(
     bus: AudioNode,
     type: OscillatorType,
@@ -237,25 +268,37 @@ export class AudioManager {
     duration: number,
     peak: number,
     attack = 0.005,
+    pan = 0,
+    verb = 0,
   ): void {
     const ctx = this.ctx!;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = type;
     osc.frequency.setValueAtTime(freqStart, t0);
-    if (freqEnd !== null && freqEnd > 0) {
-      osc.frequency.exponentialRampToValueAtTime(freqEnd, t0 + duration);
-    }
+    if (freqEnd !== null && freqEnd > 0) osc.frequency.exponentialRampToValueAtTime(freqEnd, t0 + duration);
     gain.gain.setValueAtTime(0.0001, t0);
     gain.gain.linearRampToValueAtTime(peak, t0 + attack);
     gain.gain.exponentialRampToValueAtTime(0.0001, t0 + duration);
     osc.connect(gain);
-    gain.connect(bus);
+    let out: AudioNode = gain;
+    if (pan !== 0 && typeof ctx.createStereoPanner === 'function') {
+      const p = ctx.createStereoPanner();
+      p.pan.value = pan;
+      gain.connect(p);
+      out = p;
+    }
+    out.connect(bus);
+    if (verb > 0 && this.reverbSend) {
+      const send = ctx.createGain();
+      send.gain.value = verb;
+      out.connect(send);
+      send.connect(this.reverbSend);
+    }
     osc.start(t0);
-    osc.stop(t0 + duration + 0.02);
+    osc.stop(t0 + duration + 0.05);
   }
 
-  /** Filtered noise burst */
   private noise(
     bus: AudioNode,
     filterType: BiquadFilterType,
@@ -264,17 +307,18 @@ export class AudioManager {
     t0: number,
     duration: number,
     peak: number,
+    verb = 0,
+    sweepTo: number | null = null,
   ): void {
     const ctx = this.ctx!;
     if (!this.noiseBuffer) return;
     const src = ctx.createBufferSource();
     src.buffer = this.noiseBuffer;
     src.loop = true;
-    src.loopStart = 0;
-    src.loopEnd = this.noiseBuffer.duration;
     const filter = ctx.createBiquadFilter();
     filter.type = filterType;
-    filter.frequency.value = filterFreq;
+    filter.frequency.setValueAtTime(filterFreq, t0);
+    if (sweepTo !== null) filter.frequency.exponentialRampToValueAtTime(sweepTo, t0 + duration);
     filter.Q.value = q;
     const gain = ctx.createGain();
     gain.gain.setValueAtTime(peak, t0);
@@ -282,11 +326,16 @@ export class AudioManager {
     src.connect(filter);
     filter.connect(gain);
     gain.connect(bus);
+    if (verb > 0 && this.reverbSend) {
+      const send = ctx.createGain();
+      send.gain.value = verb;
+      gain.connect(send);
+      send.connect(this.reverbSend);
+    }
     src.start(t0, Math.random() * 0.5);
-    src.stop(t0 + duration + 0.02);
+    src.stop(t0 + duration + 0.05);
   }
 
-  /** Briefly lower the music so a big sound effect reads clearly */
   private duckMusic(amount: number, seconds: number): void {
     if (!this.musicBus || !this.ctx) return;
     const now = this.ctx.currentTime;
@@ -299,210 +348,205 @@ export class AudioManager {
 
   // ── Sound effects ──
 
-  /**
-   * Piece placement: a soft pluck whose pitch walks up the pentatonic scale
-   * with the streak, so a hot streak literally sounds like a rising melody.
-   */
+  /** Placement pluck: pitch walks up the scale with the streak */
   playPlace(streak: number = 0, speedFraction: number = 1): void {
     const ctx = this.sfxReady();
     if (!ctx) return;
     const t = ctx.currentTime;
-    const degree = Math.min(streak, 9);
-    const hz = noteHz(degreeToSemitone(degree) + 12);
+    const hz = noteHz(degreeToSemitone(Math.min(streak, 9)) + 12);
     const bright = 0.5 + speedFraction * 0.5;
-    this.tone(this.sfxBus!, 'triangle', hz, null, t, 0.12, 0.16 * bright, 0.003);
-    this.tone(this.sfxBus!, 'sine', hz * 2, null, t, 0.08, 0.06 * bright, 0.002);
-    // Tactile thud underneath
-    this.tone(this.sfxBus!, 'sine', 180, 70, t, 0.07, 0.14, 0.002);
+    this.tone(this.sfxBus!, 'triangle', hz, null, t, 0.14, 0.16 * bright, 0.003, 0, 0.25);
+    this.tone(this.sfxBus!, 'sine', hz * 2, null, t, 0.09, 0.06 * bright, 0.002);
+    this.tone(this.sfxBus!, 'sine', 170, 60, t, 0.08, 0.16, 0.002);
+    this.noise(this.sfxBus!, 'highpass', 4000, 0.7, t, 0.03, 0.06);
   }
 
   /**
-   * Line clear: a chord stab in the current streak's key. More lines add
-   * higher voices; a longer streak moves the whole chord up the scale.
+   * Room claimed. Small rooms: a short bright run. Bigger rooms: a longer
+   * rising harp run, a low boom, and a shimmering pad hit with a long
+   * reverb tail. Multiple rooms add a second, higher run.
    */
-  playClear(lines: number = 1, streak: number = 1): void {
+  playClaim(area: number, rooms: number, streak: number): void {
     const ctx = this.sfxReady();
     if (!ctx) return;
     const t = ctx.currentTime;
-    const base = Math.min(streak, 10);
-    const voices = Math.min(2 + lines, 5);
-    for (let i = 0; i < voices; i++) {
-      const hz = noteHz(degreeToSemitone(base + i * 2));
-      const type: OscillatorType = i % 2 === 0 ? 'triangle' : 'sine';
-      this.tone(this.sfxBus!, type, hz, hz * 1.01, t + i * 0.015, 0.32 + i * 0.03, 0.13, 0.004);
-    }
-    // Sweep of air for the "whoosh" of blocks vanishing
-    this.noise(this.sfxBus!, 'bandpass', 1400 + lines * 400, 1.2, t, 0.22, 0.12);
-    this.playSubBass();
-    this.duckMusic(0.35, 0.3);
-  }
+    const base = Math.min(streak, 8);
+    const size = Math.min(area, 25);
 
-  /** Multi-line clear: bigger chord plus a quick sparkle arpeggio on top */
-  playCombo(lines: number, streak: number): void {
-    const ctx = this.sfxReady();
-    if (!ctx) return;
-    this.playClear(lines, streak);
-    const t = ctx.currentTime + 0.06;
-    const base = Math.min(streak, 10) + 5;
-    const count = 4 + Math.min(lines, 3);
-    for (let i = 0; i < count; i++) {
+    // Boom scaled by size
+    const boomGain = 0.2 + Math.min(size, 16) * 0.02;
+    this.tone(this.sfxBus!, 'sine', 90, 34, t, 0.35 + size * 0.02, boomGain, 0.004, 0, 0.3);
+
+    // Harp run: 3 notes for tiny rooms, up to 10 for big ones
+    const notes = Math.min(10, 3 + Math.floor(Math.sqrt(size) * 1.6));
+    const stepDt = Math.max(0.03, 0.07 - size * 0.002);
+    for (let i = 0; i < notes; i++) {
       const hz = noteHz(degreeToSemitone(base + i) + 12);
-      this.tone(this.sfxBus!, 'sine', hz, null, t + i * 0.045, 0.18, 0.09, 0.003);
+      const pan = -0.5 + (i / Math.max(1, notes - 1));
+      this.tone(this.sfxBus!, 'triangle', hz, null, t + i * stepDt, 0.35, 0.11, 0.003, pan, 0.45);
+      this.tone(this.sfxBus!, 'sine', hz * 2, null, t + i * stepDt, 0.2, 0.05, 0.002, pan, 0.3);
     }
-    this.duckMusic(0.5, 0.45);
+
+    // Second run an octave up for double closes
+    if (rooms >= 2) {
+      for (let i = 0; i < 6; i++) {
+        const hz = noteHz(degreeToSemitone(base + 5 + i) + 24);
+        this.tone(this.sfxBus!, 'sine', hz, null, t + 0.12 + i * 0.05, 0.3, 0.07, 0.003, (i % 2 ? 0.5 : -0.5), 0.5);
+      }
+    }
+
+    // Pad hit for big rooms: detuned saws, slow attack, long tail
+    if (size >= 4) {
+      const chord = [0, 3, 7, 12].map(s => noteHz(degreeToSemitone(base) + s));
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(600, t);
+      filter.frequency.exponentialRampToValueAtTime(2400 + size * 80, t + 0.25);
+      filter.frequency.exponentialRampToValueAtTime(500, t + 1.2);
+      const env = ctx.createGain();
+      env.gain.setValueAtTime(0.0001, t);
+      env.gain.linearRampToValueAtTime(0.05 + Math.min(size, 16) * 0.005, t + 0.12);
+      env.gain.exponentialRampToValueAtTime(0.0001, t + 1.3);
+      filter.connect(env);
+      env.connect(this.sfxBus!);
+      const send = ctx.createGain();
+      send.gain.value = 0.8;
+      env.connect(send);
+      send.connect(this.reverbSend!);
+      for (const hz of chord) {
+        for (const detune of [-7, 7]) {
+          const osc = ctx.createOscillator();
+          osc.type = 'sawtooth';
+          osc.frequency.value = hz;
+          osc.detune.value = detune;
+          osc.connect(filter);
+          osc.start(t);
+          osc.stop(t + 1.4);
+        }
+      }
+    }
+
+    // Air sweep
+    this.noise(this.sfxBus!, 'bandpass', 900, 1.2, t, 0.35 + size * 0.02, 0.12, 0.4, 4000);
+    this.duckMusic(Math.min(0.7, 0.3 + size * 0.03), 0.4 + size * 0.03);
   }
 
-  /** Sub-bass thump for all combos/clears */
   playSubBass(): void {
     const ctx = this.sfxReady();
     if (!ctx) return;
     this.tone(this.sfxBus!, 'sine', 70, 38, ctx.currentTime, 0.2, 0.32, 0.003);
   }
 
-  /** Echo tail on long streaks */
   playComboReverb(streak: number): void {
     const ctx = this.sfxReady();
     if (!ctx) return;
     const t = ctx.currentTime;
     const hz = noteHz(degreeToSemitone(Math.min(streak, 10) + 4) + 12);
     for (let i = 1; i <= 3; i++) {
-      this.tone(this.sfxBus!, 'sine', hz, hz * 0.8, t + i * 0.09, 0.16, 0.05 / i, 0.003);
+      this.tone(this.sfxBus!, 'sine', hz, hz * 0.8, t + i * 0.09, 0.16, 0.05 / i, 0.003, i % 2 ? 0.4 : -0.4, 0.5);
     }
   }
 
-  /** Whoosh: bandpass-filtered noise burst on fast placement */
   playWhoosh(): void {
     const ctx = this.sfxReady();
     if (!ctx) return;
     this.noise(this.sfxBus!, 'bandpass', 2200, 1, ctx.currentTime, 0.06, 0.12);
   }
 
-  /** Countdown tick sound */
   playTick(): void {
     const ctx = this.sfxReady();
     if (!ctx) return;
-    this.tone(this.sfxBus!, 'square', 1100, 800, ctx.currentTime, 0.045, 0.06, 0.002);
+    this.tone(this.sfxBus!, 'square', 1100, 800, ctx.currentTime, 0.045, 0.06, 0.002, 0, 0.2);
   }
 
-  /** Urgent clock tick for the final seconds — pitch rises as time runs out */
   playUrgentTick(secondsLeft: number): void {
     const ctx = this.sfxReady();
     if (!ctx) return;
     const t = ctx.currentTime;
     const hz = 700 + (6 - Math.min(secondsLeft, 6)) * 90;
-    this.tone(this.sfxBus!, 'square', hz, hz * 0.8, t, 0.05, 0.07, 0.002);
+    this.tone(this.sfxBus!, 'square', hz, hz * 0.8, t, 0.05, 0.07, 0.002, 0, 0.2);
     this.tone(this.sfxBus!, 'sine', 90, 50, t, 0.09, 0.2, 0.002);
   }
 
-  /** GO! chime sound */
   playGoChime(): void {
     const ctx = this.sfxReady();
     if (!ctx) return;
     const t = ctx.currentTime;
     [0, 4, 7, 12].forEach((semi, i) => {
-      this.tone(this.sfxBus!, 'triangle', noteHz(semi + 12), null, t + i * 0.03, 0.4, 0.1, 0.005);
+      this.tone(this.sfxBus!, 'triangle', noteHz(semi + 12), null, t + i * 0.03, 0.5, 0.1, 0.005, (i - 1.5) * 0.3, 0.5);
     });
-    this.noise(this.sfxBus!, 'highpass', 4000, 0.7, t, 0.25, 0.08);
+    this.noise(this.sfxBus!, 'highpass', 4000, 0.7, t, 0.3, 0.08, 0.4);
   }
 
-  /** Alert chime for critical time warnings */
   playAlertChime(): void {
     const ctx = this.sfxReady();
     if (!ctx) return;
     const t = ctx.currentTime;
     this.tone(this.sfxBus!, 'square', 880, null, t, 0.1, 0.07, 0.003);
-    this.tone(this.sfxBus!, 'square', 1175, null, t + 0.11, 0.14, 0.07, 0.003);
+    this.tone(this.sfxBus!, 'square', 1175, null, t + 0.11, 0.14, 0.07, 0.003, 0, 0.3);
   }
 
-  /** Short rejected-action cue */
   playInvalid(): void {
     const ctx = this.sfxReady();
     if (!ctx) return;
     this.tone(this.sfxBus!, 'square', 220, 110, ctx.currentTime, 0.1, 0.07, 0.003);
   }
 
-  /** Neutral UI tap */
   playUiClick(): void {
     const ctx = this.sfxReady();
     if (!ctx) return;
-    this.tone(this.sfxBus!, 'sine', 900, 600, ctx.currentTime, 0.06, 0.08, 0.002);
+    this.tone(this.sfxBus!, 'sine', 900, 600, ctx.currentTime, 0.06, 0.08, 0.002, 0, 0.15);
   }
 
-  /** Bright tier-up flourish */
   playTierUp(): void {
     const ctx = this.sfxReady();
     if (!ctx) return;
     const t = ctx.currentTime;
     [0, 3, 7, 12, 15].forEach((semi, i) => {
-      this.tone(this.sfxBus!, 'triangle', noteHz(semi + 12), null, t + i * 0.06, 0.3, 0.09, 0.004);
+      this.tone(this.sfxBus!, 'triangle', noteHz(semi + 12), null, t + i * 0.06, 0.4, 0.09, 0.004, (i - 2) * 0.25, 0.5);
     });
     this.duckMusic(0.3, 0.4);
   }
 
-  /** Personal best beaten: rising fanfare */
   playNewBest(): void {
     const ctx = this.sfxReady();
     if (!ctx) return;
     const t = ctx.currentTime;
-    const seq = [0, 7, 12, 19, 24];
-    seq.forEach((semi, i) => {
+    [0, 7, 12, 19, 24].forEach((semi, i) => {
       const hz = noteHz(semi);
-      this.tone(this.sfxBus!, 'triangle', hz, null, t + i * 0.08, 0.45, 0.1, 0.005);
-      this.tone(this.sfxBus!, 'sine', hz * 2, null, t + i * 0.08, 0.3, 0.05, 0.005);
+      this.tone(this.sfxBus!, 'triangle', hz, null, t + i * 0.08, 0.6, 0.1, 0.005, (i - 2) * 0.2, 0.6);
+      this.tone(this.sfxBus!, 'sine', hz * 2, null, t + i * 0.08, 0.35, 0.05, 0.005, 0, 0.4);
     });
-    this.noise(this.sfxBus!, 'highpass', 5000, 0.7, t + 0.3, 0.4, 0.07);
+    this.noise(this.sfxBus!, 'highpass', 5000, 0.7, t + 0.3, 0.5, 0.07, 0.5);
     this.duckMusic(0.5, 0.6);
   }
 
-  /** Richer board-clear celebration */
-  playBoardClear(): void {
-    const ctx = this.sfxReady();
-    if (!ctx) return;
-    const t = ctx.currentTime;
-    const seq = [0, 3, 7, 10, 12, 15, 19, 24];
-    seq.forEach((semi, i) => {
-      const hz = noteHz(semi + 12);
-      this.tone(this.sfxBus!, i % 2 === 0 ? 'triangle' : 'sine', hz, hz * 1.02, t + i * 0.05, 0.5, 0.09, 0.005);
-    });
-    this.noise(this.sfxBus!, 'highpass', 3000, 0.7, t, 0.6, 0.1);
-    this.tone(this.sfxBus!, 'sine', 80, 40, t, 0.4, 0.3, 0.005);
-    this.duckMusic(0.6, 0.8);
-  }
-
-  /** Streak break: descending sawtooth */
   playStreakBreak(): void {
     const ctx = this.sfxReady();
     if (!ctx) return;
-    this.tone(this.sfxBus!, 'sawtooth', 600, 180, ctx.currentTime, 0.22, 0.08, 0.003);
+    this.tone(this.sfxBus!, 'sawtooth', 600, 180, ctx.currentTime, 0.22, 0.08, 0.003, 0, 0.2);
   }
 
-  /** Game over sting */
   playGameOver(): void {
     const ctx = this.sfxReady();
     if (!ctx) return;
     const t = ctx.currentTime;
-    const notes = [0, -2, -4, -9];
-    notes.forEach((semi, i) => {
+    [0, -2, -4, -9].forEach((semi, i) => {
       const hz = noteHz(semi);
-      this.tone(this.sfxBus!, 'triangle', hz, hz * 0.97, t + i * 0.17, 0.32, 0.13, 0.01);
-      this.tone(this.sfxBus!, 'sine', hz / 2, hz / 2 * 0.97, t + i * 0.17, 0.32, 0.1, 0.01);
+      this.tone(this.sfxBus!, 'triangle', hz, hz * 0.97, t + i * 0.17, 0.4, 0.13, 0.01, 0, 0.6);
+      this.tone(this.sfxBus!, 'sine', hz / 2, hz / 2 * 0.97, t + i * 0.17, 0.4, 0.1, 0.01);
     });
-    this.noise(this.sfxBus!, 'lowpass', 600, 0.7, t, 0.7, 0.15);
+    this.noise(this.sfxBus!, 'lowpass', 600, 0.7, t, 0.8, 0.15, 0.5);
     this.duckMusic(1, 1.5);
   }
 
   // ── Music engine ──
 
-  /** Whether gameplay currently wants music playing (set by start/stop) */
-  private wantsMusic = false;
-
-  /** Start the generative loop (no-op if music is disabled) */
   startMusic(): void {
     this.wantsMusic = true;
     if (!this.musicEnabled || this.musicActive) return;
     const ctx = this.getContext();
     if (!ctx || !this.musicBus) return;
-
     this.musicActive = true;
     this.step = 0;
     this.nextStepTime = ctx.currentTime + 0.05;
@@ -510,11 +554,9 @@ export class AudioManager {
     this.musicBus.gain.setValueAtTime(0.0001, ctx.currentTime);
     this.musicBus.gain.exponentialRampToValueAtTime(0.7, ctx.currentTime + 0.6);
     this.applyIntensity(true);
-
     this.schedulerTimer = window.setInterval(() => this.scheduleAhead(), SCHEDULER_INTERVAL_MS);
   }
 
-  /** Stop the loop with a short fade */
   stopMusic(): void {
     this.wantsMusic = false;
     if (!this.musicActive) return;
@@ -531,33 +573,19 @@ export class AudioManager {
     }
   }
 
-  /**
-   * Feed game state into the music every frame.
-   *  - drainRate drives tempo (faster clock → faster beat)
-   *  - streak and flow drive which layers are audible
-   *  - timeFraction (0..1 of max) drives tension: the mix gets muffled and
-   *    hurried as the clock runs down.
-   */
   updateMusic(drainRate: number, streak: number, timeFraction: number, flow: number): void {
     if (!this.musicActive || !this.ctx) return;
-
-    // Tempo: 100 BPM at a calm clock, up to ~138 when the drain is fierce
-    const drainT = Math.max(0, Math.min(1, (drainRate - 0.7) / 0.9));
-    const targetBpm = 100 + drainT * 30 + this.tension * 8;
+    const drainT = Math.max(0, Math.min(1, (drainRate - 0.8) / 0.9));
+    const targetBpm = 104 + drainT * 28 + this.tension * 8;
     this.bpm += (targetBpm - this.bpm) * 0.05;
-    if (this.arpDelay) {
-      this.arpDelay.delayTime.setTargetAtTime(this.dottedEighth(), this.ctx.currentTime, 0.2);
-    }
+    if (this.arpDelay) this.arpDelay.delayTime.setTargetAtTime(this.dottedEighth(), this.ctx.currentTime, 0.2);
 
-    // Intensity: streak + flow, smoothed
-    const streakT = Math.min(streak / 8, 1);
+    const streakT = Math.min(streak / 6, 1);
     const target = Math.max(streakT, flow * 0.9, drainT * 0.45);
     this.intensity += (target - this.intensity) * (target > this.intensity ? 0.08 : 0.02);
 
-    // Tension from low time
     const targetTension = timeFraction <= 0.3 ? 1 - timeFraction / 0.3 : 0;
     this.tension += (targetTension - this.tension) * 0.08;
-
     this.applyIntensity(false);
   }
 
@@ -565,74 +593,79 @@ export class AudioManager {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
     const tc = instant ? 0.01 : 0.35;
-    const set = (g: GainNode | null, v: number) => {
-      if (!g) return;
-      g.gain.setTargetAtTime(v, now, tc);
-    };
+    const set = (g: GainNode | null, v: number) => { if (g) g.gain.setTargetAtTime(v, now, tc); };
     const i = this.intensity;
     set(this.layerKick, 0.9);
-    set(this.layerBass, 0.55 + i * 0.25);
-    set(this.layerHat, i >= 0.2 ? 0.35 + i * 0.35 : 0);
-    set(this.layerSnare, i >= 0.45 ? 0.5 : 0);
-    set(this.layerArp, i >= 0.3 ? 0.35 + i * 0.4 : 0);
-    set(this.layerPad, 0.3 + i * 0.45);
-
-    if (this.musicFilter) {
-      // Tension closes the filter: the world narrows as the clock runs out
-      const f = 9000 - this.tension * 6500;
-      this.musicFilter.frequency.setTargetAtTime(f, now, tc);
-    }
+    set(this.layerBass, 0.5 + i * 0.3);
+    set(this.layerHat, i >= 0.15 ? 0.3 + i * 0.35 : 0);
+    set(this.layerSnare, i >= 0.4 ? 0.5 : 0);
+    set(this.layerArp, i >= 0.25 ? 0.3 + i * 0.4 : 0.12);
+    set(this.layerPad, 0.35 + i * 0.4);
+    if (this.musicFilter) this.musicFilter.frequency.setTargetAtTime(9000 - this.tension * 6500, now, tc);
   }
 
   private scheduleAhead(): void {
     if (!this.musicActive || !this.ctx) return;
-    const ctx = this.ctx;
-    while (this.nextStepTime < ctx.currentTime + SCHEDULE_AHEAD_SEC) {
+    while (this.nextStepTime < this.ctx.currentTime + SCHEDULE_AHEAD_SEC) {
       this.scheduleStep(this.step, this.nextStepTime);
-      const sixteenth = 60 / this.bpm / 4;
-      this.nextStepTime += sixteenth;
-      this.step = (this.step + 1) % (STEPS_PER_BAR * BARS);
+      this.nextStepTime += 60 / this.bpm / 4;
+      this.step = (this.step + 1) % LOOP_STEPS;
     }
   }
 
   private scheduleStep(globalStep: number, t: number): void {
-    const bar = Math.floor(globalStep / STEPS_PER_BAR);
+    const sectionB = globalStep >= STEPS_PER_BAR * BARS_PER_SECTION;
+    const section = sectionB ? SECTION_B : SECTION_A;
+    const bar = Math.floor(globalStep / STEPS_PER_BAR) % BARS_PER_SECTION;
     const s = globalStep % STEPS_PER_BAR;
-    const chord = PROGRESSION[bar];
+    const chord = section[bar];
     const i = this.intensity;
     const tense = this.tension > 0.4;
+    const lastBar = bar === BARS_PER_SECTION - 1;
 
-    // Kick: two-on-the-floor when calm, four when intense, gallop when tense
+    // Kick + sidechain pump
     const kickSteps = tense ? [0, 3, 6, 8, 11, 14] : i >= 0.35 ? [0, 4, 8, 12] : [0, 8];
-    if (kickSteps.includes(s)) this.kick(t, s === 0 ? 1 : 0.85);
+    if (kickSteps.includes(s)) {
+      this.kick(t, s === 0 ? 1 : 0.85);
+      this.pump(t);
+    }
 
-    // Snare / clap on the backbeat
     if (s === 4 || s === 12) this.snare(t);
+    // Fill: snare roll at the end of the B section when intense
+    if (sectionB && lastBar && i >= 0.5 && s >= 12) this.snare(t, 0.5 + (s - 12) * 0.15);
 
-    // Hats: 8ths, with 16ths sneaking in as intensity rises
     const offbeat = s % 4 === 2;
     const sixteenth = s % 2 === 1;
-    if (offbeat || (sixteenth && i >= 0.6)) this.hat(t, offbeat ? 0.6 : 0.3);
+    if (offbeat || (sixteenth && i >= 0.6)) this.hat(t, offbeat ? 0.6 : 0.3, sixteenth ? 0.35 : -0.2);
 
-    // Bass: syncopated root pattern
     const bassSteps = i >= 0.5 ? [0, 3, 6, 8, 11, 14] : [0, 6, 8, 14];
     if (bassSteps.includes(s)) {
       const octaveUp = (s === 6 || s === 14) && i >= 0.5;
       this.bass(t, 110 * Math.pow(2, (chord.bassRoot + (octaveUp ? 12 : 0)) / 12));
     }
 
-    // Arpeggio: 8th notes walking through the chord pool
     if (s % 2 === 0) {
       const idx = Math.floor(s / 2) % chord.arp.length;
-      const semi = chord.arp[idx] + 12;
-      this.pluck(t, noteHz(semi));
+      const lift = sectionB && i >= 0.7 ? 12 : 0;
+      this.pluck(t, noteHz(chord.arp[idx] + 12 + lift), idx % 2 ? 0.4 : -0.4);
     }
 
-    // Pad: one chord per bar
     if (s === 0) this.pad(t, chord.pad, (60 / this.bpm) * 4);
+
+    // Riser into the loop restart when the run is hot
+    if (sectionB && lastBar && s === 0 && i >= 0.6) this.riser(t, (60 / this.bpm) * 4);
   }
 
-  // ── Instrument voices (music bus) ──
+  // ── Instruments ──
+
+  private pump(t: number): void {
+    if (!this.sidechain) return;
+    const g = this.sidechain.gain;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(1, t);
+    g.linearRampToValueAtTime(0.45, t + 0.01);
+    g.setTargetAtTime(1, t + 0.02, 0.09);
+  }
 
   private kick(t: number, vel: number): void {
     const ctx = this.ctx!;
@@ -647,17 +680,38 @@ export class AudioManager {
     gain.connect(this.layerKick!);
     osc.start(t);
     osc.stop(t + 0.3);
-    // Click transient
     this.noise(this.layerKick!, 'highpass', 2500, 0.7, t, 0.015, 0.25 * vel);
   }
 
-  private snare(t: number): void {
-    this.noise(this.layerSnare!, 'bandpass', 1900, 0.8, t, 0.16, 0.5);
-    this.tone(this.layerSnare!, 'triangle', 200, 120, t, 0.09, 0.3, 0.002);
+  private snare(t: number, vel: number = 1): void {
+    this.noise(this.layerSnare!, 'bandpass', 1900, 0.8, t, 0.16, 0.5 * vel);
+    this.tone(this.layerSnare!, 'triangle', 200, 120, t, 0.09, 0.3 * vel, 0.002);
   }
 
-  private hat(t: number, vel: number): void {
-    this.noise(this.layerHat!, 'highpass', 7500, 0.8, t, 0.045, 0.28 * vel);
+  private hat(t: number, vel: number, pan: number): void {
+    const ctx = this.ctx!;
+    if (!this.noiseBuffer) return;
+    const src = ctx.createBufferSource();
+    src.buffer = this.noiseBuffer;
+    src.loop = true;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'highpass';
+    filter.frequency.value = 7500;
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.28 * vel, t);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.045);
+    src.connect(filter);
+    filter.connect(gain);
+    if (typeof ctx.createStereoPanner === 'function') {
+      const p = ctx.createStereoPanner();
+      p.pan.value = pan;
+      gain.connect(p);
+      p.connect(this.layerHat!);
+    } else {
+      gain.connect(this.layerHat!);
+    }
+    src.start(t, Math.random() * 0.5);
+    src.stop(t + 0.08);
   }
 
   private bass(t: number, hz: number): void {
@@ -669,7 +723,7 @@ export class AudioManager {
     osc.frequency.setValueAtTime(hz, t);
     filter.type = 'lowpass';
     filter.Q.value = 5;
-    filter.frequency.setValueAtTime(900 + this.intensity * 600, t);
+    filter.frequency.setValueAtTime(900 + this.intensity * 700, t);
     filter.frequency.exponentialRampToValueAtTime(180, t + 0.22);
     gain.gain.setValueAtTime(0.0001, t);
     gain.gain.linearRampToValueAtTime(0.42, t + 0.006);
@@ -679,39 +733,44 @@ export class AudioManager {
     gain.connect(this.layerBass!);
     osc.start(t);
     osc.stop(t + 0.3);
-    // Sub layer for weight
     this.tone(this.layerBass!, 'sine', hz / 2, null, t, 0.2, 0.35, 0.004);
   }
 
-  private pluck(t: number, hz: number): void {
-    this.tone(this.layerArp!, 'triangle', hz, null, t, 0.22, 0.28, 0.003);
-    this.tone(this.layerArp!, 'sine', hz * 2, null, t, 0.12, 0.08, 0.002);
+  private pluck(t: number, hz: number, pan: number): void {
+    this.tone(this.layerArp!, 'triangle', hz, null, t, 0.22, 0.28, 0.003, pan);
+    this.tone(this.layerArp!, 'sine', hz * 2, null, t, 0.12, 0.08, 0.002, pan);
   }
 
   private pad(t: number, semis: number[], duration: number): void {
     const ctx = this.ctx!;
     const filter = ctx.createBiquadFilter();
     filter.type = 'lowpass';
-    filter.frequency.value = 1100;
-    filter.Q.value = 0.5;
+    filter.Q.value = 0.6;
+    filter.frequency.setValueAtTime(700, t);
+    filter.frequency.linearRampToValueAtTime(1500 + this.intensity * 900, t + duration * 0.5);
+    filter.frequency.linearRampToValueAtTime(800, t + duration);
     const env = ctx.createGain();
     env.gain.setValueAtTime(0.0001, t);
-    env.gain.linearRampToValueAtTime(0.09, t + 0.35);
-    env.gain.setValueAtTime(0.09, t + duration - 0.4);
+    env.gain.linearRampToValueAtTime(0.085, t + 0.4);
+    env.gain.setValueAtTime(0.085, t + duration - 0.4);
     env.gain.exponentialRampToValueAtTime(0.0001, t + duration + 0.1);
     filter.connect(env);
     env.connect(this.layerPad!);
-    for (const semi of semis) {
+    semis.forEach((semi, i) => {
       const hz = noteHz(semi);
-      for (const detune of [-6, 6]) {
+      for (const detune of [-7, 7]) {
         const osc = ctx.createOscillator();
         osc.type = 'sawtooth';
         osc.frequency.value = hz;
-        osc.detune.value = detune;
+        osc.detune.value = detune + (i - 1) * 2;
         osc.connect(filter);
         osc.start(t);
         osc.stop(t + duration + 0.15);
       }
-    }
+    });
+  }
+
+  private riser(t: number, duration: number): void {
+    this.noise(this.layerSnare!, 'bandpass', 400, 1.5, t, duration, 0.12, 0.6, 6000);
   }
 }
