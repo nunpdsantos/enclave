@@ -53,12 +53,20 @@ export interface ClaimResult {
   fenceColors: CellColor[];
 }
 
-export interface ScoreBreakdown {
+/**
+ * What sealing a set of rooms is worth right now. Split out of
+ * ScoreBreakdown so the drag preview can price a hypothetical claim with
+ * the same code that pays the real one.
+ */
+export interface ClaimPoints {
   /** Sum of area² × pointsPerAreaSquared */
   basePoints: number;
   multiCloseMultiplier: number;
   streakMultiplier: number;
   turnScore: number;
+}
+
+export interface ScoreBreakdown extends ClaimPoints {
   totalScore: number;
 }
 

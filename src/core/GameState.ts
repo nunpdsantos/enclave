@@ -3,7 +3,8 @@ import { PieceBag, rotatePiece } from './Pieces';
 import { Difficulty, GameConfig, DEFAULT_CONFIG } from './Config';
 import { getPersonalBest, recordPersonalBest } from './Settings';
 import {
-  PieceInstance, FeedbackEvent, ClaimResult, ScoreBreakdown, RunEndCause, RunSummary, GridPos,
+  PieceInstance, FeedbackEvent, ClaimResult, ClaimPoints, ScoreBreakdown, Region,
+  RunEndCause, RunSummary, GridPos,
 } from './types';
 
 /**
@@ -178,6 +179,21 @@ export class GameState {
     return false;
   }
 
+  /**
+   * What sealing these rooms is worth, at the streak the run is on now.
+   *
+   * Pure: it reads state but changes none, so the drag preview can ask the
+   * same question the placement will answer and the two cannot drift.
+   */
+  claimPoints(regions: Region[]): ClaimPoints {
+    const s = this.config.scoring;
+    const basePoints = regions.reduce((a, r) => a + r.area * r.area * s.pointsPerAreaSquared, 0);
+    const multiCloseMultiplier = 1 + s.multiCloseBonusPerRoom * (regions.length - 1);
+    const streakMultiplier = this.streakMultiplier;
+    const turnScore = Math.floor(basePoints * multiCloseMultiplier * streakMultiplier);
+    return { basePoints, multiCloseMultiplier, streakMultiplier, turnScore };
+  }
+
   /** Attempt to place the current piece at (row, col) */
   tryPlace(row: number, col: number): FeedbackEvent[] {
     const events: FeedbackEvent[] = [];
@@ -239,13 +255,9 @@ export class GameState {
     this.addTime(timeBonus);
     events[0].timeBonus = timeBonus;
 
-    // Claim scoring
+    // Claim scoring — same method the drag preview quotes
     if (claim) {
-      const s = this.config.scoring;
-      const basePoints = claim.regions.reduce((a, r) => a + r.area * r.area * s.pointsPerAreaSquared, 0);
-      const multiCloseMultiplier = 1 + s.multiCloseBonusPerRoom * (claim.regions.length - 1);
-      const streakMultiplier = this.streakMultiplier;
-      const turnScore = Math.floor(basePoints * multiCloseMultiplier * streakMultiplier);
+      const { basePoints, multiCloseMultiplier, streakMultiplier, turnScore } = this.claimPoints(claim.regions);
       this.score += turnScore;
 
       this.streakCount++;

@@ -1,7 +1,7 @@
 import { Container, Graphics } from 'pixi.js';
 import { GRID_SIZE, Grid, GridPos, CellColor, Region } from '../core/types';
 import { Layout } from './LayoutManager';
-import { THEME, drawBeveledBlock, lerpColor, lighten, easeOutBack } from './Theme';
+import { THEME, drawBeveledBlock, drawWallBlock, darken, lerpColor, lighten, luminance, easeOutBack } from './Theme';
 
 const BLOCK_INSET = 3;
 const CELL_RADIUS = 5;
@@ -92,19 +92,83 @@ export class GridRenderer {
     }
   }
 
+  /**
+   * The board as a wall: every block bridges the gap to the neighbours it
+   * actually has, so a run of blocks reads as one fence and a one-cell hole
+   * still reads as a hole.
+   */
   drawBlocks(grid: Grid): void {
     const g = this.blockGraphics;
     g.clear();
     const { gridOriginX, gridOriginY, cellSize } = this.layout;
+    const filled = (r: number, c: number): boolean =>
+      r >= 0 && c >= 0 && r < GRID_SIZE && c < GRID_SIZE && grid[r][c] !== null;
+
     for (let r = 0; r < GRID_SIZE; r++) {
       for (let c = 0; c < GRID_SIZE; c++) {
         const color = grid[r][c];
-        if (color !== null) {
-          const x = gridOriginX + c * cellSize + BLOCK_INSET;
-          const y = gridOriginY + r * cellSize + BLOCK_INSET;
-          drawBeveledBlock(g, x, y, cellSize - BLOCK_INSET * 2, color, CELL_RADIUS);
+        if (color === null) continue;
+        drawWallBlock(
+          g,
+          gridOriginX + c * cellSize,
+          gridOriginY + r * cellSize,
+          cellSize,
+          BLOCK_INSET,
+          color,
+          CELL_RADIUS,
+          { up: filled(r - 1, c), down: filled(r + 1, c), left: filled(r, c - 1), right: filled(r, c + 1) },
+        );
+      }
+    }
+    this.drawMortar(grid, filled);
+  }
+
+  /**
+   * A hairline seam wherever two differently-coloured pieces join, so the
+   * individual pieces stay readable once they have merged into a wall.
+   */
+  private drawMortar(grid: Grid, filled: (r: number, c: number) => boolean): void {
+    const g = this.blockGraphics;
+    const { gridOriginX, gridOriginY, cellSize } = this.layout;
+    const byColor = new Map<number, [number, number, number, number][]>();
+
+    const seam = (a: CellColor, b: CellColor, x1: number, y1: number, x2: number, y2: number): void => {
+      if (a === b) return;
+      const mortar = darken(luminance(a) <= luminance(b) ? a : b, 0.35);
+      const segments = byColor.get(mortar) ?? [];
+      segments.push([x1, y1, x2, y2]);
+      byColor.set(mortar, segments);
+    };
+
+    for (let r = 0; r < GRID_SIZE; r++) {
+      for (let c = 0; c < GRID_SIZE; c++) {
+        const color = grid[r][c];
+        if (color === null) continue;
+        const x = gridOriginX + c * cellSize;
+        const y = gridOriginY + r * cellSize;
+        // Each shared edge is visited once, from the cell above/left of it.
+        // The seam spans only where both tiles are painted, hence the insets.
+        const right = c + 1 < GRID_SIZE ? grid[r][c + 1] : null;
+        if (right !== null) {
+          const top = y + (filled(r - 1, c) && filled(r - 1, c + 1) ? 0 : BLOCK_INSET);
+          const bottom = y + cellSize - (filled(r + 1, c) && filled(r + 1, c + 1) ? 0 : BLOCK_INSET);
+          seam(color, right, x + cellSize, top, x + cellSize, bottom);
+        }
+        const below = r + 1 < GRID_SIZE ? grid[r + 1][c] : null;
+        if (below !== null) {
+          const left = x + (filled(r, c - 1) && filled(r + 1, c - 1) ? 0 : BLOCK_INSET);
+          const rightX = x + cellSize - (filled(r, c + 1) && filled(r + 1, c + 1) ? 0 : BLOCK_INSET);
+          seam(color, below, left, y + cellSize, rightX, y + cellSize);
         }
       }
+    }
+
+    for (const [color, segments] of byColor) {
+      for (const [x1, y1, x2, y2] of segments) {
+        g.moveTo(x1, y1);
+        g.lineTo(x2, y2);
+      }
+      g.stroke({ color, alpha: 0.85, width: 1 });
     }
   }
 

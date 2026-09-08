@@ -56,6 +56,11 @@ export function lighten(color: number, amount: number): number {
   return (Math.floor(r) << 16) | (Math.floor(g) << 8) | Math.floor(b);
 }
 
+/** Perceived brightness 0–255, for picking the darker of two piece colours */
+export function luminance(color: number): number {
+  return 0.299 * ((color >> 16) & 0xff) + 0.587 * ((color >> 8) & 0xff) + 0.114 * (color & 0xff);
+}
+
 export function lerpColor(a: number, b: number, t: number): number {
   const clamp = Math.max(0, Math.min(1, t));
   const ar = (a >> 16) & 0xff, ag = (a >> 8) & 0xff, ab = a & 0xff;
@@ -131,6 +136,131 @@ export function drawBeveledBlock(
   const dot = Math.max(size * 0.13, 2);
   g.roundRect(x + size * 0.13, y + size * 0.12, dot, dot * 0.8, dot / 2);
   g.fill({ color: 0xffffff, alpha: 0.42 * alpha });
+}
+
+/** Which orthogonal neighbours a wall block touches */
+export interface WallJoins {
+  up: boolean;
+  down: boolean;
+  left: boolean;
+  right: boolean;
+}
+
+const NO_JOINS: WallJoins = { up: false, down: false, left: false, right: false };
+
+/**
+ * Rounded-rect path whose corners go square wherever the tile meets a
+ * neighbour, so two joined tiles have no notch between them.
+ */
+function wallPath(
+  g: Graphics,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  radius: number,
+  joins: WallJoins,
+): void {
+  const rad = Math.max(0, Math.min(radius, Math.min(w, h) / 2));
+  const tl = joins.up || joins.left ? 0 : rad;
+  const tr = joins.up || joins.right ? 0 : rad;
+  const br = joins.down || joins.right ? 0 : rad;
+  const bl = joins.down || joins.left ? 0 : rad;
+
+  g.moveTo(x + tl, y);
+  g.lineTo(x + w - tr, y);
+  if (tr > 0) g.arcTo(x + w, y, x + w, y + tr, tr);
+  g.lineTo(x + w, y + h - br);
+  if (br > 0) g.arcTo(x + w, y + h, x + w - br, y + h, br);
+  g.lineTo(x + bl, y + h);
+  if (bl > 0) g.arcTo(x, y + h, x, y + h - bl, bl);
+  g.lineTo(x, y + tl);
+  if (tl > 0) g.arcTo(x, y, x + tl, y, tl);
+  g.closePath();
+}
+
+/**
+ * One block of a wall.
+ *
+ * Unlike drawBeveledBlock, (x, y, size) is the whole *cell* and `inset` is
+ * the gap between the tile and the cell edge. Where `joins` reports a
+ * neighbour the tile is stretched by `inset` on that side, so the two tiles
+ * meet across the 2 × inset gap and the pair reads as one fence.
+ *
+ * The bevel is the same trick — a dark base with the lit face pulled up and
+ * left off it — but every edge treatment is skipped on a joined side, so the
+ * light top and dark bottom run along the wall instead of around each block.
+ */
+export function drawWallBlock(
+  g: Graphics,
+  x: number,
+  y: number,
+  size: number,
+  inset: number,
+  color: number,
+  radius: number = 5,
+  joins: WallJoins = NO_JOINS,
+  alpha: number = 1,
+): void {
+  const left = x + (joins.left ? 0 : inset);
+  const top = y + (joins.up ? 0 : inset);
+  const w = size - (joins.left ? 0 : inset) - (joins.right ? 0 : inset);
+  const h = size - (joins.up ? 0 : inset) - (joins.down ? 0 : inset);
+  if (w <= 0 || h <= 0) return;
+
+  const tile = Math.max(1, size - inset * 2);
+  const bevel = Math.max(Math.floor(tile * 0.08), 2);
+  const r = Math.max(2, Math.min(radius, tile / 2));
+
+  // 1. Dark base — visible only where the wall ends, as its bottom/right edge
+  wallPath(g, left, top, w, h, radius, joins);
+  g.fill({ color: darken(color, 0.45), alpha });
+
+  // 2. Face, pulled off the base on the sides that are not joined
+  const faceW = w - (joins.right ? 0 : bevel);
+  const faceH = h - (joins.down ? 0 : bevel);
+  if (faceW <= 0 || faceH <= 0) return;
+  wallPath(g, left, top, faceW, faceH, r, joins);
+  g.fill({ color, alpha });
+
+  // 3. Bands: light along the top of the wall, deep along its bottom
+  if (!joins.down) {
+    const band = Math.min(Math.max(faceH * 0.34, 3), faceH);
+    wallPath(g, left, top + faceH - band, faceW, band, r, { ...joins, up: true });
+    g.fill({ color: darken(color, 0.12), alpha });
+  }
+  if (!joins.up) {
+    const band = Math.min(Math.max(faceH * 0.4, 4), faceH);
+    wallPath(g, left, top, faceW, band, r, { ...joins, down: true });
+    g.fill({ color: lighten(color, 0.14), alpha });
+
+    const gloss = Math.min(Math.max(faceH * 0.3, 4), faceH - 2);
+    if (gloss > 0) {
+      wallPath(g, left + 1, top + 1, faceW - 2, gloss, Math.max(r - 1, 1), { ...joins, down: true });
+      g.fill({ color: lighten(color, 0.45), alpha: 0.5 * alpha });
+    }
+  }
+
+  // 4. Inner bottom shadow, so the wall has thickness where it ends
+  if (!joins.down) {
+    const shadowH = Math.min(Math.max(faceH * 0.14, 2), faceH);
+    wallPath(g, left + 1, top + faceH - shadowH, faceW - 2, shadowH, Math.max(r - 1, 1), { ...joins, up: true });
+    g.fill({ color: darken(color, 0.5), alpha: 0.35 * alpha });
+  }
+
+  // 5. Left edge catches the light, mirroring the dark base on the right
+  if (!joins.left) {
+    const edge = Math.min(bevel, faceW);
+    wallPath(g, left, top, edge, faceH, Math.max(r - 1, 1), { ...joins, right: true });
+    g.fill({ color: lighten(color, 0.3), alpha: 0.2 * alpha });
+  }
+
+  // 6. Specular dot, only on a corner that is actually exposed
+  if (!joins.up && !joins.left) {
+    const dot = Math.max(tile * 0.13, 2);
+    g.roundRect(left + tile * 0.13, top + tile * 0.12, dot, dot * 0.8, dot / 2);
+    g.fill({ color: 0xffffff, alpha: 0.42 * alpha });
+  }
 }
 
 /** Rounded pill-shaped button with a highlight strip */

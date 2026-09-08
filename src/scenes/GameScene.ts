@@ -11,7 +11,7 @@ import { AnimationManager } from '../rendering/AnimationManager';
 import { FXManager } from '../rendering/FXManager';
 import { DragController, DragState } from '../input/DragController';
 import { AudioManager } from '../audio/AudioManager';
-import { FeedbackEvent, GridPos, RunEndCause, RunSummary } from '../core/types';
+import { FeedbackEvent, GridPos, PieceInstance, Region, RunEndCause, RunSummary } from '../core/types';
 import { Difficulty, DIFFICULTY_LABELS, GameConfig } from '../core/Config';
 import { getProgressStatus } from '../core/Progression';
 import { loadSettings, updateSettings } from '../core/Settings';
@@ -20,6 +20,12 @@ import { FONT_DISPLAY, THEME, drawPanel } from '../rendering/Theme';
 import { createButton, createToggle, createBodyText } from '../rendering/Widgets';
 
 type Phase = 'tutorial' | 'countdown' | 'playing' | 'gameOver';
+
+/** What the ghost's current drop would seal, and what it would pay */
+interface ClosePreview {
+  regions: Region[];
+  points: number;
+}
 
 export class GameScene implements Scene {
   container: Container;
@@ -60,6 +66,15 @@ export class GameScene implements Scene {
   private gameOverElapsed = 0;
   /** Guards the one telemetry report per run (quit and death share a path) */
   private runReported = false;
+
+  /**
+   * Single-entry memo for the close preview. The ghost is redrawn on every
+   * pointer move, but what a drop would claim only changes when the piece,
+   * the cell under it, or the board does — so that is the key.
+   */
+  private previewKey = '';
+  private previewValue: ClosePreview | null = null;
+  private boardVersion = 0;
 
   private onVisibilityChange = () => {
     if (document.hidden && this.phase === 'playing' && !this.paused) this.pause();
@@ -137,6 +152,7 @@ export class GameScene implements Scene {
     this.buildPauseButton();
 
     this.gameState.start();
+    this.boardVersion++; // the board just reset: any memoised preview is stale
     this.dragController.setCurrent(this.gameState.current);
     this.dragController.updateBoard(this.gameState.board);
 
@@ -577,14 +593,13 @@ export class GameScene implements Scene {
     this.dragController.onDragStart = (state: DragState) => {
       this.handRenderer.setCurrentHidden(true);
       this.handRenderer.beginDrag(state.piece, state.pointerX, state.pointerY);
-      if (state.gridPos) this.ghostRenderer.show(state.piece.shape, state.gridPos.row, state.gridPos.col, state.piece.color, state.isValid);
+      this.showGhost(state);
       this.haptic(6);
     };
     this.dragController.onDragMove = (state: DragState) => {
       this.handRenderer.showDragPiece(state.piece, state.pointerX, state.pointerY);
       this.handRenderer.recordDragPosition(state.pointerX, state.pointerY);
-      if (state.gridPos) this.ghostRenderer.show(state.piece.shape, state.gridPos.row, state.gridPos.col, state.piece.color, state.isValid);
-      else this.ghostRenderer.hide();
+      this.showGhost(state);
     };
     this.dragController.onDragEnd = (state: DragState) => {
       this.handRenderer.hideDragPiece();
@@ -640,8 +655,44 @@ export class GameScene implements Scene {
   }
 
   private refreshBoard(): void {
+    this.boardVersion++;
     this.gridRenderer.drawBlocks(this.gameState.board.grid);
     this.gridRenderer.setClosingCells(this.gameState.board.findClosingCells());
+  }
+
+  /** The ghost, plus the gold claim preview when the drop would seal a room */
+  private showGhost(state: DragState): void {
+    if (!state.gridPos) {
+      this.ghostRenderer.hide();
+      return;
+    }
+    this.ghostRenderer.show(state.piece.shape, state.gridPos.row, state.gridPos.col, state.piece.color, state.isValid);
+    const preview = state.isValid
+      ? this.closePreview(state.piece, state.gridPos.row, state.gridPos.col)
+      : null;
+    if (preview) this.ghostRenderer.showClosePreview(preview.regions, preview.points);
+    else this.ghostRenderer.hidePreview();
+  }
+
+  /**
+   * What this drop would claim, memoised on piece + cell + board so the
+   * flood fill runs once per snapped position, not once per pointer event.
+   */
+  private closePreview(piece: PieceInstance, row: number, col: number): ClosePreview | null {
+    const key = `${piece.typeId}:${piece.rotation}:${row}:${col}:${this.boardVersion}`;
+    if (key === this.previewKey) return this.previewValue;
+    this.previewKey = key;
+    this.previewValue = null;
+
+    const probe = this.gameState.board.clone();
+    if (probe.canPlace(piece.shape, row, col)) {
+      probe.place(piece.shape, row, col, piece.color);
+      const regions = probe.findEnclosures();
+      if (regions.length > 0) {
+        this.previewValue = { regions, points: this.gameState.claimPoints(regions).turnScore };
+      }
+    }
+    return this.previewValue;
   }
 
   private handleInvalidPlacement(gridPos: GridPos, state: DragState): void {

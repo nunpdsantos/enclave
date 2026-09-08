@@ -1,7 +1,7 @@
 import { Container, Graphics, Text, TextStyle } from 'pixi.js';
 import { PieceInstance } from '../core/types';
 import { Layout, Rect } from './LayoutManager';
-import { FONT_DISPLAY, THEME, drawBeveledBlock, drawPanel, easeOutBack, easeOutCubic } from './Theme';
+import { FONT_DISPLAY, THEME, WallJoins, drawPanel, drawWallBlock, easeOutBack, easeOutCubic } from './Theme';
 
 const BLOCK_RADIUS = 5;
 const DRAG_TRAIL_SIZE = 4;
@@ -145,6 +145,13 @@ export class HandRenderer {
     this.drawPieceInRect(g, piece, rect, this.layout.miniCellSize, alpha);
   }
 
+  /** Which of a piece's own cells touch this one, so it draws as a mini-wall */
+  private joinsAt(piece: PieceInstance, r: number, c: number): WallJoins {
+    const on = (rr: number, cc: number): boolean =>
+      rr >= 0 && cc >= 0 && rr < piece.rows && cc < piece.cols && piece.shape[rr][cc];
+    return { up: on(r - 1, c), down: on(r + 1, c), left: on(r, c - 1), right: on(r, c + 1) };
+  }
+
   private drawPieceInRect(g: Graphics, piece: PieceInstance, rect: Rect, cell: number, alpha: number): void {
     const w = piece.cols * cell;
     const h = piece.rows * cell;
@@ -154,7 +161,7 @@ export class HandRenderer {
     for (let r = 0; r < piece.rows; r++) {
       for (let c = 0; c < piece.cols; c++) {
         if (!piece.shape[r][c]) continue;
-        drawBeveledBlock(g, x0 + c * cell + inset, y0 + r * cell + inset, cell - inset * 2, piece.color, Math.max(2, cell * 0.2), alpha);
+        drawWallBlock(g, x0 + c * cell, y0 + r * cell, cell, inset, piece.color, Math.max(2, cell * 0.2), this.joinsAt(piece, r, c), alpha);
       }
     }
   }
@@ -194,7 +201,7 @@ export class HandRenderer {
     for (let r = 0; r < piece.rows; r++) {
       for (let c = 0; c < piece.cols; c++) {
         if (!piece.shape[r][c]) continue;
-        drawBeveledBlock(g, -w / 2 + c * cell + inset, -h / 2 + r * cell + inset, cell - inset * 2, piece.color, BLOCK_RADIUS);
+        drawWallBlock(g, -w / 2 + c * cell, -h / 2 + r * cell, cell, inset, piece.color, BLOCK_RADIUS, this.joinsAt(piece, r, c));
       }
     }
   }
@@ -269,9 +276,9 @@ export class HandRenderer {
     for (let r = 0; r < piece.rows; r++) {
       for (let c = 0; c < piece.cols; c++) {
         if (!piece.shape[r][c]) continue;
-        const x = this.dragX - halfW + c * size + inset;
-        const y = this.dragY - halfH + r * size + inset + offsetY;
-        drawBeveledBlock(g, x, y, size - inset * 2, piece.color, BLOCK_RADIUS);
+        const x = this.dragX - halfW + c * size;
+        const y = this.dragY - halfH + r * size + offsetY;
+        drawWallBlock(g, x, y, size, inset, piece.color, BLOCK_RADIUS, this.joinsAt(piece, r, c));
       }
     }
 

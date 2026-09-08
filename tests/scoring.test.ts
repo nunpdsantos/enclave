@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { GameState } from '../src/core/GameState';
 import { makePiece } from '../src/core/Pieces';
 import { DIFFICULTY_CONFIGS } from '../src/core/Config';
-import { FeedbackEvent } from '../src/core/types';
+import { FeedbackEvent, PieceInstance } from '../src/core/types';
 import { grid } from './helpers';
 
 /**
@@ -31,6 +31,19 @@ const TWO_ROOMS_OPEN = [
   '...#.#...',
   '..#...#..',
   '...#.#...',
+];
+
+/**
+ * A 2×5 pocket still open at (2,4). A vertical BAR 3 dropped there plugs the
+ * opening and walls off the middle column, sealing two 2×2 rooms at once.
+ */
+const TWO_2X2_OPEN = [
+  '.........',
+  '.........',
+  '..##.##..',
+  '.#.....#.',
+  '.#.....#.',
+  '..#####..',
 ];
 
 function newGame(difficulty: 'classic' | 'blitz' = 'classic'): GameState {
@@ -103,6 +116,62 @@ describe('scoring order', () => {
     expect(gs.roomsClaimed).toBe(3);
     expect(gs.biggestRoom).toBe(4);
     expect(gs.roomSizes).toEqual({ 1: 2, 4: 1 });
+  });
+});
+
+describe('claimPoints — the price the drag preview quotes', () => {
+  /** Exactly what GhostRenderer's preview is fed: a clone, placed, flood-filled */
+  function previewAt(gs: GameState, piece: PieceInstance, row: number, col: number) {
+    const probe = gs.board.clone();
+    probe.place(piece.shape, row, col, piece.color);
+    return probe.findEnclosures();
+  }
+
+  it('prices a double 2×2 close at 320 × 1.5 = 480 with no streak', () => {
+    const gs = newGame();
+    gs.board.grid = grid(TWO_2X2_OPEN);
+    const bar3 = makePiece('tri_line', 1, WHITE);          // vertical, 3 tall
+    expect(gs.streakCount).toBe(0);
+
+    const regions = previewAt(gs, bar3, 2, 4);
+    expect(regions).toHaveLength(2);
+    expect(regions.map(r => r.area).sort()).toEqual([4, 4]);
+
+    const points = gs.claimPoints(regions);
+    expect(points.basePoints).toBe(320);                   // 2 × 4² × 10
+    expect(points.multiCloseMultiplier).toBe(1.5);
+    expect(points.streakMultiplier).toBe(1);
+    expect(points.turnScore).toBe(480);                    // floor(320 × 1.5)
+
+    // Quoting a price must not move the run on
+    expect(gs.score).toBe(0);
+    expect(gs.streakCount).toBe(0);
+  });
+
+  it('is what the real placement then awards, plus 1 per block', () => {
+    const gs = newGame();
+    gs.board.grid = grid(TWO_2X2_OPEN);
+    gs.current = makePiece('tri_line', 1, WHITE);
+
+    const claim = claimEvent(gs.tryPlace(2, 4));
+    expect(claim.scoreBreakdown!.basePoints).toBe(320);
+    expect(claim.scoreBreakdown!.multiCloseMultiplier).toBe(1.5);
+    expect(claim.scoreBreakdown!.turnScore).toBe(480);
+    expect(gs.score).toBe(483);                            // 3 blocks + 480
+  });
+
+  it('quotes the current streak, so the preview matches mid-run', () => {
+    const gs = newGame();
+    placeSingle(gs, ROOM_2X2_OPEN, 2, 3);                  // streak 1
+    gs.board.grid = grid(TWO_2X2_OPEN);
+
+    const regions = previewAt(gs, makePiece('tri_line', 1, WHITE), 2, 4);
+    const quoted = gs.claimPoints(regions);
+    expect(quoted.streakMultiplier).toBe(1.25);
+    expect(quoted.turnScore).toBe(600);                    // floor(320 × 1.5 × 1.25)
+
+    gs.current = makePiece('tri_line', 1, WHITE);
+    expect(claimEvent(gs.tryPlace(2, 4)).scoreBreakdown!.turnScore).toBe(600);
   });
 });
 
