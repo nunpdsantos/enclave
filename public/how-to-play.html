@@ -1,0 +1,933 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#171d4a" />
+  <meta name="description" content="How to play Enclave: the enclosure rule, area-squared scoring, double closes, streaks, shared walls and the clock, with playable mini-boards." />
+  <link rel="icon" href="/icons/icon-192.png" />
+  <title>Enclave Playbook</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Share+Tech+Mono&display=swap">
+<style>
+  :root {
+    --bg: #2b3a86;
+    --bg-deep: #171d4a;
+    --grid: #121633;
+    --well: #1b2047;
+    --well-border: #2a3260;
+    --panel: #0f1330;
+    --panel-2: #161b3d;
+    --line: rgba(184, 192, 224, 0.16);
+    --text: #ffffff;
+    --text-2: #b8c0e0;
+    --muted: #7882aa;
+    --accent: #4a7af7;
+    --accent-glow: #6b9aff;
+    --gold: #fbbf24;
+    --gold-glow: #fde047;
+    --danger: #ef4444;
+    --warning: #f59e0b;
+    --success: #22c55e;
+    --blitz: #f97316;
+    --p-blue: #4b7bec; --p-orange: #e8913a; --p-pink: #d65db1; --p-purple: #8854d0;
+    --p-red: #d64545; --p-green: #20bf6b; --p-sky: #45aaf2; --p-yellow: #f7b731;
+    --display: "Oxanium", "Avenir Next Condensed", "Arial Narrow", sans-serif;
+    --body: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+    --mono: "Share Tech Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+    --cell: clamp(22px, 7.6vw, 32px);
+    --gap: 3px;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg-deep) radial-gradient(ellipse 120% 70% at 50% -10%, var(--bg) 0%, var(--bg-deep) 70%) no-repeat;
+    color: var(--text);
+    font-family: var(--body);
+    font-size: 17px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent-glow); text-decoration-color: rgba(107,154,255,.45); text-underline-offset: 3px; }
+  a:hover { text-decoration-color: var(--accent-glow); }
+  :focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+
+  .wrap { width: min(880px, 100% - 40px); margin: 0 auto; }
+  .prose { max-width: 66ch; }
+
+  /* ── Header ─────────────────────────────────────────────── */
+  header.hero { padding: 56px 0 28px; }
+  .eyebrow {
+    font-family: var(--display); font-weight: 600; font-size: 12px; letter-spacing: .22em;
+    text-transform: uppercase; color: var(--text-2);
+  }
+  .hero h1 {
+    font-family: var(--display); font-weight: 800; font-size: clamp(34px, 6vw, 60px);
+    line-height: 1.02; letter-spacing: .02em; text-transform: uppercase; margin: 14px 0 18px;
+    text-wrap: balance;
+  }
+  .hero h1 .gold { color: var(--gold); }
+  .lede { font-size: 19px; color: var(--text-2); margin: 0 0 22px; }
+  .hero-actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .btn {
+    font-family: var(--display); font-weight: 700; font-size: 13px; letter-spacing: .14em; text-transform: uppercase;
+    border: 0; border-radius: 10px; padding: 12px 18px; cursor: pointer; color: #fff;
+    background: var(--accent); box-shadow: inset 0 2px 0 rgba(255,255,255,.28), inset 0 -3px 0 rgba(0,0,0,.28);
+    text-decoration: none; display: inline-flex; align-items: center; gap: 8px; line-height: 1;
+  }
+  .btn:hover { background: var(--accent-glow); }
+  .btn.secondary { background: #3a3f66; }
+  .btn.secondary:hover { background: #4a507a; }
+  .btn.small { padding: 9px 13px; font-size: 12px; border-radius: 8px; }
+  .btn:disabled { opacity: .45; cursor: default; }
+  .modes { display: flex; gap: 10px; font-family: var(--mono); font-size: 14px; color: var(--text-2); }
+  .modes span { padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; }
+  .modes .c { color: var(--accent-glow); border-color: rgba(107,154,255,.45); }
+  .modes .b { color: var(--blitz); border-color: rgba(249,115,22,.45); }
+
+  /* ── Sections ───────────────────────────────────────────── */
+  section { padding: 34px 0 10px; border-top: 1px solid var(--line); }
+  .step {
+    display: flex; align-items: baseline; gap: 14px; margin: 0 0 8px;
+  }
+  .step .n {
+    font-family: var(--mono); font-size: 14px; color: var(--gold); letter-spacing: .1em;
+  }
+  h2 {
+    font-family: var(--display); font-weight: 700; font-size: clamp(22px, 3.2vw, 30px);
+    letter-spacing: .04em; text-transform: uppercase; margin: 0; text-wrap: balance;
+  }
+  h3 {
+    font-family: var(--display); font-weight: 600; font-size: 14px; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--text-2); margin: 26px 0 10px;
+  }
+  p { margin: 0 0 14px; }
+  p.note { color: var(--text-2); font-size: 15.5px; }
+  code, .k { font-family: var(--mono); font-size: .95em; color: var(--gold-glow); }
+  .k { color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 1px 7px; }
+  ul, ol { margin: 0 0 14px; padding-left: 22px; }
+  li { margin-bottom: 6px; }
+  li::marker { color: var(--muted); font-family: var(--mono); }
+
+  /* ── Demo panel ─────────────────────────────────────────── */
+  .demo {
+    margin: 22px 0 18px; background: var(--panel); border: 1px solid var(--well-border); border-radius: 16px;
+    padding: 18px; display: grid; grid-template-columns: auto 1fr; gap: 18px 24px; align-items: start;
+  }
+  .demo.stack, .demo.two { grid-template-columns: 1fr; }
+  .demo.two .pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 22px; }
+  .demo.two figure { margin: 0; }
+  .demo.two figcaption { font-size: 14.5px; color: var(--text-2); margin-top: 10px; max-width: 42ch; }
+  @media (max-width: 640px) { .demo { grid-template-columns: 1fr; } }
+
+  .board-wrap { position: relative; display: inline-block; }
+  .board {
+    display: grid; grid-template-columns: repeat(9, var(--cell)); grid-auto-rows: var(--cell); gap: var(--gap);
+    background: var(--grid); padding: 8px; border-radius: 12px; border: 2px solid var(--well-border);
+    box-shadow: 0 0 0 1px rgba(74,122,247,.25), 0 0 26px rgba(74,122,247,.18);
+    touch-action: manipulation; user-select: none; -webkit-user-select: none;
+  }
+  .board.locked { opacity: .92; }
+  .cell {
+    position: relative; width: var(--cell); height: var(--cell); border-radius: 5px;
+    background: var(--well); box-shadow: inset 0 0 0 1px var(--well-border);
+    transition: background-color .15s ease, box-shadow .15s ease, opacity .4s ease, filter .4s ease;
+  }
+  .cell.block {
+    background: var(--pc, var(--p-blue));
+    box-shadow: inset 0 3px 0 rgba(255,255,255,.34), inset 0 -4px 0 rgba(0,0,0,.36), inset 0 0 0 1px rgba(0,0,0,.25);
+  }
+  .cell.hint { box-shadow: inset 0 0 0 2px var(--gold), 0 0 10px rgba(251,191,36,.55); animation: pulse 1.1s ease-in-out infinite; }
+  .cell.ghost-ok { background: rgba(34,197,94,.55); box-shadow: inset 0 0 0 2px var(--success); }
+  .cell.ghost-bad { background: rgba(239,68,68,.5); box-shadow: inset 0 0 0 2px var(--danger); }
+  .cell.room { background: var(--gold); box-shadow: inset 0 0 0 2px var(--gold-glow), 0 0 14px rgba(253,224,71,.7); }
+  .cell.dissolve { filter: brightness(2.2); opacity: 0; }
+  .cell.cursor { box-shadow: inset 0 0 0 2px var(--text); }
+  .cell.open-mark { box-shadow: inset 0 0 0 2px var(--danger); background: rgba(239,68,68,.16); }
+  @keyframes pulse { 0%,100% { box-shadow: inset 0 0 0 2px var(--gold), 0 0 6px rgba(251,191,36,.35); } 50% { box-shadow: inset 0 0 0 2px var(--gold-glow), 0 0 16px rgba(253,224,71,.85); } }
+
+  .popup {
+    position: absolute; left: 50%; top: 42%; transform: translate(-50%, -50%);
+    font-family: var(--display); font-weight: 800; font-size: 30px; letter-spacing: .04em; color: var(--gold-glow);
+    text-shadow: 0 0 18px rgba(253,224,71,.8), 0 2px 0 rgba(0,0,0,.5); pointer-events: none; opacity: 0; white-space: nowrap;
+  }
+  .popup.show { animation: rise 1.4s ease-out forwards; }
+  .popup .sub { display: block; font-size: 13px; letter-spacing: .16em; color: var(--text); text-shadow: 0 1px 0 rgba(0,0,0,.6); }
+  .popup.red { color: var(--danger); text-shadow: 0 0 18px rgba(239,68,68,.7); }
+  @keyframes rise { 0% { opacity: 0; transform: translate(-50%, -30%) scale(.8); } 15% { opacity: 1; transform: translate(-50%, -50%) scale(1.05); } 70% { opacity: 1; } 100% { opacity: 0; transform: translate(-50%, -90%) scale(1); } }
+
+  .console { display: grid; gap: 12px; align-content: start; min-width: 0; }
+  .hud { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px; }
+  .stat { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+  .stat .l { font-family: var(--display); font-size: 11px; letter-spacing: .18em; text-transform: uppercase; color: var(--muted); }
+  .stat .v { font-family: var(--mono); font-size: 24px; line-height: 1.1; margin-top: 4px; font-variant-numeric: tabular-nums; color: var(--text); }
+  .stat .v.gold { color: var(--gold); }
+  .stat .v.small { font-size: 16px; padding-top: 5px; }
+  .pips { display: inline-flex; gap: 5px; vertical-align: middle; margin-left: 8px; }
+  .pip { width: 9px; height: 9px; border-radius: 50%; background: var(--well-border); }
+  .pip.on { background: var(--success); box-shadow: 0 0 6px rgba(34,197,94,.7); }
+  .readout {
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; min-height: 86px;
+    font-size: 15px; color: var(--text-2);
+  }
+  .readout strong { color: var(--text); font-weight: 600; }
+  .readout .formula { font-family: var(--mono); color: var(--gold-glow); display: block; margin-top: 6px; font-size: 14px; }
+  .hand { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .hand .l { font-family: var(--display); font-size: 11px; letter-spacing: .18em; text-transform: uppercase; color: var(--muted); }
+  .mini { display: grid; gap: 2px; }
+  .mini .mc { width: 16px; height: 16px; border-radius: 3px; }
+  .mini .mc.on { background: var(--pc, var(--p-blue)); box-shadow: inset 0 2px 0 rgba(255,255,255,.34), inset 0 -2px 0 rgba(0,0,0,.36); }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; }
+  .hintline { font-size: 13.5px; color: var(--muted); }
+
+  /* ── Calculator ─────────────────────────────────────────── */
+  .calc { display: grid; grid-template-columns: auto 1fr; gap: 18px 26px; align-items: start; }
+  @media (max-width: 640px) { .calc { grid-template-columns: 1fr; } }
+  .sizes { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    font-family: var(--mono); font-size: 14px; color: var(--text-2); background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 999px; padding: 6px 12px; cursor: pointer;
+  }
+  .chip[aria-pressed="true"] { color: var(--text); border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold) inset; }
+  .roomviz { display: grid; gap: 3px; background: var(--grid); padding: 8px; border-radius: 10px; border: 2px solid var(--well-border); width: max-content; }
+  .roomviz .c { width: 22px; height: 22px; border-radius: 4px; background: var(--well); box-shadow: inset 0 0 0 1px var(--well-border); }
+  .roomviz .c.f { background: var(--p-blue); box-shadow: inset 0 2px 0 rgba(255,255,255,.34), inset 0 -3px 0 rgba(0,0,0,.36); }
+  .roomviz .c.r { background: var(--gold); box-shadow: inset 0 0 0 2px var(--gold-glow); }
+  .roomviz .c.x { background: transparent; box-shadow: none; }
+  table { border-collapse: collapse; width: 100%; font-size: 15px; }
+  .tablewrap { overflow-x: auto; margin: 12px 0 18px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-family: var(--display); font-size: 11.5px; letter-spacing: .16em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  td.num { color: var(--text); }
+  tr.hl td { color: var(--gold); }
+  .bars { display: grid; gap: 8px; margin-top: 8px; }
+  .bar { display: grid; grid-template-columns: 5.5em 1fr 5.5em; gap: 10px; align-items: center; font-family: var(--mono); font-size: 14px; color: var(--text-2); }
+  .bar .track { height: 12px; background: var(--well); border-radius: 6px; overflow: hidden; }
+  .bar .fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--gold)); border-radius: 6px; min-width: 3px; }
+  .bar .val { text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
+
+  /* ── Clock ──────────────────────────────────────────────── */
+  .clock { display: grid; gap: 12px; }
+  .timerbar { position: relative; height: 22px; background: var(--well); border-radius: 8px; overflow: hidden; border: 1px solid var(--well-border); }
+  .timerbar .fill { position: absolute; inset: 0 auto 0 0; background: var(--accent); transition: background-color .3s; }
+  .timerbar .fill.amber { background: var(--warning); }
+  .timerbar .fill.red { background: var(--danger); }
+  .timerbar .tick { position: absolute; top: 0; bottom: 0; width: 1px; background: rgba(255,255,255,.22); }
+  .speedbar { height: 8px; background: var(--well); border-radius: 4px; overflow: hidden; border: 1px solid var(--well-border); }
+  .speedbar .fill { height: 100%; background: var(--success); }
+  .clockrow { display: flex; justify-content: space-between; align-items: baseline; font-family: var(--mono); font-size: 14px; color: var(--text-2); }
+  .clockrow .big { font-family: var(--mono); font-size: 34px; color: var(--text); font-variant-numeric: tabular-nums; }
+  .clockrow .big.red { color: var(--danger); }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { font-family: var(--display); font-weight: 700; font-size: 12px; letter-spacing: .14em; text-transform: uppercase; background: transparent; color: var(--text-2); border: 0; padding: 8px 12px; cursor: pointer; }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+  .seg button.blitz[aria-pressed="true"] { background: var(--blitz); }
+
+  /* ── Misc ───────────────────────────────────────────────── */
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px 28px; }
+  .signal { display: flex; gap: 12px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .signal .sw { flex: none; width: 22px; height: 22px; border-radius: 5px; margin-top: 3px; }
+  .signal b { display: block; font-family: var(--display); font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--text-2); margin-bottom: 2px; }
+  .signal span { font-size: 15px; color: var(--text-2); }
+  .tier { display: inline-block; font-family: var(--display); font-weight: 700; font-size: 11px; letter-spacing: .16em; padding: 3px 9px; border-radius: 999px; color: #0f1330; }
+  .script li { margin-bottom: 10px; }
+  .script li b { color: var(--gold); font-weight: 600; }
+  footer { padding: 30px 0 60px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); margin-top: 30px; }
+  footer .mono { font-family: var(--mono); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cell.hint { animation: none; }
+    .popup.show { animation: none; opacity: 1; }
+    .cell { transition: none; }
+  }
+</style>
+
+</head>
+<body>
+<header class="hero">
+  <div class="wrap">
+    <div class="eyebrow">Enclave · how to play</div>
+    <h1>Fence it in.<br><span class="gold">Claim the room.</span><br>Beat the clock.</h1>
+    <p class="lede prose">Enclave is a one-rule puzzle played on a 9×9 board against a draining clock. Every board below is live: click a cell to drop the piece and watch the rule work.</p>
+    <div class="hero-actions">
+      <a class="btn" href="/">Play Enclave ↗</a>
+      <div class="modes"><span class="c">CLASSIC · 60 s</span><span class="b">BLITZ · 35 s</span></div>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- 1 ─────────────────────────────────────────────────── -->
+  <section id="rule">
+    <div class="step"><span class="n">01</span><h2>The one rule</h2></div>
+    <p class="prose">Drag pieces onto the board. When a patch of empty cells is <strong>completely surrounded by blocks</strong>, you claim it: the room and its walls vanish, and you score the room's <strong>area squared, times ten</strong>. This 2×2 room is missing one wall. The gold cell is the game's own hint: one block there closes it.</p>
+
+    <div class="demo" id="demo-rule">
+      <div class="board-wrap"><div class="board" role="grid" aria-label="Close the room demo" tabindex="0"></div><div class="popup"></div></div>
+      <div class="console">
+        <div class="hud">
+          <div class="stat"><div class="l">Score</div><div class="v" data-score>0</div></div>
+          <div class="stat"><div class="l">Last claim</div><div class="v gold" data-turn>—</div></div>
+          <div class="stat"><div class="l">Time earned</div><div class="v small" data-time>—</div></div>
+        </div>
+        <div class="readout" data-readout>Place the <strong>DOT</strong> on the gold cell. Then watch which blocks disappear.</div>
+        <div class="hand"><span class="l">In hand</span><div class="mini" data-hand></div><div class="controls"><button class="btn small secondary" data-reset>Reset</button></div></div>
+        <div class="hintline">Mouse: hover to preview, click to drop. Touch: tap the cell. Keyboard: arrows move, Enter drops, R rotates.</div>
+      </div>
+    </div>
+
+    <p class="prose">Three things happened. The four empty cells scored <code>4² × 10 = 160</code>. The eight fence blocks were removed, which is how you keep the board from filling up. And the clock gained time: <code>1.8 s</code> for placing plus <code>2.0 + 0.8 × 4 = 5.2 s</code> for the claim, so <code>7.0 s</code> if you moved fast (more on speed in step 7).</p>
+    <p class="note prose">Walls only need to touch the room on its four sides. The diagonal corners are not part of the fence, they stay on the board, and you never need to build them.</p>
+  </section>
+
+  <!-- 2 ─────────────────────────────────────────────────── -->
+  <section id="edge">
+    <div class="step"><span class="n">02</span><h2>The edge is not a wall</h2></div>
+    <p class="prose">Empty cells that touch the board edge are always "outside", no matter how many blocks surround them. A room needs blocks on <em>all</em> sides, so anything hugging the edge can never be claimed. Build your fence at least one cell in.</p>
+
+    <div class="demo two">
+      <div class="pair">
+        <figure>
+          <div class="board-wrap"><div class="board locked" id="board-edge-open" role="img" aria-label="Two empty cells on the top edge walled on three sides, still open"></div></div>
+          <figcaption><strong style="color:var(--danger)">Not a room.</strong> Three sides walled, but the two cells sit on the top edge. No gold hint appears, and no block can ever close this.</figcaption>
+        </figure>
+        <figure>
+          <div class="board-wrap"><div class="board" id="board-edge-fix" role="grid" aria-label="Same fence one row lower, one gap left" tabindex="0"></div><div class="popup"></div></div>
+          <figcaption><strong style="color:var(--success)">One row in, it works.</strong> Six blocks for a 2-cell room. Drop the DOT on the gold cell to claim <code>2² × 10 = 40</code>.</figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 ─────────────────────────────────────────────────── -->
+  <section id="score">
+    <div class="step"><span class="n">03</span><h2>Points: area squared</h2></div>
+    <p class="prose">Squaring is the whole strategy. Four separate 1-cell rooms are worth 40 points. One 2×2 room is worth 160. A 3×3 is 810, and it takes only 12 blocks of fence. Pick a room size to see the maths the game runs on every claim.</p>
+
+    <div class="demo calc" id="calc">
+      <div>
+        <div class="roomviz" data-viz aria-hidden="true"></div>
+      </div>
+      <div class="console">
+        <div class="sizes" role="group" aria-label="Room size">
+          <button class="chip" data-size="1,1">1×1</button>
+          <button class="chip" data-size="1,2">1×2</button>
+          <button class="chip" data-size="2,2" aria-pressed="true">2×2</button>
+          <button class="chip" data-size="2,3">2×3</button>
+          <button class="chip" data-size="3,3">3×3</button>
+          <button class="chip" data-size="3,4">3×4</button>
+          <button class="chip" data-size="4,4">4×4</button>
+          <button class="chip" data-size="5,5">5×5</button>
+        </div>
+        <div class="hud">
+          <div class="stat"><div class="l">Area</div><div class="v" data-area>4</div></div>
+          <div class="stat"><div class="l">Points</div><div class="v gold" data-points>160</div></div>
+          <div class="stat"><div class="l">Fence blocks</div><div class="v" data-fence>8</div></div>
+          <div class="stat"><div class="l">Points per block</div><div class="v" data-ppb>20</div></div>
+        </div>
+        <div class="readout" data-readout><strong>2×2 room:</strong> 4 cells → <span class="formula">4² × 10 = 160 points</span>Every block you place is also worth 1 point, added on top.</div>
+      </div>
+    </div>
+
+    <h3>Same fence budget, very different scores</h3>
+    <div class="bars" aria-label="Points by room size">
+      <div class="bar"><span>1×1 · 4 blk</span><div class="track"><div class="fill" style="width:0.4%"></div></div><span class="val">10</span></div>
+      <div class="bar"><span>2×2 · 8 blk</span><div class="track"><div class="fill" style="width:6.25%"></div></div><span class="val">160</span></div>
+      <div class="bar"><span>3×3 · 12 blk</span><div class="track"><div class="fill" style="width:31.6%"></div></div><span class="val">810</span></div>
+      <div class="bar"><span>4×4 · 16 blk</span><div class="track"><div class="fill" style="width:100%"></div></div><span class="val">2,560</span></div>
+    </div>
+    <p class="note prose" style="margin-top:14px">Sixteen blocks spent on four 1×1 rooms score 40. The same sixteen blocks around one 4×4 room score 2,560. Rooms of 9 cells or more get the <strong>BIG ROOM</strong> label; 16 or more, <strong>MASSIVE ROOM</strong>.</p>
+  </section>
+
+  <!-- 4 ─────────────────────────────────────────────────── -->
+  <section id="multi">
+    <div class="step"><span class="n">04</span><h2>Two rooms, one piece</h2></div>
+    <p class="prose">When a single placement closes several rooms at once, the whole claim is multiplied by <code>1 + 0.5 × (rooms − 1)</code>: ×1.5 for two rooms, ×2 for three. Here two 2×2 rooms each have a gap, and the gaps sit side by side. Both are gold. Lay the DOMINO across both.</p>
+
+    <div class="demo" id="demo-multi">
+      <div class="board-wrap"><div class="board" role="grid" aria-label="Double close demo" tabindex="0"></div><div class="popup"></div></div>
+      <div class="console">
+        <div class="hud">
+          <div class="stat"><div class="l">Score</div><div class="v" data-score>0</div></div>
+          <div class="stat"><div class="l">Last claim</div><div class="v gold" data-turn>—</div></div>
+          <div class="stat"><div class="l">Rooms closed</div><div class="v" data-rooms>—</div></div>
+        </div>
+        <div class="readout" data-readout>The piece anchors on the cell you point at (its top-left block). Press <span class="k">R</span> or Rotate if it lands the wrong way.</div>
+        <div class="hand"><span class="l">In hand</span><div class="mini" data-hand></div><div class="controls"><button class="btn small secondary" data-rotate>Rotate</button><button class="btn small secondary" data-reset>Reset</button></div></div>
+        <div class="hintline">Try it the other way too: close one gap with a single block, then the other. Two separate 160s instead of one 480.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5 ─────────────────────────────────────────────────── -->
+  <section id="streak">
+    <div class="step"><span class="n">05</span><h2>Streaks</h2></div>
+    <p class="prose">Claims on consecutive placements build a streak, and each claim is multiplied by <code>1 + 0.25 × streak</code>, capped at ×3. The streak counts the claims <em>before</em> this one, so the first claim is ×1, the second ×1.25, the third ×1.5, and the cap arrives on the ninth. In Classic the streak survives two non-claiming placements and dies on the third; in Blitz it dies on the second. The green pips count down to that reset.</p>
+
+    <div class="demo" id="demo-streak">
+      <div class="board-wrap"><div class="board" role="grid" aria-label="Streak demo" tabindex="0"></div><div class="popup"></div></div>
+      <div class="console">
+        <div class="hud">
+          <div class="stat"><div class="l">Score</div><div class="v" data-score>0</div></div>
+          <div class="stat"><div class="l">Streak</div><div class="v" data-streak>0<span class="pips" data-pips></span></div></div>
+          <div class="stat"><div class="l">Multiplier</div><div class="v gold" data-mult>×1.00</div></div>
+        </div>
+        <div class="readout" data-readout>Three rooms, three gold cells, an endless supply of DOTs. Close them one after another and watch the multiplier climb. Drop a DOT anywhere else to see the pips burn down.</div>
+        <div class="hand"><span class="l">In hand</span><div class="mini" data-hand></div><div class="controls"><button class="btn small secondary" data-reset>Reset</button></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6 ─────────────────────────────────────────────────── -->
+  <section id="shared">
+    <div class="step"><span class="n">06</span><h2>Shared walls</h2></div>
+    <p class="prose">Claiming a room removes <em>every</em> block in its fence, including a wall it shares with the room next door. Close the left room here and the right one loses its wall and falls open again. Closing order matters: with shared walls, aim to line the gaps up and close both with one piece, as in step 4.</p>
+
+    <div class="demo" id="demo-shared">
+      <div class="board-wrap"><div class="board" role="grid" aria-label="Shared wall demo" tabindex="0"></div><div class="popup"></div></div>
+      <div class="console">
+        <div class="hud">
+          <div class="stat"><div class="l">Score</div><div class="v" data-score>0</div></div>
+          <div class="stat"><div class="l">Last claim</div><div class="v gold" data-turn>—</div></div>
+          <div class="stat"><div class="l">Closable now</div><div class="v" data-open>—</div></div>
+        </div>
+        <div class="readout" data-readout>Two 2×2 rooms share the middle column. Each has one gap on its outer side. Close either one and look at the other.</div>
+        <div class="hand"><span class="l">In hand</span><div class="mini" data-hand></div><div class="controls"><button class="btn small secondary" data-reset>Reset</button></div></div>
+        <div class="hintline">After the first claim, the survivor needs two new blocks before a gold hint can appear again.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 7 ─────────────────────────────────────────────────── -->
+  <section id="clock">
+    <div class="step"><span class="n">07</span><h2>The clock</h2></div>
+    <p class="prose">The time bank drains continuously and only placements refill it. Every placement adds time, every claim adds more (bigger rooms add more, up to a cap), and the whole bonus is scaled by how fast you moved: <strong>1.0× immediately after your last placement, sliding down to 0.45× over 8 seconds in Classic</strong>. Hesitating is expensive. The drain itself also speeds up the longer you survive.</p>
+
+    <div class="demo stack" id="clocksim">
+      <div class="clock">
+        <div class="clockrow">
+          <span class="big" data-clock>60.0</span>
+          <div class="seg" role="group" aria-label="Mode"><button data-mode="classic" aria-pressed="true">Classic</button><button data-mode="blitz" class="blitz" aria-pressed="false">Blitz</button></div>
+        </div>
+        <div class="timerbar" aria-hidden="true"><div class="fill" data-fill style="width:66.7%"></div><div class="tick" style="left:25%"></div><div class="tick" style="left:50%"></div><div class="tick" style="left:75%"></div></div>
+        <div class="clockrow"><span>Speed bonus <span data-speedpct>100%</span></span><span>Drain <span data-drain>1.00×</span> · played <span data-elapsed>0 s</span></span></div>
+        <div class="speedbar" aria-hidden="true"><div class="fill" data-speedfill style="width:100%"></div></div>
+        <div class="controls">
+          <button class="btn small" data-place>Place a piece</button>
+          <button class="btn small" data-claim>Close a 2×2</button>
+          <button class="btn small secondary" data-restart>Restart</button>
+        </div>
+        <div class="readout" data-readout>Press the buttons at different speeds. Wait eight seconds between presses and the same move earns less than half the time.</div>
+      </div>
+    </div>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Clock setting</th><th class="num">Classic</th><th class="num">Blitz</th></tr></thead>
+        <tbody>
+          <tr><td>Starting time</td><td class="num">60 s</td><td class="num">35 s</td></tr>
+          <tr><td>Time bank cap</td><td class="num">90 s</td><td class="num">50 s</td></tr>
+          <tr><td>Time per placement</td><td class="num">1.8 s</td><td class="num">1.2 s</td></tr>
+          <tr><td>Time per claim</td><td class="num">2.0 + 0.8 × area, max 16 s</td><td class="num">1.5 + 0.6 × area, max 10 s</td></tr>
+          <tr><td>Speed window</td><td class="num">8 s</td><td class="num">5 s</td></tr>
+          <tr><td>Slowest bonus fraction</td><td class="num">0.45×</td><td class="num">0.30×</td></tr>
+          <tr><td>Drain acceleration</td><td class="num">+0.16× per minute, max 1.7×</td><td class="num">+0.30× per minute, max 2.0×</td></tr>
+          <tr><td>Streak survives</td><td class="num">2 misses</td><td class="num">1 miss</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note prose">Two ways to lose. <strong>TIME'S UP</strong> when the bank hits zero. <strong>NO ROOM LEFT</strong> when the piece in hand fits nowhere in any rotation and swapping with the hold slot cannot rescue you. Claiming rooms clears space, so a player who keeps closing rooms rarely sees the second one.</p>
+  </section>
+
+  <!-- 8 ─────────────────────────────────────────────────── -->
+  <section id="controls">
+    <div class="step"><span class="n">08</span><h2>Controls and signals</h2></div>
+    <div class="grid2">
+      <div>
+        <h3>Controls</h3>
+        <ul>
+          <li><strong>Drag</strong> the piece onto the board. A green ghost means the drop is valid, red means it is not. The piece floats above your finger so your thumb never hides it.</li>
+          <li><strong>Rotate</strong>: tap the piece, tap ROTATE, or press <span class="k">R</span>. Every piece rotates clockwise; fence-building is about orientation.</li>
+          <li><strong>Hold</strong>: tap the HOLD slot or press <span class="k">H</span> to park the piece for later and take the next one. Once per piece.</li>
+          <li><strong>Next</strong>: two upcoming pieces are always visible. Plan which gap each one closes.</li>
+          <li><span class="k">Esc</span> or <span class="k">P</span> pauses. The game also pauses itself when you switch tabs.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>What the board is telling you</h3>
+        <div class="signal"><div class="sw" style="background:var(--gold);box-shadow:0 0 10px rgba(251,191,36,.6)"></div><div><b>Gold cell</b><span>A single block here closes a room right now. The beginner's map to the board.</span></div></div>
+        <div class="signal"><div class="sw" style="background:var(--p-purple);opacity:.35"></div><div><b>Dimmed piece</b><span>The piece in hand fits nowhere in its current rotation. Rotate or hold.</span></div></div>
+        <div class="signal"><div class="sw" style="background:var(--warning)"></div><div><b>Amber border</b><span>Under 20 seconds left.</span></div></div>
+        <div class="signal"><div class="sw" style="background:var(--danger)"></div><div><b>Red border</b><span>Under 10 seconds. The music muffles, ticks get urgent, and the phone pulses under five.</span></div></div>
+        <div class="signal"><div class="sw" style="background:var(--blitz);opacity:.8"></div><div><b>Orange tint</b><span>The board is more than 60% full. Close something.</span></div></div>
+      </div>
+    </div>
+    <h3>Pieces</h3>
+    <p class="prose">Pieces are dealt from a shuffled bag so straight lines and corners, the fence material, always come back around. Per bag: DOT ×1, DOMINO ×3, BAR 3 ×3, CORNER ×3, BAR 4 ×2, L ×2, J ×2, and one each of T, S, Z, SQUARE, BAR 5, BIG L and U.</p>
+    <div class="hand" data-pieceshelf style="gap:18px;margin-bottom:10px"></div>
+  </section>
+
+  <!-- 9 ─────────────────────────────────────────────────── -->
+  <section id="tips">
+    <div class="step"><span class="n">09</span><h2>How to score more</h2></div>
+    <ol class="prose">
+      <li><strong>Build one big room, not many small ones.</strong> Area squared means a 3×3 (810) beats twenty 1×1s (200) and costs fewer blocks.</li>
+      <li><strong>Skip the corners.</strong> Only the cells directly beside the room are the fence. Corner stones are wasted blocks.</li>
+      <li><strong>Stay off the edge.</strong> Rooms touching the border never close. Fence one cell in and use the edge row for your walls.</li>
+      <li><strong>Line up the gaps.</strong> Leave the last gaps of two rooms next to each other and close both with one piece for ×1.5.</li>
+      <li><strong>Keep the streak alive.</strong> One claim every three placements keeps the multiplier growing; nine claims in a row reach the ×3 cap.</li>
+      <li><strong>Move fast.</strong> The same placement earns 1.8 s now and 0.8 s after eight seconds of thinking. Decide while the piece is still in the queue.</li>
+      <li><strong>Hold the closer.</strong> If the perfect piece arrives early, park it in HOLD and finish the fence first.</li>
+      <li><strong>Close before you flood.</strong> Every claim removes its fence. If the board tints orange, cash in a room to make space.</li>
+    </ol>
+    <h3>Tiers</h3>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Tier</th><th class="num">Classic</th><th class="num">Blitz</th></tr></thead>
+        <tbody>
+          <tr><td><span class="tier" style="background:#3b82f6;color:#fff">SETTLER</span></td><td class="num">0</td><td class="num">0</td></tr>
+          <tr><td><span class="tier" style="background:#10b981">BUILDER</span></td><td class="num">1,500</td><td class="num">800</td></tr>
+          <tr><td><span class="tier" style="background:#fbbf24">ARCHITECT</span></td><td class="num">4,000</td><td class="num">2,200</td></tr>
+          <tr><td><span class="tier" style="background:#f59e0b">WARDEN</span></td><td class="num">9,000</td><td class="num">5,000</td></tr>
+          <tr><td><span class="tier" style="background:#ef4444;color:#fff">SOVEREIGN</span></td><td class="num">18,000</td><td class="num">10,000</td></tr>
+          <tr><td><span class="tier" style="background:#d946ef;color:#fff">LEGEND</span></td><td class="num">35,000</td><td class="num">20,000</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 10 ────────────────────────────────────────────────── -->
+  <section id="demo">
+    <div class="step"><span class="n">10</span><h2>The 60-second demo</h2></div>
+    <p class="prose">Showing the game to someone? This order teaches the rule, the payoff and the pressure in a minute.</p>
+    <ol class="script prose">
+      <li><b>Menu.</b> Point at the logo assembling itself around a gold room. Pick Classic, press PLAY, dismiss the three-step tutorial.</li>
+      <li><b>Controls.</b> Tap the piece to rotate it. Tap the HOLD slot to park it.</li>
+      <li><b>First claim.</b> Build a small ring with two corners and two bars, leaving one gap. Point at the gold cell. Drop the closer: a 2×2 room, "+160", sparkles, a shockwave, and time landing on the clock.</li>
+      <li><b>Big room.</b> Build a 12-block ring for a 3×3 room: "+810", the BIG ROOM label, a harder shake and a flash.</li>
+      <li><b>Double close.</b> Set up two small rooms with their gaps on the same row and close both with one bar: "2 ROOMS ×1.5".</li>
+      <li><b>Pressure.</b> Let the clock fall under 10 seconds: red glow, muffled music, urgent ticks. Then the game-over screen with stats, the leaderboard name entry and SHARE.</li>
+    </ol>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    Rules and numbers taken from the Enclave source, build <span class="mono">v0.1.0</span>. Play at <a href="https://enclave-lovat.vercel.app">enclave-lovat.vercel.app</a> · source on <a href="https://github.com/nunpdsantos/enclave">GitHub</a>.
+  </div>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+  var N = 9;
+  var COLORS = ['#4b7bec', '#e8913a', '#d65db1', '#8854d0', '#d64545', '#20bf6b', '#45aaf2', '#f7b731'];
+  var SHAPES = {
+    dot: [[1]], domino: [[1, 1]], bar3: [[1, 1, 1]], corner: [[1, 0], [1, 1]], bar4: [[1, 1, 1, 1]],
+    l: [[1, 0, 0], [1, 1, 1]], j: [[0, 0, 1], [1, 1, 1]], t: [[0, 1, 0], [1, 1, 1]], s: [[0, 1, 1], [1, 1, 0]],
+    z: [[1, 1, 0], [0, 1, 1]], square: [[1, 1], [1, 1]], bar5: [[1, 1, 1, 1, 1]], bigl: [[1, 0, 0], [1, 0, 0], [1, 1, 1]], u: [[1, 0, 1], [1, 1, 1]]
+  };
+  var NAMES = { dot: 'DOT', domino: 'DOMINO', bar3: 'BAR 3', corner: 'CORNER', bar4: 'BAR 4', l: 'L', j: 'J', t: 'T', s: 'S', z: 'Z', square: 'SQUARE', bar5: 'BAR 5', bigl: 'BIG L', u: 'U' };
+  var SCORING = { perBlock: 1, perAreaSq: 10, multiClose: 0.5, streakInc: 0.25, streakCap: 3, streakWindow: 3 };
+  var TIMER = {
+    classic: { start: 60, max: 90, place: 1.8, claimBase: 2.0, claimPerCell: 0.8, claimCap: 16, speedWindow: 8, minSpeed: 0.45, drainAccel: 0.16, drainCap: 1.7 },
+    blitz: { start: 35, max: 50, place: 1.2, claimBase: 1.5, claimPerCell: 0.6, claimCap: 10, speedWindow: 5, minSpeed: 0.30, drainAccel: 0.30, drainCap: 2.0 }
+  };
+  var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function rotate90(s) {
+    var rows = s.length, cols = s[0].length, out = [];
+    for (var c = 0; c < cols; c++) { var row = []; for (var r = rows - 1; r >= 0; r--) row.push(s[r][c]); out.push(row); }
+    return out;
+  }
+  function rotations(s) {
+    var seen = {}, out = [], cur = s;
+    for (var i = 0; i < 4; i++) { var k = JSON.stringify(cur); if (!seen[k]) { seen[k] = 1; out.push(cur); } cur = rotate90(cur); }
+    return out;
+  }
+  function inb(r, c) { return r >= 0 && r < N && c >= 0 && c < N; }
+
+  // Enclosure detection: flood from every empty border cell; unreached empties are rooms.
+  function findRooms(grid) {
+    var outside = [], visited = [], r, c;
+    for (r = 0; r < N; r++) { outside.push([]); visited.push([]); for (c = 0; c < N; c++) { outside[r].push(false); visited[r].push(false); } }
+    var q = [];
+    for (r = 0; r < N; r++) for (c = 0; c < N; c++) {
+      if ((r === 0 || c === 0 || r === N - 1 || c === N - 1) && !grid[r][c]) { outside[r][c] = true; q.push([r, c]); }
+    }
+    var D = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    while (q.length) {
+      var p = q.shift();
+      for (var i = 0; i < 4; i++) {
+        var nr = p[0] + D[i][0], nc = p[1] + D[i][1];
+        if (inb(nr, nc) && !grid[nr][nc] && !outside[nr][nc]) { outside[nr][nc] = true; q.push([nr, nc]); }
+      }
+    }
+    var rooms = [];
+    for (r = 0; r < N; r++) for (c = 0; c < N; c++) {
+      if (grid[r][c] || outside[r][c] || visited[r][c]) continue;
+      var cells = [], fence = {}, fenceList = [], stack = [[r, c]];
+      visited[r][c] = true;
+      while (stack.length) {
+        var cur = stack.pop(); cells.push(cur);
+        for (var j = 0; j < 4; j++) {
+          var ar = cur[0] + D[j][0], ac = cur[1] + D[j][1];
+          if (!inb(ar, ac)) continue;
+          if (grid[ar][ac]) { var key = ar + ',' + ac; if (!fence[key]) { fence[key] = 1; fenceList.push([ar, ac]); } }
+          else if (!visited[ar][ac]) { visited[ar][ac] = true; stack.push([ar, ac]); }
+        }
+      }
+      rooms.push({ cells: cells, fence: fenceList, area: cells.length });
+    }
+    return rooms;
+  }
+  function closingCells(grid) {
+    var out = [], base = findRooms(grid).length;
+    for (var r = 0; r < N; r++) for (var c = 0; c < N; c++) {
+      if (grid[r][c]) continue;
+      grid[r][c] = '#fff';
+      var n = findRooms(grid).length;
+      grid[r][c] = null;
+      if (n > base) out.push([r, c]);
+    }
+    return out;
+  }
+  function fmt(n) { return n.toLocaleString('en-GB'); }
+
+  // ── Demo board ───────────────────────────────────────────
+  function Demo(root, opts) {
+    this.root = root; this.opts = opts;
+    this.boardEl = root.querySelector('.board');
+    this.popupEl = root.querySelector('.popup');
+    this.handEl = root.querySelector('[data-hand]');
+    this.readoutEl = root.querySelector('[data-readout]');
+    this.cells = [];
+    this.buildCells();
+    this.reset();
+    this.bind();
+  }
+  Demo.prototype.buildCells = function () {
+    this.boardEl.innerHTML = '';
+    for (var r = 0; r < N; r++) for (var c = 0; c < N; c++) {
+      var d = document.createElement('div'); d.className = 'cell'; d.setAttribute('role', 'gridcell'); d.dataset.r = r; d.dataset.c = c;
+      this.boardEl.appendChild(d); this.cells.push(d);
+    }
+  };
+  Demo.prototype.reset = function () {
+    var o = this.opts;
+    this.grid = []; for (var r = 0; r < N; r++) { this.grid.push([]); for (var c = 0; c < N; c++) this.grid[r].push(null); }
+    for (var i = 0; i < o.blocks.length; i++) { var b = o.blocks[i]; this.grid[b[0]][b[1]] = COLORS[b[2] % COLORS.length]; }
+    this.handKey = o.hand; this.rots = rotations(SHAPES[o.hand]); this.rot = o.rotation || 0;
+    this.handColor = COLORS[o.handColor != null ? o.handColor : 6];
+    this.score = 0; this.streak = 0; this.movesSince = 0; this.busy = false; this.done = false;
+    this.cursor = o.cursor ? o.cursor.slice() : [4, 4]; this.hover = null;
+    this.hints = closingCells(this.grid);
+    this.setReadout(o.intro);
+    this.setStat('score', '0'); this.setStat('turn', '—'); this.setStat('time', '—'); this.setStat('rooms', '—'); this.setStat('open', '—');
+    this.setStat('streak', '0'); this.setStat('mult', '×1.00');
+    this.render(); this.renderHand(); this.updateOpenCount();
+    if (o.afterReset) o.afterReset(this);
+  };
+  Demo.prototype.shape = function () { return this.rots[this.rot % this.rots.length]; };
+  Demo.prototype.setStat = function (k, v) { var el = this.root.querySelector('[data-' + k + ']'); if (el) { if (k === 'streak') { el.firstChild.nodeValue = v; } else el.textContent = v; } };
+  Demo.prototype.setReadout = function (html) { if (this.readoutEl && html != null) this.readoutEl.innerHTML = html; };
+  Demo.prototype.footprint = function (r, c) {
+    var s = this.shape(), out = [];
+    for (var i = 0; i < s.length; i++) for (var j = 0; j < s[i].length; j++) if (s[i][j]) out.push([r + i, c + j]);
+    return out;
+  };
+  Demo.prototype.canPlace = function (fp) {
+    for (var i = 0; i < fp.length; i++) { var p = fp[i]; if (!inb(p[0], p[1]) || this.grid[p[0]][p[1]]) return false; }
+    return true;
+  };
+  Demo.prototype.render = function () {
+    var ghost = {}, ghostOk = false;
+    if (this.hover && !this.busy && !this.done) {
+      var fp = this.footprint(this.hover[0], this.hover[1]); ghostOk = this.canPlace(fp);
+      for (var g = 0; g < fp.length; g++) ghost[fp[g][0] + ',' + fp[g][1]] = true;
+    }
+    var hintSet = {}; for (var h = 0; h < this.hints.length; h++) hintSet[this.hints[h][0] + ',' + this.hints[h][1]] = true;
+    for (var r = 0; r < N; r++) for (var c = 0; c < N; c++) {
+      var el = this.cells[r * N + c], v = this.grid[r][c], key = r + ',' + c;
+      el.className = 'cell';
+      el.classList.remove('room', 'dissolve');
+      if (v) { el.classList.add('block'); el.style.setProperty('--pc', v); } else { el.style.removeProperty('--pc'); }
+      if (!v && hintSet[key] && !this.opts.noHints) el.classList.add('hint');
+      if (ghost[key]) { if (v) el.classList.add('ghost-bad'); else el.classList.add(ghostOk ? 'ghost-ok' : 'ghost-bad'); }
+      if (this.opts.openMarks && !v && this.opts.openMarks[key]) el.classList.add('open-mark');
+      if (this.focused && this.cursor[0] === r && this.cursor[1] === c && !ghost[key]) el.classList.add('cursor');
+    }
+  };
+  Demo.prototype.renderHand = function () {
+    if (!this.handEl) return;
+    var s = this.shape(); this.handEl.innerHTML = ''; this.handEl.style.gridTemplateColumns = 'repeat(' + s[0].length + ', 16px)';
+    for (var i = 0; i < s.length; i++) for (var j = 0; j < s[i].length; j++) {
+      var d = document.createElement('div'); d.className = 'mc' + (s[i][j] ? ' on' : ''); if (s[i][j]) d.style.setProperty('--pc', this.handColor); this.handEl.appendChild(d);
+    }
+    this.handEl.setAttribute('aria-label', NAMES[this.handKey] + (this.rots.length > 1 ? ', rotation ' + (this.rot % this.rots.length + 1) : ''));
+  };
+  Demo.prototype.updateOpenCount = function () {
+    var el = this.root.querySelector('[data-open]'); if (!el) return;
+    el.textContent = String(this.hints.length);
+  };
+  Demo.prototype.bind = function () {
+    var self = this, b = this.boardEl;
+    function cellFromEvent(e) { var t = e.target.closest ? e.target.closest('.cell') : null; if (!t || !b.contains(t)) return null; return [+t.dataset.r, +t.dataset.c]; }
+    b.addEventListener('mousemove', function (e) { var p = cellFromEvent(e); if (p && (!self.hover || p[0] !== self.hover[0] || p[1] !== self.hover[1])) { self.hover = p; self.cursor = p.slice(); self.render(); } });
+    b.addEventListener('mouseleave', function () { self.hover = null; self.render(); });
+    b.addEventListener('click', function (e) { var p = cellFromEvent(e); if (p) self.tryPlace(p[0], p[1]); });
+    b.addEventListener('focus', function () { self.focused = true; self.render(); });
+    b.addEventListener('blur', function () { self.focused = false; self.render(); });
+    b.addEventListener('keydown', function (e) {
+      var k = e.key, cur = self.cursor;
+      if (k === 'ArrowUp') cur[0] = Math.max(0, cur[0] - 1); else if (k === 'ArrowDown') cur[0] = Math.min(N - 1, cur[0] + 1);
+      else if (k === 'ArrowLeft') cur[1] = Math.max(0, cur[1] - 1); else if (k === 'ArrowRight') cur[1] = Math.min(N - 1, cur[1] + 1);
+      else if (k === 'Enter' || k === ' ') { self.tryPlace(cur[0], cur[1]); e.preventDefault(); return; }
+      else if (k === 'r' || k === 'R') { self.rotate(); e.preventDefault(); return; }
+      else return;
+      e.preventDefault(); self.hover = cur.slice(); self.render();
+    });
+    var rb = this.root.querySelector('[data-rotate]'); if (rb) rb.addEventListener('click', function () { self.rotate(); });
+    var rs = this.root.querySelector('[data-reset]'); if (rs) rs.addEventListener('click', function () { self.reset(); });
+  };
+  Demo.prototype.rotate = function () { if (this.rots.length < 2) return; this.rot = (this.rot + 1) % this.rots.length; this.renderHand(); this.render(); };
+  Demo.prototype.popup = function (main, sub, red) {
+    var p = this.popupEl; if (!p) return;
+    p.className = 'popup' + (red ? ' red' : ''); p.innerHTML = main + (sub ? '<span class="sub">' + sub + '</span>' : '');
+    void p.offsetWidth; p.classList.add('show');
+  };
+  Demo.prototype.tryPlace = function (r, c) {
+    if (this.busy || this.done) return;
+    var fp = this.footprint(r, c);
+    if (!this.canPlace(fp)) { this.setReadout('That drop is <strong style="color:var(--danger)">invalid</strong>: every block of the piece must land on an empty cell inside the board. In the game the piece hops back to your hand with a buzz.'); return; }
+    var self = this, o = this.opts;
+    for (var i = 0; i < fp.length; i++) this.grid[fp[i][0]][fp[i][1]] = this.handColor;
+    this.score += fp.length * SCORING.perBlock;
+    var rooms = findRooms(this.grid);
+    var claimed = rooms.length > 0;
+    // Streak bookkeeping before scoring, as in the engine.
+    var lost = false;
+    if (claimed) { this.movesSince = 0; }
+    else { this.movesSince++; if (this.movesSince >= SCORING.streakWindow && this.streak > 0) { lost = this.streak >= 3; this.streak = 0; } }
+    var summary = { placed: fp.length, claimed: claimed, rooms: rooms, lost: lost, base: 0, multi: 1, sm: 1, turn: 0, time: 0 };
+    if (claimed) {
+      var base = 0, totalArea = 0;
+      for (var k = 0; k < rooms.length; k++) { base += rooms[k].area * rooms[k].area * SCORING.perAreaSq; totalArea += rooms[k].area; }
+      var multi = 1 + SCORING.multiClose * (rooms.length - 1);
+      var sm = Math.min(1 + this.streak * SCORING.streakInc, SCORING.streakCap);
+      var turn = Math.floor(base * multi * sm);
+      this.score += turn; this.streak++;
+      summary.base = base; summary.multi = multi; summary.sm = sm; summary.turn = turn; summary.totalArea = totalArea;
+      var t = TIMER.classic; summary.time = Math.round((t.place + Math.min(t.claimCap, t.claimBase + t.claimPerCell * totalArea)) * 10) / 10;
+    } else { summary.time = TIMER.classic.place; }
+    this.hints = [];
+    this.render();
+    if (claimed) {
+      this.busy = true;
+      var roomCells = [], fenceCells = [];
+      for (var q = 0; q < rooms.length; q++) { roomCells = roomCells.concat(rooms[q].cells); fenceCells = fenceCells.concat(rooms[q].fence); }
+      for (var a = 0; a < roomCells.length; a++) this.cells[roomCells[a][0] * N + roomCells[a][1]].classList.add('room');
+      var delay = reduced ? 0 : 420;
+      setTimeout(function () {
+        for (var f = 0; f < fenceCells.length; f++) self.cells[fenceCells[f][0] * N + fenceCells[f][1]].classList.add('dissolve');
+        setTimeout(function () {
+          for (var f2 = 0; f2 < fenceCells.length; f2++) self.grid[fenceCells[f2][0]][fenceCells[f2][1]] = null;
+          self.busy = false; self.afterMove(summary);
+        }, reduced ? 0 : 480);
+      }, delay);
+      var label = rooms.length > 1 ? rooms.length + ' ROOMS ×' + summary.multi.toFixed(1) : (summary.totalArea >= 16 ? 'MASSIVE ROOM' : summary.totalArea >= 9 ? 'BIG ROOM' : rooms[0].area + ' CELL' + (rooms[0].area > 1 ? 'S' : ''));
+      if (summary.sm > 1) label += ' · STREAK ×' + summary.sm.toFixed(2).replace(/0$/, '');
+      this.popup('+' + fmt(summary.turn), label, false);
+    } else {
+      if (lost) this.popup('STREAK LOST', '', true);
+      this.afterMove(summary);
+    }
+  };
+  Demo.prototype.afterMove = function (s) {
+    var o = this.opts;
+    if (!o.infinite && s.claimed) { this.done = true; }
+    this.hints = this.done ? [] : closingCells(this.grid);
+    this.render(); this.updateOpenCount();
+    this.setStat('score', fmt(this.score));
+    if (s.claimed) { this.setStat('turn', '+' + fmt(s.turn)); this.setStat('rooms', String(s.rooms.length)); this.setStat('time', '+' + s.time.toFixed(1) + ' s'); }
+    else { this.setStat('time', '+' + s.time.toFixed(1) + ' s'); }
+    this.setStat('streak', String(this.streak));
+    this.setStat('mult', '×' + Math.min(1 + this.streak * SCORING.streakInc, SCORING.streakCap).toFixed(2));
+    var pips = this.root.querySelector('[data-pips]');
+    if (pips) { pips.innerHTML = ''; var safe = this.streak > 0 ? Math.max(0, SCORING.streakWindow - this.movesSince) : 0; for (var i = 0; i < SCORING.streakWindow; i++) { var d = document.createElement('span'); d.className = 'pip' + (i < safe ? ' on' : ''); pips.appendChild(d); } }
+    if (o.onMove) o.onMove(this, s);
+    if (this.done && o.outro) this.setReadout(o.outro(s));
+    else if (!o.infinite && !s.claimed && this.readoutEl) this.setReadout('<strong>No room closed.</strong> +1 for the block, nothing else. The gold cell is still waiting, or press Reset.');
+  };
+
+  // ── Static board (edge illustration) ─────────────────────
+  function staticBoard(el, blocks, marks) {
+    el.innerHTML = '';
+    for (var r = 0; r < N; r++) for (var c = 0; c < N; c++) {
+      var d = document.createElement('div'); d.className = 'cell'; el.appendChild(d);
+    }
+    for (var i = 0; i < blocks.length; i++) { var b = blocks[i], cell = el.children[b[0] * N + b[1]]; cell.classList.add('block'); cell.style.setProperty('--pc', COLORS[b[2] % COLORS.length]); }
+    if (marks) for (var m = 0; m < marks.length; m++) el.children[marks[m][0] * N + marks[m][1]].classList.add('open-mark');
+  }
+
+  // ── Demo 1: the rule ─────────────────────────────────────
+  new Demo(document.getElementById('demo-rule'), {
+    blocks: [[2, 3, 0], [2, 4, 1], [5, 3, 5], [5, 4, 2], [3, 2, 3], [4, 2, 4], [3, 5, 7]],
+    hand: 'dot', handColor: 6,
+    intro: 'Place the <strong>DOT</strong> on the gold cell. Then watch which blocks disappear.',
+    outro: function (s) {
+      if (!s.claimed) return '<strong>No room closed.</strong> The gold cell is still waiting.';
+      return '<strong>Claimed.</strong> The room had ' + s.totalArea + ' cells, so it scored <span class="formula">' + s.totalArea + '² × 10 = ' + fmt(s.base) + ' points</span>plus 1 for the block you placed. All ' + s.rooms[0].fence.length + ' fence blocks were removed, and the clock gained ' + s.time.toFixed(1) + ' s at full speed.';
+    }
+  });
+
+  // ── Demo 2: edge ─────────────────────────────────────────
+  staticBoard(document.getElementById('board-edge-open'), [[0, 2, 0], [0, 5, 1], [1, 3, 5], [1, 4, 2]], [[0, 3], [0, 4]]);
+  new Demo(document.querySelector('#board-edge-fix').closest('figure'), {
+    blocks: [[0, 3, 0], [0, 4, 1], [1, 2, 5], [2, 3, 2], [2, 4, 3]],
+    hand: 'dot', handColor: 6, noReadout: true, intro: null
+  });
+
+  // ── Demo 4: double close ─────────────────────────────────
+  new Demo(document.getElementById('demo-multi'), {
+    blocks: [
+      [2, 1, 0], [2, 2, 1], [5, 1, 5], [5, 2, 2], [3, 0, 3], [4, 0, 4], [3, 3, 7],
+      [2, 5, 1], [2, 6, 0], [5, 5, 2], [5, 6, 5], [3, 7, 4], [4, 7, 3], [3, 4, 0]
+    ],
+    hand: 'domino', handColor: 6, cursor: [4, 3],
+    intro: 'The piece anchors on the cell you point at (its top-left block). Press <span class="k">R</span> or Rotate if it lands the wrong way.',
+    outro: function (s) {
+      if (s.rooms.length > 1) return '<strong>Double close.</strong> Two rooms of 4 cells: <span class="formula">(160 + 160) × 1.5 = ' + fmt(s.turn) + ' points</span>One placement, one and a half times the points, and both fences cleared at once.';
+      if (!s.claimed) return '<strong>No room closed.</strong> Cover both gold cells with the domino: anchor it on the left gold cell, lying flat.';
+      return '<strong>Single close.</strong> One room scored <span class="formula">' + s.totalArea + '² × 10 = ' + fmt(s.base) + '</span>The other gap is still open. Reset and cover both gold cells with the domino to see the ×1.5.';
+    }
+  });
+
+  // ── Demo 5: streak ───────────────────────────────────────
+  new Demo(document.getElementById('demo-streak'), {
+    blocks: [
+      [0, 1, 0], [0, 2, 1], [3, 1, 5], [3, 2, 2], [1, 0, 3], [2, 0, 4], [1, 3, 7],
+      [0, 5, 1], [0, 6, 0], [3, 5, 2], [3, 6, 5], [1, 4, 4], [2, 4, 3], [1, 7, 0],
+      [4, 3, 2], [4, 4, 5], [7, 3, 0], [7, 4, 1], [5, 2, 7], [6, 2, 3], [5, 5, 4]
+    ],
+    hand: 'dot', handColor: 6, infinite: true, cursor: [2, 3],
+    intro: 'Three rooms, three gold cells, an endless supply of DOTs. Close them one after another and watch the multiplier climb. Drop a DOT anywhere else to see the pips burn down.',
+    onMove: function (d, s) {
+      if (s.claimed) {
+        d.setReadout('<strong>Claim ' + d.streak + '.</strong> Multiplier for this one was ×' + s.sm.toFixed(2) + ': <span class="formula">' + fmt(s.base) + ' × ' + s.sm.toFixed(2) + ' = ' + fmt(s.turn) + '</span>The next claim pays ×' + Math.min(1 + d.streak * SCORING.streakInc, SCORING.streakCap).toFixed(2) + '. The streak resets on the 3rd placement without a claim.');
+      } else if (s.lost) {
+        d.setReadout('<strong style="color:var(--danger)">Streak lost.</strong> Three placements without a claim reset it to zero. The game shows a STREAK LOST cue when a streak of 3 or more dies.');
+      } else if (d.streak > 0) {
+        var safe = Math.max(0, SCORING.streakWindow - d.movesSince);
+        d.setReadout('<strong>No claim.</strong> +1 for the block. The streak resets in ' + safe + ' more placement' + (safe > 1 ? 's' : '') + ' without a claim.');
+      } else {
+        d.setReadout('<strong>No claim.</strong> +1 for the block. No streak running, so nothing to lose yet.');
+      }
+      if (d.hints.length === 0 && d.streak > 0) d.setReadout(d.readoutEl.innerHTML + ' <em>All three rooms claimed. Reset to run it again.</em>');
+    }
+  });
+
+  // ── Demo 6: shared walls ─────────────────────────────────
+  new Demo(document.getElementById('demo-shared'), {
+    blocks: [
+      [2, 2, 0], [2, 3, 1], [5, 2, 5], [5, 3, 2], [3, 1, 3], [3, 4, 7], [4, 4, 7],
+      [2, 5, 1], [2, 6, 0], [5, 5, 2], [5, 6, 5], [3, 7, 4]
+    ],
+    hand: 'dot', handColor: 6, infinite: true, cursor: [4, 1],
+    intro: 'Two 2×2 rooms share the middle column. Each has one gap on its outer side. Close either one and look at the other.',
+    onMove: function (d, s) {
+      if (s.claimed && d.streak === 1) {
+        d.setReadout('<strong>Claimed for ' + fmt(s.turn) + '.</strong> Its fence went with it, including the two shared blocks in the middle column. The other room is now open on two sides: its own gap plus the wall it just lost. Three blocks to rebuild, and no gold hint until it is one block from closed.');
+      } else if (s.claimed) {
+        d.setReadout('<strong>Second claim, ' + fmt(s.turn) + '.</strong> You rebuilt the wall and closed it, with the streak multiplier helping. Compare with step 4, where one domino would have taken both for 480.');
+      } else {
+        d.setReadout('<strong>Block placed.</strong> ' + (d.hints.length ? 'A gold cell is back: the room is one block from closed.' : 'Keep going: the room still needs more wall before a single block can close it.'));
+      }
+    }
+  });
+
+  // ── Calculator ───────────────────────────────────────────
+  (function () {
+    var root = document.getElementById('calc'), viz = root.querySelector('[data-viz]');
+    function set(w, h) {
+      var area = w * h, pts = area * area * SCORING.perAreaSq, fence = 2 * (w + h);
+      root.querySelector('[data-area]').textContent = area;
+      root.querySelector('[data-points]').textContent = fmt(pts);
+      root.querySelector('[data-fence]').textContent = fence;
+      root.querySelector('[data-ppb]').textContent = (pts / fence).toLocaleString('en-GB', { maximumFractionDigits: 1 });
+      var label = area >= 16 ? ' MASSIVE ROOM' : area >= 9 ? ' BIG ROOM' : '';
+      root.querySelector('[data-readout]').innerHTML = '<strong>' + w + '×' + h + ' room:</strong> ' + area + ' cell' + (area > 1 ? 's' : '') + ' → <span class="formula">' + area + '² × 10 = ' + fmt(pts) + ' points' + (label ? ' · ' + label : '') + '</span>' + fence + ' fence blocks, no corners needed. Every block you place is also worth 1 point, added on top.';
+      viz.innerHTML = ''; viz.style.gridTemplateColumns = 'repeat(' + (w + 2) + ', 22px)';
+      for (var r = 0; r < h + 2; r++) for (var c = 0; c < w + 2; c++) {
+        var d = document.createElement('div'); d.className = 'c';
+        var corner = (r === 0 || r === h + 1) && (c === 0 || c === w + 1);
+        var edge = r === 0 || r === h + 1 || c === 0 || c === w + 1;
+        if (corner) d.classList.add('x'); else if (edge) d.classList.add('f'); else d.classList.add('r');
+        viz.appendChild(d);
+      }
+    }
+    var chips = root.querySelectorAll('.chip');
+    for (var i = 0; i < chips.length; i++) chips[i].addEventListener('click', function () {
+      for (var j = 0; j < chips.length; j++) chips[j].setAttribute('aria-pressed', 'false');
+      this.setAttribute('aria-pressed', 'true');
+      var p = this.dataset.size.split(','); set(+p[0], +p[1]);
+    });
+    set(2, 2);
+  })();
+
+  // ── Clock simulator ──────────────────────────────────────
+  (function () {
+    var root = document.getElementById('clocksim'), mode = 'classic', t = TIMER[mode];
+    var time, elapsed, lastPlace, over, last;
+    var clockEl = root.querySelector('[data-clock]'), fill = root.querySelector('[data-fill]'), speedFill = root.querySelector('[data-speedfill]'),
+        speedPct = root.querySelector('[data-speedpct]'), drainEl = root.querySelector('[data-drain]'), elEl = root.querySelector('[data-elapsed]'), read = root.querySelector('[data-readout]');
+    function restart() { t = TIMER[mode]; time = t.start; elapsed = 0; lastPlace = 0; over = false; last = null;
+      read.innerHTML = 'Press the buttons at different speeds. Wait ' + t.speedWindow + ' seconds between presses and the same move earns ' + (t.minSpeed * 100) + '% of the time.'; }
+    function speedFraction() { var s = Math.min(1, (elapsed - lastPlace) / t.speedWindow); return 1 - (1 - t.minSpeed) * s; }
+    function drainRate() { return Math.min(t.drainCap, 1 + (elapsed / 60) * t.drainAccel); }
+    function bonus(claimArea) {
+      if (over) return;
+      var sf = speedFraction(), b = t.place; if (claimArea) b += Math.min(t.claimCap, t.claimBase + t.claimPerCell * claimArea);
+      var add = Math.round(b * sf * 10) / 10; time = Math.min(t.max, time + add); lastPlace = elapsed;
+      read.innerHTML = (claimArea ? '<strong>Claim.</strong> ' + t.place + ' + (' + t.claimBase + ' + ' + t.claimPerCell + ' × ' + claimArea + ')' : '<strong>Placement.</strong> ' + t.place) + ' s × speed ' + sf.toFixed(2) + ' = <span class="formula">+' + add.toFixed(1) + ' s</span>' + (time >= t.max ? 'Bank is full at ' + t.max + ' s.' : '');
+    }
+    function frame(now) {
+      if (last == null) last = now; var dt = Math.min(0.1, (now - last) / 1000); last = now;
+      if (!over) { elapsed += dt; time = Math.max(0, time - dt * drainRate()); if (time <= 0) { over = true; read.innerHTML = '<strong style="color:var(--danger)">TIME\'S UP.</strong> Restart to try again, or switch to Blitz to feel the faster drain.'; } }
+      clockEl.textContent = time.toFixed(1); clockEl.className = 'big' + (time < 10 ? ' red' : '');
+      fill.style.width = (time / t.max * 100) + '%'; fill.className = 'fill' + (time < 10 ? ' red' : time < 20 ? ' amber' : '');
+      var sf = speedFraction(); speedFill.style.width = (sf * 100) + '%'; speedPct.textContent = Math.round(sf * 100) + '%';
+      drainEl.textContent = drainRate().toFixed(2) + '×'; elEl.textContent = Math.floor(elapsed) + ' s';
+      requestAnimationFrame(frame);
+    }
+    root.querySelector('[data-place]').addEventListener('click', function () { bonus(0); });
+    root.querySelector('[data-claim]').addEventListener('click', function () { bonus(4); });
+    root.querySelector('[data-restart]').addEventListener('click', restart);
+    var segs = root.querySelectorAll('[data-mode]');
+    for (var i = 0; i < segs.length; i++) segs[i].addEventListener('click', function () {
+      for (var j = 0; j < segs.length; j++) segs[j].setAttribute('aria-pressed', 'false');
+      this.setAttribute('aria-pressed', 'true'); mode = this.dataset.mode; restart();
+    });
+    restart(); requestAnimationFrame(frame);
+  })();
+
+  // ── Piece shelf ──────────────────────────────────────────
+  (function () {
+    var shelf = document.querySelector('[data-pieceshelf]'), keys = ['dot', 'domino', 'bar3', 'corner', 'bar4', 'l', 'j', 't', 's', 'z', 'square', 'bar5', 'bigl', 'u'];
+    for (var i = 0; i < keys.length; i++) {
+      var s = SHAPES[keys[i]], wrap = document.createElement('div'); wrap.style.display = 'grid'; wrap.style.gap = '6px'; wrap.style.justifyItems = 'center';
+      var m = document.createElement('div'); m.className = 'mini'; m.style.gridTemplateColumns = 'repeat(' + s[0].length + ', 16px)';
+      for (var r = 0; r < s.length; r++) for (var c = 0; c < s[r].length; c++) { var d = document.createElement('div'); d.className = 'mc' + (s[r][c] ? ' on' : ''); if (s[r][c]) d.style.setProperty('--pc', COLORS[i % COLORS.length]); m.appendChild(d); }
+      var l = document.createElement('span'); l.className = 'l'; l.textContent = NAMES[keys[i]];
+      wrap.appendChild(m); wrap.appendChild(l); shelf.appendChild(wrap);
+    }
+  })();
+})();
+</script>
+
+</body>
+</html>

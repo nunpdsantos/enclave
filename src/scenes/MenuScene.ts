@@ -337,11 +337,13 @@ export class MenuScene implements Scene {
 
     const lines = [
       'Drag the piece in your hand onto the 9×9 board. Tap it, or ROTATE, to turn it. HOLD parks a piece for later.',
-      'Completely fence in empty space with blocks and you CLAIM it: the room and its walls vanish and you score the room\'s area squared. A 2×2 room is 40 points, a 3×3 is 810, a 4×4 is 2,560.',
+      'Completely fence in empty space with blocks and you CLAIM it: the room and its walls vanish and you score the room\'s area squared. A 2×2 room is 160 points, a 3×3 is 810, a 4×4 is 2,560.',
       'Close two rooms with one piece for a multiplier. Claim on consecutive placements to build a STREAK.',
       'The clock drains constantly. Every placement adds time, and claims add more. Gold cells show where one block would close a room.',
       'The game ends when the clock hits zero or your piece cannot fit anywhere, even after a hold.',
     ];
+    const guideBtnH = 34;
+    const guideBtnY = top + panelH - guideBtnH / 2 - 12;
     let y = top + 48;
     for (const line of lines) {
       const bullet = new Graphics();
@@ -355,8 +357,15 @@ export class MenuScene implements Scene {
       });
       group.addChild(t);
       y += t.height + 10;
-      if (y > top + panelH - 30) break;
+      if (y > top + panelH - guideBtnH - 42) break;
     }
+
+    // Full interactive guide (public/how-to-play.html, served at /how-to-play)
+    group.addChild(createButton('FULL GUIDE ↗', cx, guideBtnY, () => {
+      this.audio.playUiClick();
+      const win = window.open('/how-to-play', '_blank');
+      if (win) win.opener = null; else window.location.href = '/how-to-play';
+    }, { width: 180, height: guideBtnH, fontSize: 12, letterSpacing: 3 }));
 
     // Decorative sample piece in the corner
     const g = new Graphics();
