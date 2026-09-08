@@ -641,7 +641,7 @@ export class GameScene implements Scene {
     // collides with the score and room popups in the middle of the board
     const label = `+${timeBonus.toFixed(1)}s`;
     const layout = this.layoutManager.layout;
-    this.animationManager.showTimeBonusPopup(label, layout.gridOriginX + (big ? 46 : 28), layout.gridOriginY - 32, big ? 24 : 16);
+    this.animationManager.showTimeBonusPopup(label, layout.gridOriginX + (big ? 96 : 80), layout.gridOriginY - 12, big ? 24 : 16);
   }
 
   // ── Feedback ──
