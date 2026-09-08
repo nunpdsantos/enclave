@@ -1,0 +1,28 @@
+{
+  "name": "Enclave",
+  "short_name": "Enclave",
+  "description": "Fence in empty space to claim it. Bigger rooms, bigger scores.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#3d4c9a",
+  "theme_color": "#3d4c9a",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "/icons/icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
