@@ -36,14 +36,17 @@ export interface RunReport {
   tier: string;
   roomSizes: Record<string, number>;
   pid?: string;
-  /** Which siege, as 'm1-raiders-finite'. Absent in every other mode. */
+  /** Which siege, as 'm1-raiders-relief18'. Absent in every other mode. */
   variant?: string;
   /** Siege counters. Small and scalar: the arrays stay in the local summary. */
   enemiesCaptured?: number;
   wallsLost?: number;
-  /** Placement the Keep fell on; absent when it never did */
+  /** Turn the Keep fell on; absent when it never did */
   breachTurn?: number;
   routeChanging?: number;
+  /** Held floor cells at the end, and pieces discarded rather than placed */
+  heldAtEnd?: number;
+  skips?: number;
 }
 
 /** One decimal is plenty for a duration, and keeps the payload small. */
@@ -84,6 +87,8 @@ export function buildRunReport(summary: RunSummary): RunReport {
     report.enemiesCaptured = siege.enemiesCaptured;
     report.wallsLost = siege.wallsLost;
     report.routeChanging = siege.routeChangingPlacements;
+    report.heldAtEnd = siege.heldAtEnd;
+    report.skips = siege.skipsUsed;
     if (siege.breachTurn !== null) report.breachTurn = siege.breachTurn;
   }
 

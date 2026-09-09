@@ -28,7 +28,9 @@ const MAX_DURATION_S = 21_600;
 const MAX_ROOM_SIZE_KEYS = 100;
 
 /** The siege's scalar counters, validated and stored as one list */
-const SIEGE_COUNTS = ['enemiesCaptured', 'wallsLost', 'breachTurn', 'routeChanging'] as const;
+const SIEGE_COUNTS = [
+  'enemiesCaptured', 'wallsLost', 'breachTurn', 'routeChanging', 'heldAtEnd', 'skips',
+] as const;
 
 interface RunRecord {
   v: string;
@@ -48,15 +50,19 @@ interface RunRecord {
   roomSizes: Record<string, number>;
   pid?: string;
   /**
-   * Which siege, as 'm1-raiders-finite'. The 2×2 is the whole question this
-   * prototype is asking, so a siege run that cannot be told apart from the
-   * other three is a run that measures nothing.
+   * Which siege, as 'm1-raiders-relief18': the map, the force and how long the
+   * Keep had to be held. A run that cannot be told apart from a run of a
+   * different ruleset is a run that measures nothing.
    */
   variant?: string;
   enemiesCaptured?: number;
   wallsLost?: number;
   breachTurn?: number;
   routeChanging?: number;
+  /** Held floor cells at the end: how much ground the run was earning from */
+  heldAtEnd?: number;
+  /** Pieces discarded rather than placed */
+  skips?: number;
   /** Server clock, so runs can be bucketed by day without trusting the client */
   ts: string;
 }
