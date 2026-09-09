@@ -209,12 +209,19 @@ export default async function handler(request: Request): Promise<Response> {
 
   // Free play spends no attempt and keeps no record: the seed is drawn per
   // ticket, so two asks are two different runs and neither is the other's.
-  const redis = dailyKey ? getRedis() : null;
-  if (!dailyKey || !redis) return answer(await mint(false));
+  if (!dailyKey) return answer(await mint(false));
 
   const candidate = await mint(false);
   const ticketKey = dailyTicketKey(dailyKey, id);
   try {
+    // Constructed inside the guard: `new Redis` validates its own
+    // configuration and throws on a malformed `KV_REST_API_URL`. Built above
+    // this line, that throw walked past the catch below and rejected the
+    // handler's promise — a 500 instead of the practice-free fallback ticket
+    // every other unreachable-database path here answers with.
+    const redis = getRedis();
+    if (!redis) return answer(candidate);
+
     // NX and the TTL in one command. It used to be a write followed by an
     // EXPIRE, where a failed EXPIRE left the code deciding what to do about a
     // record that had already been written.

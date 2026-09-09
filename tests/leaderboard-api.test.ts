@@ -1819,3 +1819,51 @@ describe('review 4, finding 5 — refusing a body does not wait on the sender', 
     expect(read).toEqual({ ok: false, reason: 'too-large' });
   });
 });
+
+describe('review 4, finding 3 — a client that cannot be built is still a 503', () => {
+  /** Run `fn` with a store URL no client can be constructed from. */
+  async function withBadUrl<T>(fn: () => Promise<T>): Promise<T> {
+    const real = process.env.KV_REST_API_URL;
+    // The SDK validates this in its constructor and throws `UrlError`, which
+    // is a synchronous throw on the way *in* rather than a failed command.
+    process.env.KV_REST_API_URL = 'invalid-url';
+    try {
+      return await fn();
+    } finally {
+      process.env.KV_REST_API_URL = real;
+    }
+  }
+
+  it('answers 503 to a POST instead of throwing out of the handler', async () => {
+    const h = await handler();
+    const submission = await body(run('classic', 8), 'p1', 'Ann');
+
+    // The read already built its client inside the guard; the write did not,
+    // so a valid submission rejected the handler's own promise — a 500 with
+    // whatever body the platform writes, on a deployment whose only fault is
+    // a mistyped variable.
+    expect((await withBadUrl(() => h(get('classic')))).status).toBe(503);
+    const res = await withBadUrl(() => h(post('classic', submission)));
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Leaderboard unavailable' });
+
+    // And nothing was consumed by it: the same ticket, the same replay, and
+    // the same score still land once the URL is right. That is what makes
+    // this a 503 and not a refusal.
+    const retried = await h(post('classic', submission));
+    expect(retried.status).toBe(200);
+    expect(storedBoard(CLASSIC_KEY)).toHaveLength(1);
+  });
+
+  it('deals a daily ticket instead of throwing when run-start cannot build one', async () => {
+    const start = await runStartHandler();
+    const res = await withBadUrl(() => start(startRun({ id: 'p1', mode: 'daily' })));
+
+    // The documented fallback for a store that does not answer: a real
+    // ticket, never a practice one, so an outage costs an extra attempt and
+    // never a score.
+    expect(res.status).toBe(200);
+    expect(readTicketPayload((await res.json()).token)?.practice).toBeUndefined();
+    expect(store.size).toBe(0);
+  });
+});

@@ -645,10 +645,15 @@ export default async function handler(request: Request): Promise<Response> {
     // on the submission consumes state — all of it, in one step.
     const tokenId = String(body.token).split('.')[1] ?? String(body.token);
 
-    const redis = getRedis();
     let entries: Entry[];
     let rank: number | null;
     try {
+      // Inside the guard: `new Redis` validates its own configuration and
+      // throws on a malformed `KV_REST_API_URL`. Constructed above this line,
+      // that throw walked straight past the catch and rejected the handler's
+      // promise — a 500 on a deployment whose only fault is a bad variable,
+      // where every other unreachable-database path answers 503.
+      const redis = getRedis();
       const outcome = readVerdict(await redis.eval(SUBMIT_SCRIPT, [
         spentTicketsKey(ticket.issuedAt),
         replaysKey(board),
