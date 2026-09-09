@@ -196,7 +196,7 @@ export class HandRenderer {
       const rect: Rect = { x: nextRect.x, y: nextRect.y + slotH * i, w: nextRect.w, h: slotH };
       const piece = queue[i];
       if (piece) {
-        this.drawPieceInRect(g, piece, rect, this.layout.miniCellSize, i === 0 ? 1 : 0.75);
+        this.drawPieceInRect(g, piece, rect, this.fitCell(piece, rect), i === 0 ? 1 : 0.75);
       } else {
         // A dashed-looking empty well: the ration is spent, nothing is coming
         const pad = Math.min(10, slotH * 0.22);
@@ -209,7 +209,25 @@ export class HandRenderer {
   private drawMini(g: Graphics, piece: PieceInstance | null, rect: Rect, alpha: number): void {
     g.clear();
     if (!piece) return;
-    this.drawPieceInRect(g, piece, rect, this.layout.miniCellSize, alpha);
+    this.drawPieceInRect(g, piece, rect, this.fitCell(piece, rect), alpha);
+  }
+
+  /**
+   * The biggest cell size that draws this piece inside this slot.
+   *
+   * `miniCellSize` is the size a preview *would like* to be; a four-cell bar
+   * standing on end in a quarter of the NEXT column does not get it, and used
+   * to be drawn at the size it wanted and clipped by the panel. Capped by the
+   * slot in both directions, so nothing ever overflows whatever the queue
+   * depth or the screen.
+   */
+  private fitCell(piece: PieceInstance, rect: Rect): number {
+    const pad = 6;
+    return Math.max(3, Math.min(
+      this.layout.miniCellSize,
+      Math.floor((rect.w - pad) / Math.max(1, piece.cols)),
+      Math.floor((rect.h - pad) / Math.max(1, piece.rows)),
+    ));
   }
 
   /** Which of a piece's own cells touch this one, so it draws as a mini-wall */

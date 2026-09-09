@@ -7,6 +7,56 @@ import { loadSettings } from '../core/Settings';
 export const FONT_DISPLAY = '"Oxanium", sans-serif';
 export const FONT_MONO = '"Share Tech Mono", monospace';
 
+/**
+ * The families on their own, without the fallback each stack ends in.
+ *
+ * `document.fonts.load` and `.check` take a CSS font shorthand and answer for
+ * the *whole* list — and `sans-serif` is always available, so checking the
+ * full stack answers "yes" before the web font has arrived at all. The bare
+ * family is the only form of the question that means anything.
+ */
+const FONT_DISPLAY_FAMILY = 'Oxanium';
+const FONT_MONO_FAMILY = '"Share Tech Mono"';
+
+/**
+ * Wait for the two web fonts before anything measures text in them.
+ *
+ * Both come from Google Fonts with `display=swap`, so until they land the
+ * browser draws — and, more to the point, *measures* — in the fallback. Every
+ * wrapped paragraph in the game decides its line breaks once, at the moment
+ * the Text is built: breaks computed against a narrower fallback and then
+ * drawn in Oxanium overflow the panel they were measured for, which is
+ * exactly the way the menu's mission card and the siege tutorial were
+ * spilling past their panels. `ShareCard` already waited for this before
+ * painting; nothing else did.
+ *
+ * Resolves either way. A font that never arrives costs the layout some
+ * accuracy; a boot that waits forever costs the player the game.
+ */
+export function ensureFontsLoaded(timeoutMs: number = 2500): Promise<void> {
+  const fonts = typeof document !== 'undefined' ? document.fonts : undefined;
+  if (!fonts) return Promise.resolve();
+  const loaded = Promise.all([
+    fonts.load(`600 16px ${FONT_DISPLAY_FAMILY}`),
+    fonts.load(`800 16px ${FONT_DISPLAY_FAMILY}`),
+    fonts.load(`400 16px ${FONT_MONO_FAMILY}`),
+  ]).then(() => undefined).catch(() => undefined);
+  const timeout = new Promise<void>(resolve => setTimeout(resolve, timeoutMs));
+  return Promise.race([loaded, timeout]);
+}
+
+/** Are both web fonts resident? False while the fallback is still in use. */
+export function fontsResident(): boolean {
+  const fonts = typeof document !== 'undefined' ? document.fonts : undefined;
+  if (!fonts) return true;
+  try {
+    return fonts.check(`600 16px ${FONT_DISPLAY_FAMILY}`)
+      && fonts.check(`400 16px ${FONT_MONO_FAMILY}`);
+  } catch {
+    return true;
+  }
+}
+
 // Deep night-blue page, near-black board plate, saturated glossy blocks
 export const THEME = {
   bg: 0x2b3a86,

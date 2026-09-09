@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { Board } from '../src/core/Board';
 import {
-  DIFFICULTY_CONFIGS, SIEGE_ENEMY_BONUS, SIEGE_GROUND_INCOME, SIEGE_RELIEF_TURNS,
-  siegeConfig,
+  DIFFICULTY_CONFIGS, SIEGE_ENEMY_BONUS, SIEGE_GROUND_INCOME, SIEGE_PREVIEW_COUNT,
+  SIEGE_RELIEF_TURNS, siegeConfig,
 } from '../src/core/Config';
 import { GameState } from '../src/core/GameState';
 import { MISSIONS, PICKER_MISSIONS, cellsOfTerrain, terrainOf } from '../src/core/Missions';
@@ -856,6 +856,21 @@ describe('the layout', () => {
       expect(l.skipRect.w).toBeGreaterThan(60);
       // SKIP sits beside ROTATE, not on top of it
       expect(l.skipRect.x).toBeGreaterThanOrEqual(l.rotateRect.x + l.rotateRect.w);
+    }
+  });
+
+  it('gives the NEXT column room for four upright four-cell pieces', () => {
+    // The supply's first piece is a BAR 4 stood on end, and with four slots
+    // visible a preview drawn at `miniCellSize` used to overrun its share of
+    // the panel and be clipped by it.
+    for (const [w, h] of [[360, 640], [390, 844], [1176, 1034]] as [number, number][]) {
+      const l = computeLayout(w, h, SIEGE_GRID_SIZE, false);
+      const slot = l.nextRect.h / SIEGE_PREVIEW_COUNT;
+      // What HandRenderer will actually draw a four-tall piece at, and that it
+      // is a size worth drawing rather than a smudge
+      const cell = Math.min(l.miniCellSize, Math.floor((slot - 6) / 4));
+      expect(cell * 4, `${w}x${h}`).toBeLessThanOrEqual(slot);
+      expect(cell, `${w}x${h}`).toBeGreaterThanOrEqual(7);
     }
   });
 

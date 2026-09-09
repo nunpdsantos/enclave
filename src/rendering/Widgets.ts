@@ -426,6 +426,39 @@ export function createSectionLabel(label: string, cx: number, y: number, ruleWid
   return root;
 }
 
+/**
+ * Body text that is *measured* into a box rather than assumed to fit.
+ *
+ * `wordWrapWidth` decides where the lines break, but nothing checks that the
+ * lines it produced are actually that wide — and they are not, whenever the
+ * text was measured in one font and drawn in another (see `ensureFontsLoaded`),
+ * or whenever a long unbreakable token overshoots. This builds the text, reads
+ * the width it really came out at, and rebuilds narrower until it fits.
+ *
+ * Rebuilt rather than re-styled, because a fresh Text is measured fresh and a
+ * mutated one depends on Pixi's dirty-flag bookkeeping. Three attempts on a
+ * handful of labels is nothing; a paragraph running off the side of the panel
+ * it belongs to is the first thing anyone sees.
+ */
+export function fitBodyText(
+  text: string,
+  x: number,
+  y: number,
+  boxWidth: number,
+  opts: { fontSize?: number; color?: number; align?: 'left' | 'center'; mono?: boolean } = {},
+): Text {
+  let wrap = boxWidth;
+  let t = createBodyText(text, x, y, { ...opts, wrapWidth: wrap });
+  for (let attempt = 0; attempt < 3 && t.width > boxWidth + 0.5; attempt++) {
+    const next = Math.max(48, Math.floor(wrap - (t.width - boxWidth) - 2));
+    if (next >= wrap) break;
+    wrap = next;
+    t.destroy();
+    t = createBodyText(text, x, y, { ...opts, wrapWidth: wrap });
+  }
+  return t;
+}
+
 /** Body text helper with consistent styling */
 export function createBodyText(
   text: string,

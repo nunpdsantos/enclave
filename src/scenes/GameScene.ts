@@ -23,7 +23,7 @@ import {
 import { reportRun } from '../core/Telemetry';
 import { foldRun, loadStats, saveStats } from '../core/Stats';
 import { FONT_DISPLAY, THEME, drawPanel } from '../rendering/Theme';
-import { createButton, createToggle, createCycleToggle, createBodyText } from '../rendering/Widgets';
+import { createButton, createToggle, createCycleToggle, createBodyText, fitBodyText } from '../rendering/Widgets';
 
 type Phase = 'tutorial' | 'countdown' | 'playing' | 'gameOver';
 
@@ -479,9 +479,38 @@ export class GameScene implements Scene {
     overlay.addChild(bg);
 
     const panelW = Math.min(340, layout.width - 32);
-    const panelH = 360;
+    const steps = this.isSiege
+      ? [
+        ['1', 'HOLD THE KEEP until relief arrives. Raiders come through the gate and walk at it; you have eighteen turns to survive.'],
+        ['2', 'WALLS STAY where you put them. Any courtyard you seal is yours, and every courtyard you still hold pays you every turn.'],
+        ['3', 'ENCLOSE A RAIDER to capture it. A piece you cannot use can be discarded with SKIP — but a skip still costs you the turn.'],
+      ]
+      : [
+        ['1', 'DRAG the piece in your hand onto the board. Tap it, or the ROTATE button, to turn it.'],
+        ['2', 'FENCE IN empty space with blocks to claim it. The room and its walls vanish, and you score the room\'s area squared: 3×3 is worth nine times a 1×1.'],
+        ['3', 'THE CLOCK never stops. Placements add time, claims add more. Gold cells show where one block would close a room.'],
+      ];
+
+    // Measure first, place second. The card used to be 360 px tall whatever
+    // the text came out at, so the third paragraph ran under the button —
+    // and how tall the text comes out at depends on the width, the mode and
+    // whether the web font has arrived yet.
+    const textX = -panelW / 2 + 52;
+    const textBox = panelW / 2 - 18 - textX;
+    const bodies = steps.map(([, body]) => fitBodyText(body, textX, 0, textBox, {
+      fontSize: 12.5, align: 'left',
+    }));
+
+    const titleH = 30;
+    const buttonH = 46;
+    const stepGap = 16;
+    const contentH = bodies.reduce((sum, t) => sum + t.height, 0) + stepGap * (bodies.length - 1);
+    const panelH = Math.min(
+      layout.height - 32,
+      22 + titleH + 18 + contentH + 22 + buttonH + 20,
+    );
     const px = layout.width / 2 - panelW / 2;
-    const py = layout.height / 2 - panelH / 2;
+    const py = Math.max(16, layout.height / 2 - panelH / 2);
     const panel = new Graphics();
     drawPanel(panel, px, py, panelW, panelH, 18, 0.92);
     overlay.addChild(panel);
@@ -495,34 +524,26 @@ export class GameScene implements Scene {
     title.y = py + 22;
     overlay.addChild(title);
 
-    const steps = this.isSiege
-      ? [
-        ['1', 'HOLD THE KEEP until relief arrives. Raiders come through the gate and walk at it; you have eighteen turns to survive.'],
-        ['2', 'WALLS STAY where you put them. Any courtyard you seal is yours, and every courtyard you still hold pays you every turn.'],
-        ['3', 'ENCLOSE A RAIDER to capture it. A piece you cannot use can be discarded with SKIP — but a skip still costs you the turn.'],
-      ]
-      : [
-        ['1', 'DRAG the piece in your hand onto the board. Tap it, or the ROTATE button, to turn it.'],
-        ['2', 'FENCE IN empty space with blocks to claim it. The room and its walls vanish, and you score the room\'s area squared: 3×3 is worth nine times a 1×1.'],
-        ['3', 'THE CLOCK never stops. Placements add time, claims add more. Gold cells show where one block would close a room.'],
-      ];
-    let y = py + 64;
-    for (const [n, body] of steps) {
+    let y = py + 22 + titleH + 18;
+    for (let i = 0; i < bodies.length; i++) {
       const badge = new Graphics();
       badge.circle(px + 30, y + 12, 12);
       badge.fill({ color: THEME.accent });
       overlay.addChild(badge);
-      const num = new Text({ text: n, style: new TextStyle({ fontFamily: FONT_DISPLAY, fontSize: 13, fontWeight: '800', fill: THEME.textPrimary }) });
+      const num = new Text({ text: steps[i][0], style: new TextStyle({ fontFamily: FONT_DISPLAY, fontSize: 13, fontWeight: '800', fill: THEME.textPrimary }) });
       num.anchor.set(0.5);
       num.x = px + 30;
       num.y = y + 12;
       overlay.addChild(num);
-      const text = createBodyText(body, px + 52, y, { fontSize: 12.5, wrapWidth: panelW - 70, align: 'left' });
-      overlay.addChild(text);
-      y += text.height + 16;
+      const body = bodies[i];
+      body.x += layout.width / 2;
+      body.y = y;
+      overlay.addChild(body);
+      y += body.height + stepGap;
     }
 
-    overlay.addChild(createButton("LET'S GO", layout.width / 2, py + panelH - 40, () => {
+    // Under the text it belongs to, never over it
+    overlay.addChild(createButton("LET'S GO", layout.width / 2, py + panelH - buttonH / 2 - 20, () => {
       this.audioManager.unlock();
       this.audioManager.playUiClick();
       updateSettings(this.isSiege ? { siegeTutorialSeen: true } : { tutorialSeen: true });
@@ -531,7 +552,7 @@ export class GameScene implements Scene {
       this.phase = 'countdown';
       this.countdownTime = 3;
       this.lastCountdownNumber = 4;
-    }, { width: 180, height: 46, fontSize: 16 }));
+    }, { width: 180, height: buttonH, fontSize: 16 }));
 
     this.tutorialOverlay = overlay;
     this.container.addChild(overlay);

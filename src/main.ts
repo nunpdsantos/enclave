@@ -10,7 +10,7 @@ import { Difficulty, DIFFICULTY_CONFIGS, GameConfig, siegeConfig } from './core/
 import { isMissionId } from './core/Missions';
 import { incrementGamesPlayed, loadSettings } from './core/Settings';
 import { RunSummary } from './core/types';
-import { THEME } from './rendering/Theme';
+import { THEME, ensureFontsLoaded, fontsResident } from './rendering/Theme';
 
 const LAST_DIFFICULTY_KEY = 'enclave_last_difficulty';
 
@@ -53,6 +53,13 @@ async function boot() {
 
   container.appendChild(app.canvas);
   app.canvas.style.touchAction = 'none';
+
+  // Every panel in the game is sized from measured text, and text measured in
+  // the fallback font is measured wrong: the web fonts arrive over the
+  // network with `display=swap`, so without this the first menu decides its
+  // line breaks against a typeface it is not going to be drawn in. Bounded,
+  // because a font that never arrives must not cost the player the game.
+  await ensureFontsLoaded();
 
   const layoutManager = new LayoutManager();
   const audioManager = new AudioManager();
@@ -174,6 +181,16 @@ async function boot() {
     const layout = layoutManager.recalculate(window.innerWidth, window.innerHeight);
     sceneManager.resize(layout.width, layout.height);
   });
+
+  // A font that misses the boot deadline still has to be laid out for, so the
+  // scene is measured again the moment it lands
+  if (!fontsResident()) {
+    void ensureFontsLoaded(15000).then(() => {
+      if (!fontsResident()) return;
+      const layout = layoutManager.recalculate(window.innerWidth, window.innerHeight);
+      sceneManager.resize(layout.width, layout.height);
+    });
+  }
 
   // Game loop
   app.ticker.add((ticker) => {

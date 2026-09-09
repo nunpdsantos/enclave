@@ -18,10 +18,21 @@ import { siegeVariantKey } from '../core/types';
 import { FONT_DISPLAY, FONT_MONO, THEME, DIFFICULTY_COLORS, drawPanel, drawBeveledBlock, easeOutBack } from '../rendering/Theme';
 import {
   createButton, createToggle, createCycleToggle, createSectionLabel, createBodyText,
-  createSlider, createTextButton,
+  createSlider, createTextButton, fitBodyText,
 } from '../rendering/Widgets';
 
 const DIFFICULTIES: Difficulty[] = ['classic', 'blitz', 'daily', 'siege'];
+/**
+ * The line under the wordmark. It names the mode you are about to play, so
+ * the siege does not sit there promising a clock it does not have.
+ */
+const TAGLINES: Record<Difficulty, string> = {
+  classic: 'FENCE IT IN · CLAIM THE ROOM · BEAT THE CLOCK',
+  blitz: 'FENCE IT IN · CLAIM THE ROOM · BEAT THE CLOCK',
+  daily: 'FENCE IT IN · CLAIM THE ROOM · BEAT THE CLOCK',
+  siege: 'BUILD · HOLD · CAPTURE',
+};
+
 const DIFFICULTY_DESCRIPTIONS: Record<Difficulty, string> = {
   classic: 'A minute on the clock. Build big rooms, close them with care.',
   blitz: 'Thirty-five seconds. Fence fast, claim faster.',
@@ -85,13 +96,32 @@ export class MenuScene implements Scene {
   private showingStats = false;
 
   // Rebuildable sections
+  /**
+   * Everything `build()` puts on screen, so a relayout can throw the lot away
+   * and measure again rather than move a dozen nodes it would have to
+   * remember. The drifting blocks stay outside it, behind.
+   */
+  private uiRoot: Container | null = null;
   private difficultyContainer: Container | null = null;
+  /** PLAY and the three pills, positioned under whatever the selector measured */
+  private actionsContainer: Container | null = null;
   private lowerContainer: Container | null = null;
   private title: Text | null = null;
+  private tagline: Text | null = null;
   private titlePhase = 0;
   /** The BEST / RESETS IN line, kept so the daily countdown can be rewritten */
   private statsText: Text | null = null;
   private resetElapsed = 0;
+  /**
+   * Where each block of the menu ended, measured rather than assumed.
+   *
+   * The mode blurb wraps to one line or two depending on the mode and the
+   * width, and the stats line under it is a different length in every mode —
+   * so a PLAY button at a fixed fraction of the screen height sits on top of
+   * them on a short one. Each of these is the bottom of the block above.
+   */
+  private selectorBottom = 0;
+  private actionsBottom = 0;
 
   // Ambient background
   private bgGfx: Graphics;
@@ -119,6 +149,19 @@ export class MenuScene implements Scene {
     this.build();
   }
 
+  /**
+   * Measure and lay the menu out again from scratch.
+   *
+   * Called on a window resize, and once when the web fonts land: every panel
+   * here is sized from measured text, and text measured in the fallback font
+   * is measured wrong.
+   */
+  resize(width: number, height: number): void {
+    this.width = width;
+    this.height = height;
+    this.build();
+  }
+
   private initBlocks(): void {
     this.blocks = [];
     for (let i = 0; i < 14; i++) {
@@ -143,10 +186,22 @@ export class MenuScene implements Scene {
 
   private build(): void {
     const cx = this.width / 2;
+    // Everything below is measured, so a rebuild throws the last measurement
+    // away rather than trying to move it
+    if (this.uiRoot) {
+      this.container.removeChild(this.uiRoot);
+      this.uiRoot.destroy({ children: true });
+    }
+    this.uiRoot = new Container();
+    this.container.addChild(this.uiRoot);
+    this.difficultyContainer = null;
+    this.actionsContainer = null;
+    this.lowerContainer = null;
+    this.statsText = null;
 
     // Animated logo: a fence of blocks assembling around a gold room
     this.logoGfx = new Graphics();
-    this.container.addChild(this.logoGfx);
+    this.uiRoot.addChild(this.logoGfx);
     this.logoT = 0;
 
     // Title
@@ -164,49 +219,21 @@ export class MenuScene implements Scene {
     this.title.anchor.set(0.5);
     this.title.x = cx;
     this.title.y = this.height * 0.115;
-    this.container.addChild(this.title);
+    this.uiRoot.addChild(this.title);
 
-    const tagline = createBodyText('FENCE IT IN · CLAIM THE ROOM · BEAT THE CLOCK', cx, this.height * 0.115 + 26, {
+    // The tagline names the mode you are about to play, so it is written by
+    // the selector rather than fixed at Classic's
+    this.tagline = createBodyText('', cx, this.height * 0.115 + 26, {
       fontSize: 10,
       color: THEME.textMuted,
       wrapWidth: this.width - 32,
     });
-    tagline.style.letterSpacing = 2;
-    this.container.addChild(tagline);
+    this.tagline.style.letterSpacing = 2;
+    this.uiRoot.addChild(this.tagline);
 
-    // Difficulty selector
+    // The selector measures itself, then PLAY and the pills go under it, then
+    // the lower section goes under those
     this.buildDifficultySelector();
-
-    // Play button
-    this.container.addChild(createButton('PLAY', cx, this.height * 0.335, () => {
-      this.audio.unlock();
-      this.audio.playUiClick();
-      this.onPlay();
-    }, { width: 220, height: 58, fontSize: 22, letterSpacing: 6 }));
-
-    // Settings row
-    const settings = loadSettings();
-    const toggleY = this.height * 0.335 + 52;
-    const pillW = Math.min(104, (this.width - 40) / 3);
-    const pillGap = pillW + 6;
-    this.container.addChild(createToggle('SOUND', cx - pillGap, toggleY, settings.sfx, (v) => {
-      this.audio.unlock();
-      this.audio.setSfxEnabled(v);
-      this.audio.playUiClick();
-      return v;
-    }, pillW));
-    this.container.addChild(createToggle('MUSIC', cx, toggleY, settings.music, (v) => {
-      this.audio.unlock();
-      this.audio.setMusicEnabled(v);
-      this.audio.playUiClick();
-      return v;
-    }, pillW));
-    this.container.addChild(createToggle('HAPTIC', cx + pillGap, toggleY, settings.haptics, (v) => {
-      updateSettings({ haptics: v });
-      this.audio.playUiClick();
-      if (v && navigator.vibrate) { try { navigator.vibrate(20); } catch { /* */ } }
-      return v;
-    }, pillW));
 
     // Help / options / refresh (top corners)
     this.addCornerButton('?', 30, () => {
@@ -234,8 +261,60 @@ export class MenuScene implements Scene {
     version.x = this.width - 12;
     version.y = this.height - 10;
     version.alpha = 0.7;
-    this.container.addChild(version);
+    this.uiRoot.addChild(version);
+  }
 
+  /**
+   * PLAY and the three pills, under whatever the selector actually measured.
+   *
+   * They used to sit at fixed fractions of the screen height, which put PLAY
+   * on top of the stats line on a 360×640 phone whenever the blurb above ran
+   * to two lines. Rebuilt with the selector, because that is what moves them.
+   */
+  private buildActions(): void {
+    if (this.actionsContainer) {
+      this.uiRoot?.removeChild(this.actionsContainer);
+      this.actionsContainer.destroy({ children: true });
+    }
+    const group = new Container();
+    this.actionsContainer = group;
+    this.uiRoot?.addChild(group);
+
+    const cx = this.width / 2;
+    const playH = 58;
+    const playY = this.selectorBottom + 14 + playH / 2;
+    group.addChild(createButton('PLAY', cx, playY, () => {
+      this.audio.unlock();
+      this.audio.playUiClick();
+      this.onPlay();
+    }, { width: 220, height: playH, fontSize: 22, letterSpacing: 6 }));
+
+    const settings = loadSettings();
+    // `createToggle` draws a 32 px pill centred on the y it is given
+    const pillH = 32;
+    const toggleY = playY + playH / 2 + 8 + pillH / 2;
+    const pillW = Math.min(104, (this.width - 40) / 3);
+    const pillGap = pillW + 6;
+    group.addChild(createToggle('SOUND', cx - pillGap, toggleY, settings.sfx, (v) => {
+      this.audio.unlock();
+      this.audio.setSfxEnabled(v);
+      this.audio.playUiClick();
+      return v;
+    }, pillW));
+    group.addChild(createToggle('MUSIC', cx, toggleY, settings.music, (v) => {
+      this.audio.unlock();
+      this.audio.setMusicEnabled(v);
+      this.audio.playUiClick();
+      return v;
+    }, pillW));
+    group.addChild(createToggle('HAPTIC', cx + pillGap, toggleY, settings.haptics, (v) => {
+      updateSettings({ haptics: v });
+      this.audio.playUiClick();
+      if (v && navigator.vibrate) { try { navigator.vibrate(20); } catch { /* */ } }
+      return v;
+    }, pillW));
+
+    this.actionsBottom = toggleY + pillH / 2;
     this.buildLowerSection();
   }
 
@@ -259,21 +338,22 @@ export class MenuScene implements Scene {
     root.cursor = 'pointer';
     root.on('pointerdown', (e) => e.stopPropagation());
     root.on('pointerup', (e) => { e.stopPropagation(); onClick(); });
-    this.container.addChild(root);
+    this.uiRoot?.addChild(root);
   }
 
   // ── Difficulty selector ──
 
   private buildDifficultySelector(): void {
     if (this.difficultyContainer) {
-      this.container.removeChild(this.difficultyContainer);
+      this.uiRoot?.removeChild(this.difficultyContainer);
       this.difficultyContainer.destroy({ children: true });
     }
     this.statsText = null;
 
     const group = new Container();
     this.difficultyContainer = group;
-    this.container.addChild(group);
+    this.uiRoot?.addChild(group);
+    if (this.tagline) this.tagline.text = TAGLINES[this.selectedDifficulty];
 
     const selectorY = this.height * 0.175;
     const chipH = 36;
@@ -336,16 +416,17 @@ export class MenuScene implements Scene {
         this.audio.playUiClick();
         this.selectedDifficulty = diff;
         this.onDifficultyChange(diff);
+        // The selector rebuilds, and everything under it follows: the blurb
+        // and the stats line are different lengths in every mode.
         this.buildDifficultySelector();
-        this.buildLowerSection();
       });
     }
 
-    const desc = createBodyText(this.describeSelected(), this.width / 2, selectorY + chipH + 12, {
-      fontSize: 11,
-      color: DIFFICULTY_COLORS[this.selectedDifficulty],
-      wrapWidth: Math.min(300, this.width - 40),
-    });
+    const desc = fitBodyText(
+      this.describeSelected(), this.width / 2, selectorY + chipH + 12,
+      Math.min(300, this.width - 40),
+      { fontSize: 11, color: DIFFICULTY_COLORS[this.selectedDifficulty] },
+    );
     group.addChild(desc);
 
     const stats = new Text({
@@ -359,10 +440,14 @@ export class MenuScene implements Scene {
     });
     stats.anchor.set(0.5, 0);
     stats.x = this.width / 2;
-    stats.y = selectorY + chipH + 50;
+    // Under the blurb it belongs to, wherever that ended up: one line in
+    // Classic, two in the Daily on a narrow phone.
+    stats.y = desc.y + desc.height + 6;
     group.addChild(stats);
     this.statsText = stats;
     this.resetElapsed = 0;
+    this.selectorBottom = stats.y + stats.height;
+    this.buildActions();
   }
 
   /** Mode blurb. The daily's carries its number, so it changes every day. */
@@ -416,15 +501,23 @@ export class MenuScene implements Scene {
 
   // ── Lower section: leaderboard, help or options ──
 
+  /**
+   * Where the lower section starts: not quite half way down, unless the mode
+   * blurb above ran long enough to push the pills into it.
+   */
+  private lowerTop(): number {
+    return Math.max(this.height * 0.47, this.actionsBottom + 14);
+  }
+
   private buildLowerSection(): void {
     if (this.lowerContainer) {
-      this.container.removeChild(this.lowerContainer);
+      this.uiRoot?.removeChild(this.lowerContainer);
       this.lowerContainer.destroy({ children: true });
       this.lowerContainer = null;
     }
     const group = new Container();
     this.lowerContainer = group;
-    this.container.addChild(group);
+    this.uiRoot?.addChild(group);
 
     if (this.showingHelp) {
       this.buildHelp(group);
@@ -453,7 +546,7 @@ export class MenuScene implements Scene {
    */
   private buildSiegePicker(group: Container): void {
     const cx = this.width / 2;
-    const top = this.height * 0.47;
+    const top = this.lowerTop();
     const panelW = Math.min(360, this.width - 32);
     const current = this.pickedMission();
 
@@ -498,14 +591,14 @@ export class MenuScene implements Scene {
         if (id === current) return;
         this.audio.playUiClick();
         updateSettings({ siegeMission: id });
+        // The selector rebuilds the actions, which rebuild this panel
         this.buildDifficultySelector();
-        this.buildLowerSection();
       });
       group.addChild(hit);
     }
 
-    const name = createBodyText(MISSIONS[current].name, cx, chipY + chipH + 10, {
-      fontSize: 12, color: DIFFICULTY_COLORS.siege, wrapWidth: panelW - 40,
+    const name = fitBodyText(MISSIONS[current].name, cx, chipY + chipH + 10, panelW - 40, {
+      fontSize: 12, color: DIFFICULTY_COLORS.siege,
     });
     name.style.letterSpacing = 2;
     group.addChild(name);
@@ -515,11 +608,21 @@ export class MenuScene implements Scene {
       'Walls stay where you put them. Every courtyard you still hold pays you every turn.',
       'Enclose a raider to capture it. A piece you cannot use can be skipped.',
     ];
+    // The text box is the panel's inner width less the bullet gutter, and
+    // `fitBodyText` measures what it actually came out at rather than trusting
+    // the wrap width — which is what used to run these three lines off the
+    // right-hand edge of the panel at every width.
+    const textX = cx - panelW / 2 + 30;
+    const textBox = panelW / 2 + cx - 18 - textX;
+    // A short screen loses a rule rather than pushing the panel off the
+    // bottom of it, the same way the help panel drops its last line
+    const limit = this.height - 24;
     let y = name.y + name.height + 12;
     for (const line of rules) {
-      const t = createBodyText(line, cx - panelW / 2 + 30, y, {
-        fontSize: 11, color: THEME.textMuted, wrapWidth: panelW - 52, align: 'left',
+      const t = fitBodyText(line, textX, y, textBox, {
+        fontSize: 11, color: THEME.textMuted, align: 'left',
       });
+      if (y + t.height > limit) { t.destroy(); break; }
       const bullet = new Graphics();
       bullet.circle(cx - panelW / 2 + 20, y + 8, 3);
       bullet.fill({ color: DIFFICULTY_COLORS.siege });
@@ -545,7 +648,7 @@ export class MenuScene implements Scene {
    */
   private buildStats(group: Container): void {
     const cx = this.width / 2;
-    const top = this.height * 0.47;
+    const top = this.lowerTop();
     const panelW = Math.min(360, this.width - 32);
     const stats = loadStats(this.selectedDifficulty);
 
@@ -615,7 +718,7 @@ export class MenuScene implements Scene {
    */
   private buildOptions(group: Container): void {
     const cx = this.width / 2;
-    const top = this.height * 0.47;
+    const top = this.lowerTop();
     const panelW = Math.min(360, this.width - 32);
     const rowW = Math.min(240, panelW - 48);
     const captionW = panelW - 56;
@@ -653,10 +756,9 @@ export class MenuScene implements Scene {
     let contentBottom = y;
     const addRow = (control: Container, note: string): void => {
       group.addChild(control);
-      const caption = createBodyText(note, cx, y + 20, {
+      const caption = fitBodyText(note, cx, y + 20, captionW, {
         fontSize: 10,
         color: THEME.textMuted,
-        wrapWidth: captionW,
       });
       group.addChild(caption);
       contentBottom = caption.y + caption.height;
@@ -696,10 +798,9 @@ export class MenuScene implements Scene {
     // the last caption rather than the next row's slot, so the panel encloses
     // its content whatever the gap has closed to.
     const footerY = contentBottom + 10;
-    const footer = createBodyText('SYSTEM follows your device.', cx, footerY, {
+    const footer = fitBodyText('SYSTEM follows your device.', cx, footerY, captionW, {
       fontSize: 10,
       color: THEME.textMuted,
-      wrapWidth: captionW,
     });
     let bottom = footerY + footer.height + 14;
     if (bottom <= this.height - 24) {
@@ -717,7 +818,7 @@ export class MenuScene implements Scene {
 
   private buildHelp(group: Container): void {
     const cx = this.width / 2;
-    const top = this.height * 0.47;
+    const top = this.lowerTop();
     const panelW = Math.min(360, this.width - 32);
     const panelH = Math.min(this.height - top - 16, 330);
     const panel = new Graphics();
@@ -740,9 +841,8 @@ export class MenuScene implements Scene {
     let y = top + 48;
     const textLimit = guideBtnY - guideBtnH / 2 - 14;
     for (const line of lines) {
-      const t = createBodyText(line, cx - panelW / 2 + 34, y, {
+      const t = fitBodyText(line, cx - panelW / 2 + 34, y, panelW - 54, {
         fontSize: 11.5,
-        wrapWidth: panelW - 54,
         align: 'left',
       });
       // Only draw lines that fit above the FULL GUIDE button
@@ -777,7 +877,7 @@ export class MenuScene implements Scene {
   private buildLeaderboard(group: Container): void {
     const entries = this.leaderboard.getEntries();
     const cx = this.width / 2;
-    const startY = this.height * 0.47;
+    const startY = this.lowerTop();
 
     const boardName = this.selectedDifficulty === 'daily'
       ? `DAILY #${dailyNumber(dailyKey())}`

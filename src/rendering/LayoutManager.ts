@@ -1,3 +1,4 @@
+import { SIEGE_PREVIEW_COUNT } from '../core/Config';
 import { loadSettings } from '../core/Settings';
 import { GRID_SIZE, GridPos } from '../core/types';
 
@@ -126,7 +127,16 @@ export function computeLayout(
   const rightX = gridOriginX + gridSize - sideW + 6;
 
   const holdRect: Rect = { x: leftHanded ? rightX : leftX, y: handOriginY + 18, w: sideW - 6, h: sideW - 6 };
-  const nextRect: Rect = { x: leftHanded ? leftX : rightX, y: handOriginY + 18, w: sideW - 6, h: Math.min(handHeight - 24, (sideW - 6) * 2 + 10) };
+  // The NEXT column is two slots deep in Classic and four in the siege, and
+  // the tallest piece either can deal is four cells — so ask for the room
+  // four of those need, and take it when the hand has it to give.
+  const queueWanted = siege ? SIEGE_PREVIEW_COUNT * (4 * miniCellSize + 8) : 0;
+  const nextRect: Rect = {
+    x: leftHanded ? leftX : rightX,
+    y: handOriginY + 18,
+    w: sideW - 6,
+    h: Math.min(handHeight - 24, Math.max((sideW - 6) * 2 + 10, queueWanted)),
+  };
   const currentRect: Rect = { x: gridOriginX + sideW, y: handOriginY, w: centerW, h: currentH };
   const buttonY = currentRect.y + currentRect.h + 6;
 
