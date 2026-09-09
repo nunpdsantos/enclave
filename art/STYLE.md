@@ -1,0 +1,291 @@
+# ENCLAVE / Siege art bible
+
+## Intent and scope
+
+A tactile strategy table: a living medieval map, built from short sandstone
+fortifications, slate ground and weathered parchment. Cobalt cloth and warm
+torchlight mark the player. Oxblood cloth, iron, smoke and embers mark the siege.
+Enclosed ground becomes a warm, visibly patterned courtyard. Broad silhouettes
+and four value bands do the work; no brick textures, scratches, bevel noise,
+specular gloss, neon bloom, gore or tiny surface decoration.
+
+Authority: section 4 of the owner's **ENCLAVE - direction v3.md** (2026-09-09).
+This kit is an art study. The enemy model and the graybox's playtest outcome are
+not decided by these assets. No game rules or production renderer were changed.
+
+The inspected worktree started clean at `e3b61cb` on `art`. There was no `art/`
+directory or siege kit in `public/`. The existing playbook, PWA files and icons
+are retained. The playbook's direct imperative tone informs the preview copy.
+`Theme.ts` currently uses night blue `#2B3A86`, accent `#4A7AF7`, and danger
+`#EF4444`; this new asset palette proposes the siege identity independently.
+
+## Palette and four luminance levels
+
+The levels use the same brightness measure as `Theme.ts`'s `luminance()`:
+`Y' = 0.299 R + 0.587 G + 0.114 B` on 8-bit sRGB. This is display luma, not
+physical linear-light luminance. All six ramps hit the same four targets within
+2/255; this deliberately prevents hue from substituting for value hierarchy.
+
+| Level | Target Y' | Purpose |
+| --- | ---: | --- |
+| L0 / recess | 32 (12.5%) | Iron recesses, doorway, roof well, deepest shadow |
+| L1 / body shadow | 76 (29.8%) | Slate ground, cobalt and oxblood cloth, stone side |
+| L2 / body light | 142 (55.7%) | Warm courtyard, sandstone lit face, broad colour accent |
+| L3 / light | 206 (80.8%) | Stone caps, pale parchment, torch and intent accents |
+
+| Family | L0 | L1 | L2 | L3 |
+| --- | --- | --- | --- | --- |
+| Sandstone | `#1F2023` | `#514B42` | `#9C8C73` | `#DDCDAA` |
+| Slate / iron / smoke | `#1B2026` | `#424E5B` | `#808F9F` | `#C2D0DE` |
+| Weathered parchment | `#232019` | `#554B3A` | `#A18C6B` | `#DFCDAE` |
+| Cobalt | `#0C2146` | `#294CA8` | `#7093C8` | `#C0D0EF` |
+| Oxblood | `#3C111D` | `#902B42` | `#C47485` | `#EFC0C7` |
+| Torchlight / ember | `#351717` | `#85391D` | `#D27E33` | `#F3CC77` |
+
+Four levels means four authored **interior face values per hue**, with matching
+brightness across hues. Antialiasing, translucent tide and compositing necessarily
+produce intermediate pixel values. Do not posterise alpha edges to force four
+literal colours into the PNG; it damages silhouettes at phone size.
+
+Player: two squared banner tails separated by a deep notch, cobalt right-angle
+floor inlays and square warm centres. Enemy: a single pointed cloth tail, pointed
+shield, and repeated floor chevrons. Intent: four pale corner brackets with an
+oxblood direction wedge; its open centre leaves the destination visible. A colour
+change alone is insufficient for any ownership or threat state. Greyscale review
+is a structural check, not a claim of validated colour-vision accessibility.
+
+## Camera, scale and integration contract
+
+- Orthographic; elevation **60° above the ground** (30° down from vertical).
+  Azimuth **315° / -45°**, measured from +X toward +Y. Camera is southeast at
+  `(+X, -Y, +Z)` looking at the origin. No perspective, tilt or camera roll.
+- One logical cell = **1 × 1 Blender units**, nominal **64 px tile width at 1×**.
+  Every gameplay PNG is **128 × 128 RGBA at 2×**. Orthographic scale is `sqrt(2)`
+  Blender units, so the projected diamond of one cell spans exactly 128 rendered
+  pixels horizontally. Ground centre is pixel `(64,64)` in every asset.
+- **64 px means the whole projected diamond width**, not the distance between
+  neighbouring centres. A rotated square cannot both fit a 64 px bounding box
+  and have 64 px projected edges. At 1×, grid steps are:
+  `column = (+32, +27.7128129211)`, `row = (-32, +27.7128129211)`.
+  Ground diamond height is `55.4256258422` px. Sprite anchor is `(0.5,0.5)`.
+- A 9×9 diamond is 576 px wide and about 499 px high at nominal 1×. The preview
+  also draws 32 px tiles, producing a 288 px board that fits a phone. At 60° the
+  front faces remain visible, but floor exposure is larger than a low 30° view.
+  A 45° azimuth gives equal weight to both board axes and exposes wall thickness.
+- Wall width **0.44 units**; parapet **0.25**; merlons **0.14** above it. The keep's
+  crown reaches **0.685**, plus its small flag. Height stays subordinate to cell
+  ownership. Joined wall ends reach exactly `±0.5`, without a decorative cap.
+- The raider is an intentionally oversized tabletop figure, 1.45 times its
+  primitive construction dimensions (0.783 units tall). Human/building scale is
+  symbolic: its helmet, shield, axe and boots need to survive a 32 px tile.
+- `+X = right`, `+Y = up`, row increases toward `-Y`. Wall masks:
+  `mask = (up ? 1 : 0) | (down ? 2 : 0) | (left ? 4 : 0) | (right ? 8 : 0)`.
+  Render **all 16 masks**, including isolated 00 and cross 15. No 2D sprite
+  rotations or reflections: they would rotate the baked light and the projection.
+- Gates `n/e/s/w` identify the board edge they open onto. All four are rendered
+  from rotated world geometry; the camera and lighting stay fixed.
+- Floor first, translucent ground second, objects sorted by `row + column`
+  back to front (column breaks ties), ownership flags with their host, intent last.
+  To raise a sprite by `z` world units, move it up by
+  `z * cos(60°) * 64 / sqrt(2)` logical pixels.
+- `LayoutManager.ts` currently computes a rectangular cell grid from the viewport;
+  `GridRenderer.ts` already supplies the four joins. Adopting this actual oblique
+  grid later needs projected placement **and inverse hit-testing**. These are
+  not drop-in art for the current square hit grid. No `src/` or `api/` edits are
+  part of this art branch. For a projected hit point: let `dx=x/32`,
+  `dy=y/27.7128129211` relative to the first centre, then
+  `col=round((dy+dx)/2)`, `row=round((dy-dx)/2)`; reject out-of-board cells.
+
+## Light rig and geometry
+
+Fixed world-space key direction `(-0.45,-0.60,0.80)`, normalised, weight `0.76`.
+Fill direction `(0.70,0.20,0.50)`, normalised, weight `0.12`. Constant ambient
+weight `0.12`. Face brightness is ambient plus positive normal dot products with
+key and fill; thresholds `0.20`, `0.47`, `0.72` choose L0 through L3. This reads
+as a broad upper-left key, with the right face darker. No moving sun.
+
+`geometry.py` bakes those bands per flat polygon. `kit.py` creates named sun rig
+objects and uses EEVEE emission materials for the already baked colours, so
+continuous renderer lighting cannot add extra shades. This is an intentional
+four-step light bake, not physically based material lighting. Standard colour
+transform, no AgX grading, exposure 0, gamma 1. No AO, cast-shadow texture or
+bloom. Torch warmth is a reserved colour mass; live flicker belongs in Pixi later.
+Tide alpha is 0.64, chevrons 0.85, smoke 0.40. Geometry and ember positions are
+deterministic. EEVEE transparency and antialiasing may differ from the CPU fallback.
+
+Mesh sources are primitive boxes, a tiled wall footprint, low-sided cylinders,
+five arch wedges and flat cloth polygons. Keep shapes broad enough to trace from
+a concept sheet. Change the named proportion constants before editing individual
+vertices. No external assets or new packages are required.
+
+## Files, atlas and reproduction
+
+From the repository root:
+
+```sh
+art/blender/render.sh
+# Explicit fallback if this machine cannot initialise Blender's Metal GPU:
+art/blender/render.sh --software
+node art/verify.mjs
+npm run dev
+# Open http://localhost:5173/art-preview.html
+```
+
+`BLENDER_BIN` and `ART_PYTHON` may override the installed paths. Default Python:
+`/Applications/Blender.app/Contents/Resources/5.2/python/bin/python3.13`.
+Optional Blender scene: `art/blender/render.sh --save-blend`.
+For one asset, run `kit.py` directly with Blender's `-- --only wall-07`, or run
+`software.py --only wall-07` with bundled Python; then rerun the full pipeline
+before delivery. `render.sh` is a full-build wrapper and rejects partial builds.
+
+Source names use lowercase kebab-case. `wall-00` through `wall-15` use decimal
+two-digit masks, not binary strings. `floor-*` is terrain, `banner-*` ownership,
+`enemy-*` provisional opposition. Keep those roles separate from gameplay enums;
+replace `raider()` or `tide()` in `geometry.py` without changing the common kit.
+
+`art/renders/` holds 31 untrimmed 128 px frames, the 384 px 3×3
+`sample-board.png`, and `render-manifest.json`. The sample is excluded from the
+atlas. `art/pack.py` uses a standard-library PNG reader/writer, 8 columns, two
+extruded texels per edge, two clear texels between slots. No trimming, rotation or
+resampling. Atlas dimensions are 1072×536, with a checked limit below 2,000,000
+bytes. PNG data is straight alpha; edge filtering averages premultiplied colours.
+
+Pixi v8 JSON has `frames[name].frame = {x,y,w,h}`, `rotated:false`,
+`trimmed:false`, full `sourceSize` / `spriteSourceSize`, centre anchors,
+`meta.image:"atlas.png"`, **`meta.scale:"2"`**. Pixi therefore loads each
+128 px source as a 64 px logical texture. The preview explicitly checks that
+contract. `enclave.engine` exposes render provenance. Never relabel CPU output as
+Blender output. Generated files include no timestamps inside PNGs.
+
+`art/verification/pipeline.json` records measured render time, atlas bytes,
+frame count and SHA-256 hashes. `art/verify.mjs` exercises the installed Pixi v8
+spritesheet parser, preview frame contract and PNG/atlas structure. The preview
+uses the owner-requested jsDelivr v8 URL, whose resolved minor version can change;
+actual browser checks must be reported separately from installed-library checks.
+
+## Ten concept-sheet prompts for the owner
+
+These are prompts only. No image model was called. Run them in ChatGPT yourself;
+use the output as a reference to trace in Blender, not as independent gameplay
+sprites. Each prompt repeats the camera and palette to prevent drift. The model
+may not reproduce exact hex values; the procedural kit remains authoritative.
+
+### 1. Keep tower
+
+ENCLAVE concept sheet of one squat square keep, broad sandstone plinth, four
+oversized corner crenellations, dark roof well, one large doorway, cobalt
+double-tail notched flag and a single warm brazier. Tactile medieval strategy-table
+miniature. Fixed orthographic camera, 60° elevation, azimuth 315° from +X, no roll
+or perspective, one-unit square footprint, framed with generous margin. Palette:
+sandstone #9C8C73 and #DDCDAA, slate #1B2026 and #424E5B, parchment #DFCDAE,
+cobalt #294CA8, oxblood #902B42 only as an optional opposing swatch, torch #F3CC77.
+Broad upper-left key, restrained right fill, four flat luminance bands, no fine
+detail, no bloom. Transparent background or plain #1B2026. No text, labels or logos.
+
+### 2. Crenellated wall segments
+
+ENCLAVE concept sheet of short, thick sandstone wall modules: isolated block,
+straight run, corner, T junction and cross, with large alternating merlons and
+an obvious walkway thickness. Arrange as separated miniatures with equal scale.
+Fixed orthographic camera, 60° elevation, azimuth 315° from +X, no perspective or
+roll. Each cell is one world unit; walls occupy 0.44 unit width and 0.39 total
+height. Sandstone #9C8C73 / #DDCDAA, slate #1B2026 / #424E5B, parchment #DFCDAE,
+cobalt #294CA8, oxblood #902B42, torch #F3CC77; accents very sparse. Broad upper-left
+key and restrained right fill, four flat luminance bands, no mortar texture or
+small surface detail. Transparent or plain #1B2026 background. No text or labels.
+
+### 3. Border gate arch
+
+ENCLAVE concept sheet of a squat open medieval gate arch fitting one border
+cell, two thick piers, five large arch stones and two broad crenellations, a
+single pointed oxblood pennant. The opening must be real negative space, wide
+enough for a miniature raider. Fixed orthographic camera, 60° elevation, azimuth
+315° from +X, no roll or perspective; same one-unit scale as the wall kit.
+Sandstone #9C8C73 / #DDCDAA, slate iron #1B2026 / #424E5B, parchment #DFCDAE,
+cobalt #294CA8, oxblood #902B42 and ember #F3CC77. Broad upper-left key, quiet
+right fill, four flat luminance bands. Tactile strategy table, no masonry noise,
+no cinematic smoke. Transparent or plain #1B2026 background. No text or labels.
+
+### 4. Ruins
+
+ENCLAVE concept sheet of two clearly different old fortification ruins: one
+upright broken pier with a fallen lintel; one low collapsed corner with three
+large rubble masses. No gravel or tiny chips. Keep each within a one-unit cell.
+Fixed orthographic camera, 60° elevation, azimuth 315° from +X, no roll or
+perspective. Sandstone #9C8C73 / #DDCDAA over slate #1B2026 / #424E5B; parchment
+#DFCDAE, cobalt #294CA8, oxblood #902B42, torch #F3CC77 restricted to a small
+palette strip made of unlabelled colour squares. Broad upper-left key and quiet
+right fill; exactly four flat value bands. Tactile medieval tabletop sculpture.
+Transparent or plain #1B2026 background. No text, symbols, lettering or logos.
+
+### 5. Raider figure
+
+ENCLAVE concept sheet of a low-poly raider miniature that reads at 32 pixels:
+oversized iron helmet, broad oxblood cloak, two separated boots, a pointed shield
+and one short chunky axe. No face detail, fingers, armour studs or realistic
+violence. Fixed orthographic camera, 60° elevation, azimuth 315° from +X, no roll
+or perspective; oversized tabletop figure under 0.8 units tall in a one-unit cell. Slate iron
+#1B2026 / #424E5B, oxblood #902B42, sandstone #9C8C73 / #DDCDAA, parchment
+#DFCDAE, cobalt #294CA8 reserved for a separate ally reference, ember #F3CC77.
+Broad upper-left key, quiet right fill, four flat luminance bands. Transparent
+or plain #1B2026 background, no cast ground. No text or labels.
+
+### 6. Spreading tide
+
+ENCLAVE concept sheet of a provisional spreading siege tide across a three-cell
+diamond patch: translucent oxblood ground, two broad chevrons per cell, two
+simple iron-dark smoke masses and a few large ember flecks. Show the underlying
+floor through the tide. Tactile strategy-table tokens, no fluid simulation,
+tentacles or noisy particles. Fixed orthographic camera, 60° elevation, azimuth
+315° from +X, no perspective or roll, one-unit cells. Oxblood #902B42, slate
+#1B2026 / #424E5B, ember #F3CC77; sandstone #9C8C73 / #DDCDAA, parchment
+#DFCDAE and cobalt #294CA8 only on the underlying floor. Broad upper-left key,
+restrained fill, four flat value bands. Transparent background. No text or labels.
+
+### 7. Courtyard floor
+
+ENCLAVE concept sheet of three one-unit floor tiles: quiet slate paving, a warm
+claimed courtyard with a cobalt right-angle inlay and square amber centre, and
+a second courtyard with one broad raised garden bed. Four large paving slabs,
+no small stone texture. Fixed orthographic camera, 60° elevation, azimuth 315°
+from +X, no roll or perspective. Palette slate #1B2026 / #424E5B, parchment
+#A18C6B / #DFCDAE, sandstone #9C8C73 / #DDCDAA, cobalt #294CA8, oxblood
+#902B42 confined to a separate unlabelled enemy chevron swatch, torch #F3CC77.
+Broad upper-left key, quiet right fill and four flat luminance bands. Transparent
+or plain #1B2026 background. No text, lettering or labels.
+
+### 8. Ownership banners
+
+ENCLAVE concept sheet of two readable miniature banners on plain iron poles:
+cobalt player cloth with two squared tails separated by a deep central notch;
+oxblood enemy cloth ending in a single spear point. Broad flat cloth, no crest,
+sewing, texture or tiny fringe. Fixed orthographic camera, 60° elevation, azimuth
+315° from +X, no roll or perspective. Turn the flag faces toward the camera so
+their distinct bottom silhouettes survive at phone scale. Cobalt #294CA8,
+oxblood #902B42, iron #1B2026 / #424E5B; sandstone #9C8C73 / #DDCDAA, parchment
+#DFCDAE and torch #F3CC77 as sparse supporting colours. Broad upper-left key,
+quiet fill, four flat value bands. Transparent background. No text or logos.
+
+### 9. World map parchment
+
+ENCLAVE concept sheet of a weathered parchment campaign map laid on a dark
+slate strategy table, four broad terrain regions indicated by simple contours
+and chunky miniature gate, ruin, city and keep silhouettes. Leave blank areas
+for future UI placement; invent no place names. Fixed orthographic camera, 60°
+elevation, azimuth 315° from +X, no roll or perspective. Parchment #A18C6B /
+#DFCDAE, slate #1B2026 / #424E5B, sandstone #9C8C73 / #DDCDAA, cobalt #294CA8
+for player route markers, oxblood #902B42 for threat markers, torch #F3CC77.
+Broad upper-left key, restrained right fill, four flat luminance bands. No paper
+grain or tiny map detail. Plain #1B2026 background. No text, numbers or labels.
+
+### 10. UI frame
+
+ENCLAVE concept sheet of a restrained medieval tabletop UI frame: thick slate
+plate, weathered parchment inset, broad clipped corners, cobalt notched tab for
+the player and oxblood pointed tab for the enemy, one warm torch-coloured focus
+edge. Show a single frame as a shallow object with a generous blank centre,
+not a finished interface. Fixed orthographic camera, 60° elevation, azimuth 315°
+from +X, no roll or perspective. Slate #1B2026 / #424E5B, parchment #A18C6B /
+#DFCDAE, sandstone #9C8C73 / #DDCDAA, cobalt #294CA8, oxblood #902B42, torch
+#F3CC77. Broad upper-left key, quiet right fill, four flat luminance bands, no
+filigree, grain, gloss or tiny details. Transparent background. No text or icons.
