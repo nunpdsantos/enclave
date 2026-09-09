@@ -101,7 +101,7 @@
         <nav class="hero-links" aria-label="Page sections"><a href="#boards">Examine the board ↓</a><a href="#kit">Inspect the kit ↓</a></nav>
       </div>
       <figure class="phone-study">
-        <div class="small-label"><span>The phone test</span><span>32 px tiles</span></div>
+        <div class="small-label"><span>The phone test</span><span>32 CSS px · DPR 1–3</span></div>
         <div id="phone-view" role="img" aria-label="Nine by nine siege diorama at 32 pixel tile width"></div>
         <figcaption>One glance: walls, safe ground, approaching siege.</figcaption>
       </figure>
@@ -109,7 +109,7 @@
     <div class="status" role="status" aria-live="polite"><span id="status-message">Loading the siege kit…</span><span id="atlas-stats"></span><span id="camera-stats"></span></div>
     <div id="error" class="error" hidden></div>
     <div class="controls" aria-label="Art inspection controls">
-      <fieldset><legend>Projection</legend><label><input id="projection-diamond" name="projection" type="radio" value="diamond">Diamond</label><label><input id="projection-square" name="projection" type="radio" value="square" checked>Square v2</label><label><input id="projection-square-v1" name="projection" type="radio" value="square-v1">Square v1</label></fieldset>
+      <fieldset><legend>Projection</legend><label><input id="projection-diamond" name="projection" type="radio" value="diamond">Diamond</label><label><input id="projection-square" name="projection" type="radio" value="square" checked>Square v3</label><label><input id="projection-square-v2" name="projection" type="radio" value="square-v2">Square v2</label><label><input id="projection-square-v1" name="projection" type="radio" value="square-v1">Square v1</label></fieldset>
       <fieldset><legend>Enemy studies</legend><label><input id="raiders" type="checkbox" checked>Raiders</label><label><input id="tide" type="checkbox" checked>Tide</label></fieldset>
       <label class="separate"><input id="mono" type="checkbox">Greyscale</label>
       <label><input id="grid" type="checkbox">Cell outlines</label>
@@ -127,7 +127,7 @@
     </section>
     <section class="catalog-section" id="kit"><h2>A kit that holds together.</h2><p>Every wall orientation is rendered under the same light. The four bits are U=1, D=2, L=4, R=8. No finished wall sprite is rotated. Gate letters name the entry edge.</p><div id="catalog" class="catalog"></div></section>
     <section class="notes">
-      <div><h3>Stone with weight.</h3><p>Short parapets and broad merlons keep the wall thickness visible. Four value steps anchor subtle sandstone courses, cool recesses and soft contact shade. Square v1 keeps the original flat treatment for comparison.</p></div>
+      <div><h3>Stone with weight.</h3><p>Short parapets and broad merlons keep the wall thickness visible. A tall buttressed keep, golden stone courses and cool directional shadows. Compare Square v3 with the preserved v2 and v1 atlases.</p></div>
       <div><h3>A room worth holding.</h3><p>Cobalt inlays and a square courtyard pattern mark settled ground. Torchlight belongs to safety; pale corner brackets announce danger.</p></div>
       <div><h3>The enemy is provisional.</h3><p>The figure and spreading tide are separate studies. Toggle either one while the enemy rules are playtested. This page is an art inspection, not a playable mission.</p></div>
     </section>
@@ -154,9 +154,10 @@
     const STEP_Y = STEP_X*Math.sin(Math.PI/3);
     const PROJECTIONS = {
       diamond: {atlas:'atlas',frameSize:64,column:[STEP_X,STEP_Y],row:[-STEP_X,STEP_Y],height:560,origin:[304,48],bannerRaise:5.66,camera:'60° elevation · 315° diamond view'},
-      square: {atlas:'atlas-square',frameSize:96,column:[64,0],row:[0,64],height:624,origin:[48,64],bannerRaise:8,camera:'60° elevation · 0° square oblique'}
+      square: {atlas:'atlas-square',frameSize:96,column:[64,0],row:[0,64],height:624,origin:[48,64],bannerRaise:16.64,camera:'60° elevation · 0° square oblique'}
     };
-    PROJECTIONS['square-v1']={...PROJECTIONS.square,atlas:'atlas-square-v1',camera:'60° elevation · 0° square oblique · original materials'};
+    PROJECTIONS['square-v2']={...PROJECTIONS.square,bannerRaise:8,atlas:'atlas-square-v2',camera:'60° elevation · 0° square oblique · v2 materials'};
+    PROJECTIONS['square-v1']={...PROJECTIONS.square,bannerRaise:8,atlas:'atlas-square-v1',camera:'60° elevation · 0° square oblique · original materials'};
     let projection='square';
     const layout=()=>PROJECTIONS[projection];
     function position(r,c) {
@@ -179,8 +180,8 @@
         const sheet=await PIXI.Assets.load(`/assets/siege/${config.atlas}.json`);
         const actual=Object.keys(sheet.textures).sort();
         if (JSON.stringify(actual)!==JSON.stringify([...FRAME_NAMES].sort())) throw new Error(`${name}: atlas frame names do not match the preview contract.`);
-        if (FRAME_NAMES.some(frame=>sheet.textures[frame].width!==config.frameSize||sheet.textures[frame].height!==config.frameSize)) throw new Error(`${name}: unexpected logical frame size.`);
-        if (sheet.data.enclave.projection!==(name==='square-v1'?'square':name)) throw new Error(`${name}: incorrect projection metadata.`);
+        if (FRAME_NAMES.some(frame=>sheet.textures[frame].width!==(name==='square'&&frame==='keep'?128:config.frameSize)||sheet.textures[frame].height!==(name==='square'&&frame==='keep'?144:config.frameSize))) throw new Error(`${name}: unexpected logical frame size.`);
+        if (sheet.data.enclave.projection!==(name.startsWith('square')?'square':name)) throw new Error(`${name}: incorrect projection metadata.`);
         if (sheet.data.enclave.cellPixels!==CELL_WIDTH||JSON.stringify(sheet.data.enclave.columnStep)!==JSON.stringify(config.column)||JSON.stringify(sheet.data.enclave.rowStep)!==JSON.stringify(config.row)) throw new Error(`${name}: atlas and board cell steps disagree.`);
         sheet.textureSource.scaleMode='linear';
         const response=await fetch(`/assets/siege/${config.atlas}.png`);
@@ -191,7 +192,7 @@
       const views = [{id:'view-1',scale:1,w:608,h:560},{id:'view-2',scale:2,w:1216,h:1120},{id:'phone-view',scale:.5,w:304,h:282}];
       for (const view of views) {
         const app=new PIXI.Application();
-        await app.init({width:view.w,height:view.h,resolution:1,backgroundAlpha:0,antialias:true,autoStart:false,preference:'webgl'});
+        await app.init({width:view.w,height:view.h,resolution:Math.min(window.devicePixelRatio||1,3),autoDensity:true,backgroundAlpha:0,antialias:true,autoStart:false,preference:'webgl'});
         byId(view.id).append(app.canvas);
         const board=new PIXI.Container(); board.scale.set(view.scale); board.position.set(view.w/2,48*view.scale);
         app.stage.addChild(board);
@@ -210,7 +211,7 @@
       }
       function sprite(board,name,r,c,raise=0) {
         const item=new PIXI.Sprite(sheets[projection].textures[name]);
-        item.anchor.set(.5); const [x,y]=position(r,c); item.position.set(x,y-raise);
+        item.anchor.copyFrom(item.texture.defaultAnchor); const [x,y]=position(r,c); item.position.set(x,y-raise);
         item.label=name; board.addChild(item); return item;
       }
       function draw() {
@@ -261,7 +262,7 @@
           const frame=sheet.data.frames[name].frame;
           const figure=document.createElement('figure'); figure.className='asset';
           const thumbnail=document.createElement('div'); thumbnail.className='thumb'; thumbnail.role='img'; thumbnail.ariaLabel=name;
-          thumbnail.style.width=thumbnail.style.height=`${layout().frameSize}px`;
+          thumbnail.style.width=`${frame.w/2}px`; thumbnail.style.height=`${frame.h/2}px`;
           thumbnail.style.backgroundImage=`url(/assets/siege/${layout().atlas}.png)`;
           thumbnail.style.backgroundSize=`${sheet.data.meta.size.w/2}px ${sheet.data.meta.size.h/2}px`;
           thumbnail.style.backgroundPosition=`${-frame.x/2}px ${-frame.y/2}px`;

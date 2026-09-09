@@ -2,12 +2,12 @@
   "projection": "square",
   "pixiVersion": "8.20.1",
   "frameCount": 31,
-  "atlasBytes": 263465,
+  "atlasBytes": 316793,
   "checks": [
     "preview script syntax",
     "exact preview/atlas name match",
     "Pixi spritesheet parse",
-    "projection frame sizes with center anchors",
+    "variable frame sizes with per-frame ground anchors",
     "three actual Pixi scene graphs",
     "projection switching and resize",
     "catalog replacement and atlas swap",
@@ -18,5 +18,5 @@
     "all 81 cell centres and boundary inspection at all scales"
   ],
   "browserVerified": false,
-  "limitation": "DOM and GPU Application are adapters. Browser connection unavailable in this session; actual CDN, GPU rendering, responsive CSS and physical touch require a separate check."
+  "limitation": "DOM and GPU Application are adapters. agent-browser executable unavailable; Computer Use denied native Chrome access. Actual CDN, GPU rendering, responsive CSS and physical touch remain unverified."
 }

@@ -1,24 +1,18 @@
-ENCLAVE Square materials v2 verification limits, 2026-09-09
+ENCLAVE Square v3 verification limits, 2026-09-09
 
-BLENDER
-All new renders used blender MCP tools on Blender 5.2.1 LTS. Both
-blender_run_script and blender_python_expr completed successfully. Board/large
-Keep: EEVEE. Heroes: Cycles CPU, 32 samples with denoising. No shell Blender or
-software fallback render. Tool times are in render-tools-v2.json. The AO on/off
-comparison proved rendered occlusion changes the Keep; see material-ao.json.
-World.use_nodes emitted a Blender 6.0 deprecation warning; no render failures.
+The required numeric, geometry, PNG, atlas, Pixi parsing and preview-scene checks pass.
+See acceptance-v3.json and REPORT-geometry-v3.md for precise definitions and results.
 
-BROWSER / PHONE
-Current Computer Use getBrowser returned "No browser is available" for the art
-preview. Live CDN, WebGL, responsive CSS and real-device touch remain unverified.
-No game or menu integration was attempted. board-phone-v2.png is a CPU composite
-of the rendered atlas, 360px viewport with 32px cells; it is not a screenshot.
+All new 3D renders used Blender MCP tools on Blender 5.2.1 LTS, EEVEE.
+blender_python_expr health check and blender_run_script actual mesh/render operations
+both completed. No shell Blender or CPU geometry fallback. Heroes remain historical.
 
-OFFLINE
-art/verify.mjs passes with Pixi 8.20.1, parsing all three 31-frame atlases and
-running the actual preview script with DOM/GPU Application adapters. Square v2
-is the default. Projection/material switching, anchors, all 81 cell centres,
-boundaries, toggles and catalog replacement pass at three scales.
-art/check_assets.py passes for Square and Diamond. It checks source/atlas pixels,
-16 masks, bounds, alpha, base-palette luma, exact square cell raster, preserved
-v1 checksum, 256px Keep framing and both 1024px hero alpha borders.
+Browser: agent-browser executable unavailable. Computer Use inventory had no browser
+connection. Native Chrome access returned: "Computer Use was not approved to use
+Google Chrome". Live CDN, WebGL, responsive CSS and physical-phone touch are unverified.
+Node uses real installed Pixi 8.20.1 with DOM/GPU Application adapters, not a browser.
+
+Phone PNGs are composites from the shipped atlas at exact DPR 1 / 3 dimensions.
+DPR 3 courses and shadows read. At DPR 1, battlement tops remain busy, front courses
+soften and the brazier becomes a tiny warm mark. There was no independent human
+perception test. No owner approval or production integration is claimed.

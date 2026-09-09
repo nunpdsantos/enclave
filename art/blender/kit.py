@@ -1,7 +1,7 @@
 """Run with Blender MCP blender_run_script, never shell Blender here.
 
 Builds every source mesh with bpy, using flat polygons and four pre-baked light
-bands. Square v2 modulates them with courses, tint and AO; Diamond stays flat.
+bands. Square v3 rebuilds the meshes and modulates courses, tint and AO; Diamond stays flat.
 The named physical lights document the key/fill rig used in the face bake.
 No external models, materials, textures, extensions or network calls.
 """
@@ -25,6 +25,9 @@ def main():
     parser.add_argument("--save-blend",action="store_true",help="Save the final 3x3 inspection scene")
     args=parser.parse_args(sys.argv[sys.argv.index("--")+1:] if "--" in sys.argv else [])
     projection=PROJECTIONS[args.projection]
+    global asset, sample_board, face_colour
+    if projection.name=='square':
+        from v3 import asset, sample_board, face_colour
     root=Path(__file__).resolve().parents[1]; out=args.output_dir or root/f"renders{projection.suffix}"; out.mkdir(parents=True,exist_ok=True)
     start=time.perf_counter()
     bpy.ops.object.select_all(action="SELECT"); bpy.ops.object.delete(use_global=False)
@@ -54,8 +57,8 @@ def main():
         light.data.angle=math.radians(8)
         if projection.name=="square": light.data.color=(1,.82,.59) if name.startswith("Key") else (.55,.72,1)
     # Four-band bake replaces diffuse lighting. Square adds shader AO and
-    # a separate transparent contact footprint; fixtures document the baked rig.
-    from materials import material as stone_material, add_uv, tinted, contact_shadow, COURSE_CONTRAST
+    # a separate transparent directional cast silhouette; fixtures document the baked rig.
+    from materials_v3 import material as stone_material, add_uv, tinted, contact_shadow, COURSE_CONTRAST
     materials={}; objects=[]
     def linear(v):
         v/=255
@@ -97,14 +100,26 @@ def main():
                     indices[rgb]=len(mesh.materials); mesh.materials.append(material(rgb,source.alpha,source.family))
                 poly.material_index=indices[rgb]; poly.use_smooth=False
     names=[args.only] if args.only else ASSETS
+    timings={}
     for name in names:
+        tick=time.perf_counter()
+        w,h=(256,288) if projection.name=='square' and name=='keep' else (projection.frame_size,projection.frame_size)
+        scene.render.resolution_x=w; scene.render.resolution_y=h
+        camera.data.ortho_scale=max(w,h)/128 if projection.name=='square' else projection.ortho_scale
+        up=camera.rotation_euler.to_matrix() @ Vector((0,1,0))
+        anchor_y=192 if name=='keep' else 112 if name.startswith(('wall-','gate-')) else 96
+        target=up*((anchor_y-h/2)/128) if projection.name=='square' else Vector((0,0,0))
+        camera.location=target+Vector((10*math.cos(el)*math.cos(az),10*math.cos(el)*math.sin(az),10*math.sin(el)))
         meshes=asset(name); build(meshes)
         if projection.name=="square" and not name.startswith(("floor-","enemy-tide","enemy-target")):
             shadow=contact_shadow(meshes,projection,scene)
             if shadow: objects.append(shadow)
         scene.render.filepath=str(out/f"{name}.png")
         bpy.ops.render.render(write_still=True)
-    if args.only: return
+        timings[name]=round(time.perf_counter()-tick,3)
+    if args.only:
+        print(json.dumps({'timings':timings})); return
+    camera.location=Vector((10*math.cos(el)*math.cos(az),10*math.cos(el)*math.sin(az),10*math.sin(el)))
     build(sample_board()); camera.data.ortho_scale=projection.ortho_scale*3.12
     scene.render.resolution_x=scene.render.resolution_y=384
     scene.render.filepath=str(out/"sample-board.png"); bpy.ops.render.render(write_still=True)
@@ -113,9 +128,9 @@ def main():
     report={"engine":"blender-eevee","blender_version":bpy.app.version_string,"blender_render_verified":True,
             "projection":projection.name,"elevation":projection.elevation,"azimuth":projection.azimuth,
             "ortho_scale":projection.ortho_scale,"ground_depth_compensation":1/math.sin(el) if projection.name=="square" else 1,
-            "materials":"sandstone-v2" if projection.name=="square" else "flat-v1",
+            "materials":"sandstone-v3" if projection.name=="square" else "flat-v1",
             "course_contrast":COURSE_CONTRAST["kit"] if projection.name=="square" else 0,
-            "render_seconds":round(elapsed,3),"frame_count":len(names),"asset_size":[projection.frame_size]*2,"sample_size":[384,384],"frames":names}
+            "frame_timings":timings,"keep_frame":{"size":[256,288],"anchor":[.5,2/3]},"render_seconds":round(elapsed,3),"frame_count":len(names),"asset_size":[projection.frame_size]*2,"sample_size":[384,384],"frames":names}
     (out/"render-manifest.json").write_text(json.dumps(report,indent=2)+"\n")
     print(f"EEVEE rendered {len(names)} assets + sample in {elapsed:.3f}s")
 

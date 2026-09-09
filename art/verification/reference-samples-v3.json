@@ -1,0 +1,95 @@
+{
+  "source": "/Users/nunosantos/Desktop/ENCLAVE/concepts/01-keep-reference.png",
+  "size": [
+    1232,
+    928
+  ],
+  "sha256": "1cefa9136952ddd255d58b86ad36624e5ad07ffabda33cfd1bdf21798e84e4ce",
+  "method": "per-channel median, pixel rectangles right and bottom exclusive",
+  "samples": {
+    "sunlit sandstone": {
+      "rect": [
+        477,
+        464,
+        494,
+        485
+      ],
+      "rgb": [
+        245,
+        219,
+        174
+      ],
+      "hex": "#F5DBAE"
+    },
+    "warm top stone": {
+      "rect": [
+        632,
+        165,
+        649,
+        174
+      ],
+      "rgb": [
+        221,
+        181,
+        141
+      ],
+      "hex": "#DDB58D"
+    },
+    "cool stone shadow": {
+      "rect": [
+        771,
+        557,
+        785,
+        576
+      ],
+      "rgb": [
+        52,
+        63,
+        64
+      ],
+      "hex": "#343F40"
+    },
+    "door recess": {
+      "rect": [
+        536,
+        634,
+        548,
+        661
+      ],
+      "rgb": [
+        28,
+        32,
+        26
+      ],
+      "hex": "#1C201A"
+    },
+    "slate background": {
+      "rect": [
+        70,
+        200,
+        150,
+        280
+      ],
+      "rgb": [
+        88,
+        109,
+        131
+      ],
+      "hex": "#586D83"
+    },
+    "cloth shadow": {
+      "rect": [
+        521,
+        403,
+        536,
+        463
+      ],
+      "rgb": [
+        35,
+        49,
+        67
+      ],
+      "hex": "#233143"
+    }
+  }
+}

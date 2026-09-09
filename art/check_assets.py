@@ -47,6 +47,9 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument("--projection",choices=PROJECTIONS,default="diamond")
     projection=PROJECTIONS[parser.parse_args().projection]
+    if projection.name=="square":
+        from verify_v3 import main as verify_square
+        verify_square(); return
     square=projection.name=="square"; tile=projection.frame_size
     atlas_path=ROOT.parent/"public/assets/siege"
     data=json.loads((atlas_path/f"atlas{projection.suffix}.json").read_text())

@@ -31,20 +31,22 @@ def main():
     if found!=set(ASSETS): raise ValueError(f"Stale/missing PNGs: {found ^ set(ASSETS)}")
     tile=projection.frame_size; pad=2; gutter=2; step=tile+pad*2+gutter; columns=8
     width=columns*step; height=math.ceil(len(ASSETS)/columns)*step
+    if projection.name=="square": height+=294
     atlas=bytearray(width*height*4); frames={}; hashes={}
     for i,name in enumerate(ASSETS):
         path=source/f"{name}.png"; w,h,pixels=read_png(path)
-        if (w,h)!=(tile,tile): raise ValueError(f"Wrong frame size: {name} {w}x{h}")
+        if (w,h)!=((256,288) if projection.name=="square" and name=="keep" else (tile,tile)): raise ValueError(f"Wrong frame size: {name} {w}x{h}")
         alphas=pixels[3::4]
         if not any(alphas) or not any(a==0 for a in alphas): raise ValueError(f"Empty/non-transparent asset: {name}")
         x,y=(i%columns)*step+pad,(i//columns)*step+pad
-        for dy in range(-pad,tile+pad):
-            for dx in range(-pad,tile+pad):
-                a=(min(tile-1,max(0,dy))*tile+min(tile-1,max(0,dx)))*4
+        if projection.name=="square" and name=="keep": x,y=pad,math.ceil(len(ASSETS)/columns)*step+pad
+        for dy in range(-pad,h+pad):
+            for dx in range(-pad,w+pad):
+                a=(min(h-1,max(0,dy))*w+min(w-1,max(0,dx)))*4
                 b=((y+dy)*width+x+dx)*4
                 atlas[b:b+4]=pixels[a:a+4]
         frames[name]={"frame":{"x":x,"y":y,"w":w,"h":h},"rotated":False,"trimmed":False,
-                      "spriteSourceSize":{"x":0,"y":0,"w":w,"h":h},"sourceSize":{"w":w,"h":h},"anchor":{"x":.5,"y":.5}}
+                      "spriteSourceSize":{"x":0,"y":0,"w":w,"h":h},"sourceSize":{"w":w,"h":h},"anchor":{"x":.5,"y":(2/3 if name=="keep" else 112/192 if name.startswith(("wall-","gate-")) else .5) if projection.name=="square" else .5}}
         hashes[name]=hashlib.sha256(path.read_bytes()).hexdigest()
     data={"frames":frames,"meta":{"app":"ENCLAVE procedural siege kit","version":"1.0","image":f"{atlas_name}.png",
           "format":"RGBA8888","size":{"w":width,"h":height},"scale":"2"},
@@ -55,7 +57,9 @@ def main():
                      "rowStep":[0,64] if projection.name=="square" else [-32,32*math.sin(math.pi/3)],
                      "joinBits":{"up":1,"down":2,"left":4,"right":8},"enemyArt":"provisional"}}
     if projection.name=="square":
-        data["enclave"]["materials"]={"version":2,"courses":"logical UV ashlar","courseContrast":report["course_contrast"],"ambientOcclusion":True,"contactShadow":"feathered slate alpha"}
+        data["enclave"]["frameOverrides"]={"keep":{"size":[256,288],"anchor":{"x":.5,"y":2/3}},"wallsAndGates":{"size":[192,192],"anchor":{"x":.5,"y":112/192}}}
+        data["enclave"]["anchorContract"]="Use frames[name].anchor; groundAnchor is the default only"
+        data["enclave"]["materials"]={"version":3,"courses":"logical UV ashlar","courseContrast":report["course_contrast"],"ambientOcclusion":True,"castShadow":"projected convex silhouette, cool alpha 0.48"}
     write_png(dest/f"{atlas_name}.png",width,height,atlas)
     (dest/f"{atlas_name}.json").write_text(json.dumps(data,indent=2)+"\n")
     size=(dest/f"{atlas_name}.png").stat().st_size
@@ -64,7 +68,7 @@ def main():
     if (aw,ah)!=(width,height) or check!=atlas: raise ValueError("Atlas PNG round trip failed")
     verification={"projection":projection.name,"engine":report["engine"],"render_seconds":report["render_seconds"],"frame_count":len(frames),
                   "atlas_bytes":size,"atlas_dimensions":[width,height],"atlas_sha256":hashlib.sha256((dest/f"{atlas_name}.png").read_bytes()).hexdigest(),
-                  "source_sha256":hashes,"checks":["all source frames present",f"{tile}x{tile} RGBA","nonempty with transparency","PNG CRC and lossless round trip","under 2 MB","untrimmed center anchors","meta.scale string 2"]}
+                  "source_sha256":hashes,"checks":["all source frames present","per-class RGBA dimensions checked","nonempty with transparency","PNG CRC and lossless round trip","under 2 MB","untrimmed per-frame ground anchors","meta.scale string 2"]}
     (root/"verification"/f"pipeline{projection.suffix}.json").write_text(json.dumps(verification,indent=2)+"\n")
     print(f"Packed {len(frames)} frames: {width}x{height}, {size:,} bytes ({size/1024:.1f} KiB); engine={report['engine']}")
 

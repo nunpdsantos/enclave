@@ -1,277 +1,181 @@
 # ENCLAVE / Siege art bible
 
-## Intent and scope
+## Current direction: Square v3
 
-A tactile strategy table: a living medieval map, built from short sandstone
-fortifications, slate ground and weathered parchment. Cobalt cloth and warm
-torchlight mark the player. Oxblood cloth, iron, smoke and embers mark the siege.
-Enclosed ground becomes a warm, visibly patterned courtyard. Broad silhouettes
-and four value bands do the work; no high-frequency brick textures, scratches, bevel noise,
-specular gloss, neon bloom, gore or tiny surface decoration.
+The owner's selected `01-keep-reference.png` governs proportions, warm sandstone,
+cool slate shadow, cobalt cloth, crenellations and forecourt paving. The board
+must read first at **32 CSS px per cell, DPR 3 (96 device px)**, then stay legible
+at DPR 1. The previous silhouette freeze and 10% course modulation are withdrawn.
+Square v1 and Square v2 remain immutable visual comparisons. No gameplay or
+`src/` / `api/` changes belong to this track.
 
-Authority: section 4 of the owner's **ENCLAVE - direction v3.md** (2026-09-09).
-This kit is an art study. The enemy model and the graybox's playtest outcome are
-not decided by these assets. No game rules or production renderer were changed.
+Broad silhouette, mass, four value bands, directional light and cast shadow do
+the work. No grain, scratch textures or tiny random surface decoration. Player
+cloth has two squared tails with a deep central notch; enemy cloth has one point.
+Cobalt right-angle inlays and amber centres reinforce ownership independently of hue.
 
-The inspected worktree started clean at `e3b61cb` on `art`. There was no `art/`
-directory or siege kit in `public/`. The existing playbook, PWA files and icons
-are retained. The playbook's direct imperative tone informs the preview copy.
-`Theme.ts` currently uses night blue `#2B3A86`, accent `#4A7AF7`, and danger
-`#EF4444`; this new asset palette proposes the siege identity independently.
+## Reference sampling and palette
 
-## Palette and four luminance levels
+Reference: `/Users/nunosantos/Desktop/ENCLAVE/concepts/01-keep-reference.png`,
+1232×928. Samples are per-channel medians of the specified pixel rectangles
+(left, top, right, bottom; exclusive right/bottom), not guessed colour names.
+`verification/reference-samples-v3.json` records the source hash and measurements.
 
-The levels use the same brightness measure as `Theme.ts`'s `luminance()`:
-`Y' = 0.299 R + 0.587 G + 0.114 B` on 8-bit sRGB. This is display luma, not
-physical linear-light luminance. All six ramps hit the same four targets within
-2/255; this deliberately prevents hue from substituting for value hierarchy.
+| Reference area | Rectangle | Sample |
+| --- | --- | --- |
+| Sunlit sandstone | 477,464,494,485 | `#F5DBAE` |
+| Warm top stone | 632,165,649,174 | `#DDB58D` |
+| Cool stone shadow | 771,557,785,576 | `#343F40` |
+| Door recess | 536,634,548,661 | `#1C201A` |
+| Slate background | 70,200,150,280 | `#586D83` |
+| Cobalt cloth in shadow | 521,403,536,463 | `#233143` |
 
-| Level | Target Y' | Purpose |
-| --- | ---: | --- |
-| L0 / recess | 32 (12.5%) | Iron recesses, doorway, roof well, deepest shadow |
-| L1 / body shadow | 76 (29.8%) | Slate ground, cobalt and oxblood cloth, stone side |
-| L2 / body light | 142 (55.7%) | Warm courtyard, sandstone lit face, broad colour accent |
-| L3 / light | 206 (80.8%) | Stone caps, pale parchment, torch and intent accents |
+Four **authored face bands** remain the backbone: recess, cool body shadow,
+mid-value body, pale light. Unlike v1/v2, v3 does not force every hue to identical
+luma targets. Direct reference samples span a wider range. Shader courses,
+right-side tint, AO, edge antialiasing and translucent shadows produce intermediate
+values. Equal-luma historical palette checks still apply to Diamond, not v3.
 
-| Family | L0 | L1 | L2 | L3 |
+| Family | L0 recess | L1 shadow | L2 body | L3 light |
 | --- | --- | --- | --- | --- |
-| Sandstone | `#1F2023` | `#514B42` | `#9C8C73` | `#DDCDAA` |
-| Slate / iron / smoke | `#1B2026` | `#424E5B` | `#808F9F` | `#C2D0DE` |
-| Weathered parchment | `#232019` | `#554B3A` | `#A18C6B` | `#DFCDAE` |
-| Cobalt | `#0C2146` | `#294CA8` | `#7093C8` | `#C0D0EF` |
-| Oxblood | `#3C111D` | `#902B42` | `#C47485` | `#EFC0C7` |
-| Torchlight / ember | `#351717` | `#85391D` | `#D27E33` | `#F3CC77` |
+| Sandstone v3 | `#1C201A` | `#343F40` | `#A5845E` | `#F5DBAE` |
+| Slate v3 | `#202C39` | `#586D83` | `#808F9F` | `#C2D0DE` |
+| Paving / parchment v3 | `#232019` | `#554B3A` | `#BBA98E` | `#C8BBA5` |
+| Roof deck v3 | `#1C201A` | `#344346` | `#455356` | `#66706A` |
+| Cobalt, retained | `#0C2146` | `#294CA8` | `#7093C8` | `#C0D0EF` |
+| Oxblood, retained | `#3C111D` | `#902B42` | `#C47485` | `#EFC0C7` |
+| Torch, retained | `#351717` | `#85391D` | `#D27E33` | `#F3CC77` |
 
-Four levels means four authored **base face values per hue**, with matching
-brightness across hues. Square v2 adds restrained course and occlusion modulation
-around that backbone; it does not restrict rendered interiors to four literal
-colours. Antialiasing, translucent tide and compositing necessarily
-produce intermediate pixel values. Do not posterise alpha edges to force four
-literal colours into the PNG; it damages silhouettes at phone size.
+**Changed sandstone:** old `#1F2023 / #514B42 / #9C8C73 / #DDCDAA` becomes the
+v3 row. Recess, shadow and light are direct samples. L2 `#A5845E` is an authored,
+darker golden translation of sampled `#DDB58D`, deliberately preserving a clear
+front-to-top separation at phone scale; it is **not a direct sampled pixel**.
+Slate L0/L1 changed from `#1B2026 / #424E5B`. Paving L2/L3 changed from
+`#A18C6B / #DFCDAE` to a closer, quieter warm/cool pair. Roof deck is new.
+Sampled dark cloth is documented, while the brighter existing cobalt is retained
+for ownership readability. Palette implementations are in `blender/v3.py`;
+`geometry.py` retains the historical ramps.
 
-Player: two squared banner tails separated by a deep notch, cobalt right-angle
-floor inlays and square warm centres. Enemy: a single pointed cloth tail, pointed
-shield, and repeated floor chevrons. Intent: four pale corner brackets with an
-oxblood direction wedge; its open centre leaves the destination visible. A colour
-change alone is insufficient for any ownership or threat state. Greyscale review
-is a structural check, not a claim of validated colour-vision accessibility.
+## Camera, dimensions and anchors
 
-## Camera, scale and integration contract
+Square stays orthographic, **60° elevation, azimuth 0°**, upright axes, no roll.
+Logical `(x,y,z)` maps to `(-y/sin(60°),x,z)` in Blender. Ground depth compensation
+is 1.154700538; one world cell projects to 128×128 source pixels at 2×, or 64×64
+nominal pixels. Screen mapping is `(anchorX+128x, anchorY-128y-64z)`.
 
-### Diamond (hero art and historical comparison)
+| Frame class | Source size | Ground anchor in pixels | JSON normalized anchor |
+| --- | --- | --- | --- |
+| Keep only | 256×288 | 128,192 | 0.5, 2/3 |
+| Walls and gates | 192×192 | 96,112 | 0.5, 7/12 |
+| Other Square sprites | 192×192 | 96,96 | 0.5, 0.5 |
 
-- Orthographic; elevation **60° above the ground** (30° down from vertical).
-  Azimuth **315° / -45°**, measured from +X toward +Y. Camera is southeast at
-  `(+X, -Y, +Z)` looking at the origin. No perspective, tilt or camera roll.
-- One logical cell = **1 × 1 Blender units**, nominal **64 px tile width at 1×**.
-  Every gameplay PNG is **128 × 128 RGBA at 2×**. Orthographic scale is `sqrt(2)`
-  Blender units, so the projected diamond of one cell spans exactly 128 rendered
-  pixels horizontally. Ground centre is pixel `(64,64)` in every asset.
-- **64 px means the whole projected diamond width**, not the distance between
-  neighbouring centres. A rotated square cannot both fit a 64 px bounding box
-  and have 64 px projected edges. At 1×, grid steps are:
-  `column = (+32, +27.7128129211)`, `row = (-32, +27.7128129211)`.
-  Ground diamond height is `55.4256258422` px. Sprite anchor is `(0.5,0.5)`.
-- A 9×9 diamond is 576 px wide and about 499 px high at nominal 1×. The preview
-  also draws 32 px tiles, producing a 288 px board that fits a phone. At 60° the
-  front faces remain visible, but floor exposure is larger than a low 30° view.
-  A 45° azimuth gives equal weight to both board axes and exposes wall thickness.
-### Square oblique
+The taller keep extends above its cell. Its 1×1 ownership footprint is unchanged;
+its physical plinth is about .95×.59 units, with forecourt threshold still inside
+the cell. Width and depth are deliberately different to expose a taller front in
+the fixed high-angle square view. Opaque raster bounds are 120×174, ratio 1.45.
+Only the keep frame grows; wall/gate anchors move down to hold their raised north
+geometry without clipping. Ground cell spacing never follows frame size.
 
-- **Default board projection**, including the art preview. Square v1 is the
-  preserved flat-material comparison; Square v2 is the reference materials pass.
-- Orthographic camera at **60° elevation, azimuth 0°**, looking from
-  `(+X, 0, +Z)` at the origin, no roll. Azimuth uses the same +X reference as
-  Diamond. Logical geometry is mapped `(x,y,z) → (-y/sin(60°), x, z)` before
-  rendering: logical south/front faces face the camera, columns go right and
-  rows go down. The 90° coordinate remap does not rotate the on-screen board.
-- A camera change alone would make rectangular cells. The **1.154700538× ground
-  depth compensation** cancels foreshortening; heights are unchanged. With
-  **192×192 px frames and ortho scale 1.5**, the projection is exactly
-  `(96 + 128x, 96 - 128y - 64z)` at 2×. Thus a ground cell is exactly
-  **64×64 px at 1×**, column step `(64,0)`, row step `(0,64)`.
-- Ground centre retains the same normalized **anchor `(0.5,0.5)`**, now pixel
-  `(96,96)`. Pixi frames are 96×96 logical pixels with `meta.scale:"2"`;
-  **frame size is not cell spacing**. Transparent margins contain the raised
-  north wall and the oversized axe without clipping or changing the 64 px grid.
-- **Why 60°:** the parapet front is 8 px high at 1×, with 4.48 px of merlon
-  height. At 55° these would be 9.18 / 5.14 px, with 22.1% depth compensation;
-  at 65°, 6.76 / 3.79 px, with 10.3% compensation. These are geometric
-  comparisons, not three rendered studies. 60° balances visible fronts with
-  exposed floor area; the 32 px phone composite retains the wall silhouette.
-- Square uses rows for back-to-front object ordering, then column and height
-  within a row. Wall banners rise 8 px (the parapet height). Diamond retains
-  `row + column` ordering and its 5.66 px banner rise. Floors and tide draw first;
-  intent brackets draw last. East/west gate arches appear edge-on in Square.
-- A 9×9 Square board occupies 576×576 px at 1×, or 288×288 px at phone scale.
-  Preview canvases include margins: 608×624, 1216×1248, and 304×312 px.
-- Use **Square for the phone puzzle**: cell ownership, orthogonal piece shapes,
-  rotations and touch regions share the same screen axes. Use **Diamond for
-  dioramas, campaign views or art presentation** where seeing two wall faces is
-  useful and direct grid manipulation is secondary. This preview does not
-  integrate either projection into the game or validate dragging on a device.
+Pixi uses `meta.scale: "2"`; the keep texture is 128×144 logical pixels, the
+others 96×96. **Always use each frame's anchor**, not `anchor.set(.5)` or the
+atlas default `enclave.groundAnchor`. The preview does this and checks dimensions.
+Rendering a taller portrait frame requires orthographic scale `max(w,h)/128`,
+with camera target offset along its up axis to place the specified anchor.
 
-### Shared geometry
+Square board columns step `(64,0)`, rows `(0,64)`. Draw floors and tide first,
+then objects by row, column and raised height; draw target markers last. Wall
+banners rise .52 units, or 16.64 nominal pixels. A 9×9 phone board uses 288×288 CSS
+pixels centred within 360×360. DPR 3 produces 1080×1080 with 96 device px cells.
+The preview now honours devicePixelRatio up to 3 with Pixi autoDensity.
 
-- Wall width **0.44 units**; parapet **0.25**; merlons **0.14** above it. The keep's
-  crown reaches **0.685**, plus its small flag. Height stays subordinate to cell
-  ownership. Joined wall ends reach exactly `±0.5`, without a decorative cap.
-- The raider is an intentionally oversized tabletop figure, 1.45 times its
-  primitive construction dimensions (0.783 units tall). Human/building scale is
-  symbolic: its helmet, shield, axe and boots need to survive a 32 px tile.
-- `+X = right`, `+Y = up`, row increases toward `-Y`. Wall masks:
-  `mask = (up ? 1 : 0) | (down ? 2 : 0) | (left ? 4 : 0) | (right ? 8 : 0)`.
-  Render **all 16 masks**, including isolated 00 and cross 15. No 2D sprite
-  rotations or reflections: they would rotate the baked light and the projection.
-- Gates `n/e/s/w` identify the board edge they open onto. All four are rendered
-  from rotated world geometry; the camera and lighting stay fixed.
-- To raise a sprite by `z` logical world units, move it up by
-  `z * cos(60°) * 64 / sqrt(2)` logical pixels in Diamond, or `z * 32` in Square.
-- Square's board basis agrees with the game's axis-aligned grid. Integration
-  still needs to respect the larger padded frames and existing game sizing.
-  Diamond would additionally need projected placement and inverse hit-testing.
-  No `src/` or `api/` edits are part of this art branch. Relative to the first
-  centre, Square inspection uses `col=floor(x/64 + .5)`, `row=floor(y/64 + .5)`.
-  Diamond uses `dx=x/32`, `dy=y/27.7128129211`, then
-  `col=floor((dy+dx)/2 + .5)`, `row=floor((dy-dx)/2 + .5)`.
-  Both reject out-of-board cells.
+Historical Diamond remains 60° elevation, -45° / 315° azimuth, ortho scale sqrt(2),
+128×128 source frames, centre anchors, column step `(32,27.7128129211)` and row
+step `(-32,27.7128129211)`. Its atlas and the earlier hero studies are retained.
+A strict azimuth-zero Square view cannot expose the reference's full east face;
+side mass is communicated through caps, side runs, recesses and cool right falloff.
 
-## Light rig and geometry
+## Geometry and materials
 
-Fixed world-space key direction `(-0.45,-0.60,0.80)`, normalised, weight `0.76`.
-Fill direction `(0.70,0.20,0.50)`, normalised, weight `0.12`. Constant ambient
-weight `0.12`. Face brightness is ambient plus positive normal dot products with
-key and fill; thresholds `0.20`, `0.47`, `0.72` choose L0 through L3. This reads
-as a broad upper-left key, with the right face darker. No moving sun.
+`blender/v3.py` rebuilds Square while leaving historical `geometry.py` intact.
+The keep uses a raised shaft, tapered corner buttresses with sloped tops, threshold,
+five-wedge arch with a dark recessed portal, thick parapets and merlons on all four
+sides. The roof has separate dark stone slabs and a walking border, not a black
+hole. Folded hanging cobalt cloth, a thin pole and small notched flag, brazier
+bowl/bars/flame, and an authored amber light pool complete the silhouette.
 
-`geometry.py` bakes those bands per flat polygon in logical coordinates, before
-the Square coordinate transform. Diamond and Square v1 preserve the original
-flat treatment. Square v2 uses `materials.py`: EEVEE emission retains the band
-backbone, then logical UV ashlar courses modulate sandstone. Courses are .25
-units wide and .125 high (two broad courses on a short wall), with .004-unit
-soft joints, 10% maximum linear-light mortar modulation and 3.5% block variation.
-There is no random grain. Stone, slate and parchment receive a small warm tint
-on light bands and a cool tint on dark bands. The named physical rig documents
-this bake; its lights do not directly illuminate the emitted sprite colours.
+Walls grow from .44 to **.60** width, .25 to **.52** body height, and .14 to **.20**
+merlon height. Merlons are .175 wide. The 3×3 occupied-footprint algorithm re-derives
+all 16 join masks, with open joins reaching exactly ±.5; U=1, D=2, L=4, R=8.
+The inset walking strip follows all connected arms. No finished sprite rotates.
+Gate piers/arches and ruins rise 23%. The raider gains a helmet ridge and shield
+boss; its silhouette and the ownership banners retain their established shapes.
+All standing objects receive directional ground shadows.
 
-An Ambient Occlusion shader at .16-unit distance adds at most 22% linear-light
-darkening. A rendered, feathered slate-alpha footprint supplies a soft contact
-shadow without an opaque receiver rectangle. Standard colour transform, exposure
-0, gamma 1. The 32 px review did not show course noise, so the same deliberately
-quiet material serves 2×, 1× and phone downsampling. If a future course treatment
-aliases at 1×, render a lower-contrast material variant for those scales; do not
-blur the whole sprite or claim a CSS filter is a material change.
+Six large offset pavers have clipped corners and visible joints. Paving colours
+alternate gently between warm and cooler stone; courtyard variants keep the cobalt
+inlay and amber centre/step. Broad repeated slabs are intentional, not random grain.
 
-Hero Keep renders use Cycles CPU, 32 samples, denoising, roughness .87, restrained
-course bump, .013-unit bevels and real warm area key / cool area fill lighting.
-The hero uses AgX; its richer continuous values are not a board palette test.
-Torch warmth is a reserved colour mass; live flicker belongs in Pixi later.
-Tide alpha is 0.64, chevrons 0.85, smoke 0.40. Geometry and ember positions are
-deterministic. EEVEE transparency and antialiasing may differ from the CPU fallback.
+The fixed logical key is `(-.45,-.60,.80)`, weight .76; fill `(.7,.2,.5)`, weight .12;
+ambient .12. Normal thresholds .20/.47/.72 select four face bands. Warm light and
+cool shadow are authored in those bands, with a broad cool right-side UV falloff.
+The named Blender sun lights document the rig; EEVEE **emission bakes** carry the
+colours, so these are not physically ray-lit diffuse materials.
 
-Mesh sources are primitive boxes, a tiled wall footprint, low-sided cylinders,
-five arch wedges and flat cloth polygons. Keep shapes broad enough to trace from
-a concept sheet. Change the named proportion constants before editing individual
-vertices. No external assets or new packages are required.
+`materials_v3.py` uses logical UV ashlar: .36-unit brick width, .20-unit course
+height, .012-unit mortar, .002-unit smoothing. Mortar multiplier is .40 in linear
+light (60% shader modulation), which measures **31.30% display-luma contrast** on
+the wall-12 front at source 2×. Do not confuse shader modulation with measured
+sRGB contrast. AO contributes at most 16% linear darkening over .16-unit distance.
 
-## Reference: the keep
+Cast shadows project mesh vertices to `(x+.25z,y-.16z)` on the ground, merge them
+into a convex silhouette, and render cool `#16273C` at .48 alpha in Blender. They
+extend lower-right and are intentionally hard and broad. Convex hulls merge small
+crenellation gaps; they are stylised cast silhouettes, not physical light transport.
+No opaque receiver rectangle, image-editor paintover, shell Blender or software
+fallback is used. The brazier warmth is an authored deck pool, not a live point light.
 
-The owner's chosen reference is `01-keep-reference.png`, supplied from
-`/Users/nunosantos/Desktop/ENCLAVE/concepts/`. It establishes sandstone and cobalt
-under warm light with cool shadow on slate-blue ground. It is a material and
-mood reference, not authority to change the upright board projection.
+## Reproduction and acceptance
 
-- **Adopt:** broad staggered ashlar courses; a heavy buttressed plinth; dark,
-  narrow arrow slits; deep crenellations and a roof well; hanging cobalt cloth
-  and a cobalt flag; one contained brazier; and broad tiled forecourt paving.
-  Keep the illuminated sandstone face warmer than the shadow face. Slate-blue
-  ground belongs beneath transparent sprites and behind menu art.
-- **Translate:** painterly brush texture becomes subtle, low-frequency procedural
-  courses. Four value bands remain the board's backbone. Detail scales with
-  sprite size: the 1×1 Keep keeps its established silhouette; the 2×2 study adds
-  buttresses, slit marks, an arched doorway, hanging cloth and a rooftop brazier;
-  the 1024 px hero adds bevels, course relief, cloth folds and physical shading.
-- **Preserve phone ownership:** cobalt plus a double-tail notched banner and
-  right-angle floor pattern; oxblood plus a pointed banner and chevrons. The
-  reference's cloth does not replace these redundant ownership cues.
-- **Projection:** board kit stays Square, 60° elevation / 0° azimuth, upright
-  64 px cells. Hero art alone uses the 45° diamond azimuth (-45° / 315°), still
-  at 60° elevation. Do not infer a 45° elevation from “diamond angle”.
-
-`renders-square/keep.png` remains the 192×192 padded 1×1-cell sprite at 2×.
-`renders-square/keep-2x2.png` is a separate 256×256 study at 2×, ortho scale 2,
-with a centred ground anchor and exactly 128 rendered pixels per cell. It spans
-a logical 2×2 footprint; its masonry leaves space inside that footprint for
-height and flag. It is not silently added to the 31-frame uniform atlas or adopted
-as a game rule. Its tower is vertically compressed for the square projection.
-`hero/keep-hero.png` and `hero/keep-hero-ground.png` are 1024×1024 RGBA, framed
-identically; the latter adds forecourt paving, with transparency outside it.
-
-## Files, atlas and reproduction
-
-Render with the **Blender MCP server**, which runs outside the shell sandbox.
-Do not use the legacy `render.sh` here. All rendering uses the MCP server.
-For this materials pass, regenerate Square and the Keep studies; retain the
-historical Diamond board atlas:
+Every asset render uses the MCP server `blender`, tool `blender_run_script`:
 
 ```json
 {"script":"/Users/nunosantos/Projects/enclave-art/art/blender/kit.py","args":["--projection","square"],"cwd":"/Users/nunosantos/Projects/enclave-art","timeout_ms":900000}
-{"script":"/Users/nunosantos/Projects/enclave-art/art/blender/render_keep.py","cwd":"/Users/nunosantos/Projects/enclave-art","timeout_ms":900000}
 ```
 
-Then pack and verify from the repository root (Python 3.10+):
+`blender_python_expr` health-checks Blender version and mesh/render APIs. Do not
+invoke Blender from the shell or use `render.sh`. `--only NAME` is for diagnosis;
+run the full kit again before delivery so the manifest agrees with all frames.
 
 ```sh
 python3 art/pack.py --projection square
-node art/verify.mjs                 # parses all three atlases; checks both projections
-python3 art/check_assets.py --projection diamond
 python3 art/check_assets.py --projection square
-npm run dev
-# Open the reported local URL followed by /art-preview.html
+node art/verify.mjs
 ```
 
-`ART_PYTHON` overrides the verification interpreter; its default is Blender's
-bundled Python at `/Applications/Blender.app/Contents/Resources/5.2/python/bin/python3.13`.
-MCP args can include `--save-blend` (writes `kit.blend` or `kit-square.blend`),
-or `--only wall-07` for an isolated inspection. Run a full build before packing
-and delivery so the manifest and all images agree. The historical CPU fallback
-is Diamond-only; it is not used for these renders.
+Square acceptance assembly uses installed Pillow and NumPy with `python3`.
+`ART_PYTHON` can override the verification interpreter. Packing uses the existing
+standard-library PNG codec, two extruded texels and two clear gutter texels.
+The keep occupies a dedicated final shelf; 30 normal frames keep their slot positions.
+The resulting atlas is 1584×1086, 31 frames, below the 2 MB limit. Unused shelf
+space is transparent and compresses cheaply.
 
-Source names use lowercase kebab-case. `wall-00` through `wall-15` use decimal
-two-digit masks, not binary strings. `floor-*` is terrain, `banner-*` ownership,
-`enemy-*` provisional opposition. Keep those roles separate from gameplay enums;
-replace `raider()` or `tide()` in `geometry.py` without changing the common kit.
+Difference is measured over corresponding frame names registered to their ground
+anchors, using only pixels fully opaque (alpha 255) in **both** versions. This
+avoids inflating the score with moved packing positions, new padding or black RGB
+under transparency. Acceptance is at least 40/255 mean absolute RGB channel delta.
+The opaque-union comparison over slate is reported separately. Keep aspect uses
+alpha≥250 silhouette bounds and excludes its translucent cast shadow.
 
-`art/renders/` holds 31 untrimmed 128 px Diamond frames; `art/renders-square/`
-holds the same 31 names at 192 px, plus the separate 256 px Keep study. Each also has the 384 px 3×3
-`sample-board.png` and `render-manifest.json`. The sample is excluded from the
-atlas, as is `keep-2x2.png`. `art/pack.py` uses a standard-library PNG reader/writer, 8 columns, two
-extruded texels per edge, two clear texels between slots. No trimming, rotation or
-resampling. Diamond atlas dimensions are 1072×536; Square is 1584×792. Each has a
-checked limit below 2,000,000 bytes. PNG data is straight alpha; edge filtering averages premultiplied colours.
+`verification/before-after-v3.png` shows the requested eight comparisons at actual
+phone DPR 3, 96 device px/cell. `keep-v3-3x.png` uses the same scale. Phone composites
+are assembled from the shipped atlas, not screenshots or new 3D renders.
+`verify_v3.py` checks all source/atlas bytes, preserved v1/v2 hashes, all 16 joins,
+geometry and alpha bounds, exact square cell raster, shadows, dimensions and anchors.
+`verify.mjs` parses all four atlases with installed Pixi and runs the actual preview
+script with DOM/GPU adapters, switching versions and testing controls and cell picking.
+These adapters do not establish live CDN, WebGL or physical-phone behaviour.
 
-Pixi v8 JSON has `frames[name].frame = {x,y,w,h}`, `rotated:false`,
-`trimmed:false`, full `sourceSize` / `spriteSourceSize`, centre anchors,
-`meta.image:"atlas.png"` or `"atlas-square.png"`, **`meta.scale:"2"`**. Pixi
-loads Diamond frames at 64 logical pixels and Square frames at 96 logical pixels.
-Both use 64 px cells; `enclave` metadata records projection, frame size, ground
-anchor, camera and board basis steps. The preview explicitly checks that
-contract. `enclave.engine` exposes render provenance. Never relabel CPU output as
-Blender output. Generated files include no timestamps inside PNGs.
-
-`art/verification/pipeline.json` and `pipeline-square.json` record measured render time, atlas bytes,
-frame count and SHA-256 hashes. `art/verify.mjs` exercises the installed Pixi v8
-spritesheet parser, preview frame contract and PNG/atlas structure. The preview
-uses the owner-requested jsDelivr v8 URL, whose resolved minor version can change;
-actual browser checks must be reported separately from installed-library checks.
-Both projections have separate `geometry`, `preview` and board-composite files,
-with `-square` suffixes for Square. `blocked-checks.txt` records current limits.
-`atlas-square-v1.png` is byte-identical to the preceding square atlas; its JSON
-changes only `meta.image`. `verification/square-v1.json` records the originating
-commit and checksum. Never overwrite this baseline during reproduction.
-`verification/board-phone-v2.png` centres the 9×9 board (288×288 at 32 px cells)
-in a 360×360 viewport. `REPORT-materials-v2.md` records the visual verdict,
-render measurements and remaining limits.
+See `REPORT-geometry-v3.md` for final measurements, visual caveats and owner questions.
 
 ## Ten concept-sheet prompts for the owner
 

@@ -1,8 +1,8 @@
 {
-  "projection": "square-v1",
+  "projection": "square-v2",
   "pixiVersion": "8.20.1",
   "frameCount": 31,
-  "atlasBytes": 158600,
+  "atlasBytes": 263465,
   "checks": [
     "preview script syntax",
     "exact preview/atlas name match",
