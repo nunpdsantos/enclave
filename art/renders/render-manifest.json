@@ -1,0 +1,48 @@
+{
+  "engine": "cpu-fallback",
+  "blender_render_verified": false,
+  "render_seconds": 4.519,
+  "frame_count": 31,
+  "asset_size": [
+    128,
+    128
+  ],
+  "sample_size": [
+    384,
+    384
+  ],
+  "supersampling": 2,
+  "frames": [
+    "wall-00",
+    "wall-01",
+    "wall-02",
+    "wall-03",
+    "wall-04",
+    "wall-05",
+    "wall-06",
+    "wall-07",
+    "wall-08",
+    "wall-09",
+    "wall-10",
+    "wall-11",
+    "wall-12",
+    "wall-13",
+    "wall-14",
+    "wall-15",
+    "keep",
+    "gate-n",
+    "gate-e",
+    "gate-s",
+    "gate-w",
+    "ruin-a",
+    "ruin-b",
+    "floor-stone",
+    "floor-courtyard-a",
+    "floor-courtyard-b",
+    "banner-cobalt",
+    "banner-oxblood",
+    "enemy-raider",
+    "enemy-tide",
+    "enemy-target"
+  ]
+}
