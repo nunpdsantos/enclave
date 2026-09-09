@@ -8,8 +8,10 @@ import { RunSummary } from '../core/types';
 import { getProgressStatus } from '../core/Progression';
 import { insightsFor } from '../core/Insights';
 import { renderShareCard } from '../core/ShareCard';
-import { getGamesPlayed } from '../core/Settings';
+import { getGamesPlayed, getSiegeBest } from '../core/Settings';
 import { isPracticeTicket } from '../core/Ticket';
+import { MISSIONS } from '../core/Missions';
+import { siegeVariantKey } from '../core/types';
 import { AudioManager } from '../audio/AudioManager';
 import { FONT_DISPLAY, FONT_MONO, THEME, DIFFICULTY_COLORS } from '../rendering/Theme';
 import { createButton, createStatChip, createSectionLabel, createBodyText, createTextButton } from '../rendering/Widgets';
@@ -117,6 +119,11 @@ export class GameOverScene implements Scene {
   }
 
   private async init(): Promise<void> {
+    // A siege posts nothing, so it neither waits for a board nor switches one
+    if (this.summary.siege) {
+      this.build();
+      return;
+    }
     // A run that crossed UTC midnight belongs to the day it was dealt from,
     // not to whichever board the menu happened to have loaded
     if (this.difficulty === 'daily' && this.leaderboard.getBoardId() !== `daily-${this.dailyDate}`) {
@@ -129,6 +136,8 @@ export class GameOverScene implements Scene {
 
   /** 'DAILY #9' or the plain mode name */
   private get boardLabel(): string {
+    const siege = this.summary.siege;
+    if (siege) return `SIEGE ${siege.variant.missionId.toUpperCase()}`;
     return this.difficulty === 'daily'
       ? `DAILY #${dailyNumber(this.dailyDate)}`
       : DIFFICULTY_LABELS[this.difficulty];
@@ -138,6 +147,7 @@ export class GameOverScene implements Scene {
     const cx = this.width / 2;
     const h = this.height;
     const summary = this.summary;
+    const siege = summary.siege ?? null;
 
     // Dimmed overlay
     const overlay = new Graphics();
@@ -145,17 +155,28 @@ export class GameOverScene implements Scene {
     overlay.fill({ color: THEME.overlay, alpha: 0.9 });
     this.container.addChild(overlay);
 
-    // Title
+    // Title. The siege has a verdict rather than a score screen: VICTORY,
+    // BREACHED or TIME'S UP is the first thing the player wants to know, and
+    // "NEW BEST" is a smaller thing than having held the Keep.
     const isBest = summary.isNewBest && summary.score > 0;
+    const siegeTitle = summary.endCause === 'victory'
+      ? 'VICTORY'
+      : summary.endCause === 'breach'
+        ? 'BREACHED'
+        : "TIME'S UP";
+    const won = summary.endCause === 'victory';
     const title = new Text({
-      text: isBest ? 'NEW BEST!' : 'GAME OVER',
+      text: siege ? siegeTitle : (isBest ? 'NEW BEST!' : 'GAME OVER'),
       style: new TextStyle({
         fontFamily: FONT_DISPLAY,
         fontSize: 32,
         fontWeight: '800',
-        fill: isBest ? THEME.gold : THEME.textPrimary,
+        fill: (siege ? won : isBest) ? THEME.gold : THEME.textPrimary,
         letterSpacing: 6,
-        dropShadow: { alpha: 0.5, blur: 14, color: isBest ? THEME.gold : THEME.danger, distance: 0 },
+        dropShadow: {
+          alpha: 0.5, blur: 14,
+          color: (siege ? won : isBest) ? THEME.gold : THEME.danger, distance: 0,
+        },
       }),
     });
     title.anchor.set(0.5);
@@ -170,7 +191,11 @@ export class GameOverScene implements Scene {
         ? 'NO PIECE FIT THE BOARD'
         : summary.endCause === 'complete'
           ? 'ALL PIECES PLACED'
-          : 'RUN ENDED EARLY';
+          : summary.endCause === 'victory'
+            ? 'THE KEEP HELD'
+            : summary.endCause === 'breach'
+              ? 'AN ENEMY REACHED THE KEEP'
+              : 'RUN ENDED EARLY';
     const cause = createBodyText(`${this.boardLabel} · ${causeLabel}`, cx, h * 0.055 + 22, {
       fontSize: 10,
       color: DIFFICULTY_COLORS[this.difficulty],
@@ -195,11 +220,18 @@ export class GameOverScene implements Scene {
     this.container.addChild(this.scoreText);
 
     // Best line
-    const bestLine = isBest && summary.previousBest > 0
-      ? `PREVIOUS BEST ${summary.previousBest.toLocaleString()}`
-      : summary.previousBest > 0
-        ? `YOUR BEST ${summary.previousBest.toLocaleString()}`
-        : 'FIRST RUN — THIS IS YOUR BEST';
+    // A siege best is per variant and stays on this device, and the screen
+    // says so rather than letting the number imply a board somewhere.
+    const siegeBest = siege ? getSiegeBest(siegeVariantKey(siege.variant)) : 0;
+    const bestLine = siege
+      ? (siegeBest > 0
+        ? `BEST HERE ${siegeBest.toLocaleString()} · KEPT ON THIS DEVICE`
+        : 'FIRST RUN ON THIS SIEGE')
+      : isBest && summary.previousBest > 0
+        ? `PREVIOUS BEST ${summary.previousBest.toLocaleString()}`
+        : summary.previousBest > 0
+          ? `YOUR BEST ${summary.previousBest.toLocaleString()}`
+          : 'FIRST RUN — THIS IS YOUR BEST';
     const best = createBodyText(bestLine, cx, h * 0.14 + 30, {
       fontSize: 10,
       color: isBest ? THEME.gold : THEME.textMuted,
@@ -214,12 +246,20 @@ export class GameOverScene implements Scene {
     const gap = 6;
     const totalW = chipW * 4 + gap * 3;
     const startX = cx - totalW / 2 + chipW / 2;
-    const stats: [string, string, number][] = [
-      ['ROOMS', String(summary.roomsClaimed), THEME.textPrimary],
-      ['BIGGEST', summary.biggestRoom > 0 ? `${summary.biggestRoom}` : '—', THEME.gold],
-      ['STREAK', `×${summary.maxStreak}`, THEME.cyan],
-      ['TIER', tier.label, tier.color],
-    ];
+    // The siege is measured on the siege, not on the streak it does not have
+    const stats: [string, string, number][] = siege
+      ? [
+        ['CAPTURED', String(siege.enemiesCaptured), THEME.danger],
+        ['WALLS LOST', String(siege.wallsLost), THEME.warning],
+        ['BIGGEST', summary.biggestRoom > 0 ? `${summary.biggestRoom}` : '—', THEME.gold],
+        ['PIECES', String(summary.totalTurns), THEME.textPrimary],
+      ]
+      : [
+        ['ROOMS', String(summary.roomsClaimed), THEME.textPrimary],
+        ['BIGGEST', summary.biggestRoom > 0 ? `${summary.biggestRoom}` : '—', THEME.gold],
+        ['STREAK', `×${summary.maxStreak}`, THEME.cyan],
+        ['TIER', tier.label, tier.color],
+      ];
     stats.forEach(([caption, value, color], i) => {
       this.container.addChild(createStatChip(caption, value, startX + i * (chipW + gap), statsY, chipW, color));
     });
@@ -227,7 +267,29 @@ export class GameOverScene implements Scene {
     // Territory gets a line rather than a fifth chip: five chips leave 62px
     // each at 360 wide, and a tier value like SOVEREIGN already needs 78.
     let nextY = statsY + 34;
-    if (DIFFICULTY_CONFIGS[this.difficulty].territory.enabled) {
+    if (siege) {
+      // The playtest line: the numbers the go-gates are argued from, on the
+      // screen rather than only in telemetry, so the owner can read them in
+      // the room without opening a dashboard.
+      const routes = summary.totalTurns > 0
+        ? Math.round((siege.routeChangingPlacements / summary.totalTurns) * 100)
+        : 0;
+      const decisions = siege.decisionTimes.length > 0
+        ? siege.decisionTimes.reduce((a, b) => a + b, 0) / siege.decisionTimes.length
+        : 0;
+      const mission = MISSIONS[siege.variant.missionId as keyof typeof MISSIONS];
+      this.container.addChild(createBodyText(
+        `${mission?.name ?? siege.variant.missionId} · ${siege.variant.enemy.toUpperCase()}`
+        + ` · ${siege.variant.mission === 'finite' ? `${summary.totalTurns} PLACED` : 'ENDLESS'}`,
+        cx, statsY + 32, { fontSize: 10, color: DIFFICULTY_COLORS.siege },
+      ));
+      this.container.addChild(createBodyText(
+        `${routes}% of placements changed a route · ${decisions.toFixed(1)}s a decision`
+        + (siege.breachTurn !== null ? ` · breached on ${siege.breachTurn}` : ''),
+        cx, statsY + 48, { fontSize: 10, color: THEME.textMuted, wrapWidth: this.width - 48 },
+      ));
+      nextY = statsY + 70;
+    } else if (DIFFICULTY_CONFIGS[this.difficulty].territory.enabled) {
       this.container.addChild(createBodyText(
         `SURVEYS ×${summary.surveys} · FLOOR ${summary.litCells}/${INNER_CELLS}`,
         cx, statsY + 32, { fontSize: 10, color: summary.surveys > 0 ? THEME.gold : THEME.textMuted },
@@ -235,7 +297,10 @@ export class GameOverScene implements Scene {
       nextY = statsY + 52;
     }
 
-    const wouldRank = !this.isPracticeRun && this.leaderboard.wouldRank(summary.score);
+    // Nothing from the siege is posted in this prototype: no name entry, no
+    // board, no submission. The rules are still being decided, and a shared
+    // board for rules that change is a board that has to be thrown away.
+    const wouldRank = !siege && !this.isPracticeRun && this.leaderboard.wouldRank(summary.score);
     this.buttonsTop = h - 118;
 
     // Insights get whatever the rows under them do not need: the name entry
@@ -250,6 +315,16 @@ export class GameOverScene implements Scene {
     if (wouldRank) {
       this.buildNameInput(nextY);
       nextY += 92;
+    } else if (siege) {
+      // Where the name entry would have been, answering the question it
+      // leaves behind
+      const note = createBodyText('LOCAL BEST ONLY · NOT POSTED', cx, nextY, {
+        fontSize: 11,
+        color: THEME.textMuted,
+      });
+      note.style.letterSpacing = 2;
+      this.container.addChild(note);
+      nextY += 26;
     } else if (this.isPracticeRun) {
       // Where the name entry would have been, so the label answers the
       // question it leaves behind: a second go at the same 30 pieces is
@@ -264,7 +339,7 @@ export class GameOverScene implements Scene {
     }
 
     this.leaderboardTop = nextY;
-    this.buildLeaderboard();
+    if (!siege) this.buildLeaderboard();
     this.buildButtons();
   }
 
@@ -492,6 +567,8 @@ export class GameOverScene implements Scene {
 
   private refreshLeaderboard(): void {
     if (!this.container) return;
+    // A siege has no board to refresh into
+    if (this.summary.siege) return;
     if (this.leaderboardContainer) {
       this.container.removeChild(this.leaderboardContainer);
       this.leaderboardContainer.destroy({ children: true });

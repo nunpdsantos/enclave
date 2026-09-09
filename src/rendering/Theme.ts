@@ -40,7 +40,28 @@ export const DIFFICULTY_COLORS: Record<Difficulty, number> = {
   classic: THEME.accent,
   blitz: 0xf97316,
   daily: THEME.gold,
+  siege: 0xb91c1c,
 };
+
+/**
+ * The siege board. Graybox on purpose: four flat colours that say what a cell
+ * *is* and nothing about what it will one day look like.
+ */
+export const SIEGE = {
+  /** The Keep: gold, and the only gold on the board */
+  keep: 0xd4a017,
+  keepMark: 0x2a1a00,
+  /** A gate: a red-outlined border cell */
+  gate: 0xb91c1c,
+  /** A ruin: old stone, dead */
+  ruin: 0x5b5f6e,
+  /** Raiders and the tide share one oxblood */
+  enemy: 0xd93b3b,
+  enemyDark: 0x7f1d1d,
+  /** The intent overlay: where it is going, and what it will hit */
+  intent: 0xff8a8a,
+  threat: 0xff4d4d,
+} as const;
 
 export interface BoardTokens {
   cellWell: number;

@@ -1,8 +1,9 @@
 import { Container, Graphics } from 'pixi.js';
-import { GRID_SIZE, Grid, GridPos, CellColor, EchoWall, Region } from '../core/types';
+import { GRID_SIZE, Grid, GridPos, CellColor, EchoWall, Region, TerrainGrid } from '../core/types';
 import { isInnerCell } from '../core/Board';
+import { SiegeIntent } from '../core/Siege';
 import { Layout } from './LayoutManager';
-import { THEME, drawBeveledBlock, drawWallBlock, darken, getBoardTokens, lerpColor, lighten, luminance, easeOutBack } from './Theme';
+import { SIEGE, THEME, drawBeveledBlock, drawWallBlock, darken, getBoardTokens, lerpColor, lighten, luminance, easeOutBack } from './Theme';
 
 const BLOCK_INSET = 3;
 const CELL_RADIUS = 5;
@@ -33,9 +34,16 @@ const OUTLINE_DURATION = 0.9;
 /** How solid an echo wall looks at the instant the claim removes it */
 const ECHO_MAX_ALPHA = 0.55;
 
+/** How much of a cell the tide fills, and how solid it is */
+const TIDE_ALPHA = 0.45;
+/** A raider's circle, as a fraction of the cell */
+const RAIDER_RADIUS = 0.30;
+
 export class GridRenderer {
   container: Container;
   private bgGraphics: Graphics;
+  /** The mission map, under everything: keep, gates, ruins */
+  private terrainGraphics: Graphics;
   private floorGraphics: Graphics;
   private echoGraphics: Graphics;
   private blockGraphics: Graphics;
@@ -44,6 +52,10 @@ export class GridRenderer {
   private clearGraphics: Graphics;
   private claimGraphics: Graphics;
   private glowGraphics: Graphics;
+  /** Enemies, above the blocks they are walking into */
+  private enemyGraphics: Graphics;
+  /** What the enemy will do next, above the enemies themselves */
+  private intentGraphics: Graphics;
   private layout!: Layout;
 
   private pops: PopCell[] = [];
@@ -63,9 +75,19 @@ export class GridRenderer {
   private glowPhase = 0;
   private hintPhase = 0;
 
+  // ── Siege ──
+  private terrain: TerrainGrid | null = null;
+  private raiderCells: GridPos[] = [];
+  private tideCells: GridPos[] = [];
+  private intent: SiegeIntent | null = null;
+  /** 0–1 through the tide's current interval, for the countdown ring */
+  private tideProgress = 0;
+  private intentPhase = 0;
+
   constructor() {
     this.container = new Container();
     this.bgGraphics = new Graphics();
+    this.terrainGraphics = new Graphics();
     this.floorGraphics = new Graphics();
     this.echoGraphics = new Graphics();
     this.glowGraphics = new Graphics();
@@ -74,14 +96,22 @@ export class GridRenderer {
     this.popGraphics = new Graphics();
     this.clearGraphics = new Graphics();
     this.claimGraphics = new Graphics();
+    this.enemyGraphics = new Graphics();
+    this.intentGraphics = new Graphics();
 
     this.container.addChild(this.bgGraphics);
+    // The map is what the board *is*, so it sits under the lit floor and
+    // under everything the run puts on top of it
+    this.container.addChild(this.terrainGraphics);
     this.container.addChild(this.floorGraphics);
     // Above the floor it stands on, below the blocks it used to be one of
     this.container.addChild(this.echoGraphics);
     this.container.addChild(this.glowGraphics);
     this.container.addChild(this.hintGraphics);
     this.container.addChild(this.blockGraphics);
+    // Enemies stand on top of the walls they are about to knock down
+    this.container.addChild(this.enemyGraphics);
+    this.container.addChild(this.intentGraphics);
     this.container.addChild(this.popGraphics);
     this.container.addChild(this.clearGraphics);
     this.container.addChild(this.claimGraphics);
@@ -99,6 +129,9 @@ export class GridRenderer {
       this.floorFade = fade;
     }
     this.drawEcho();
+    if (this.terrain) this.drawTerrain(this.terrain);
+    this.drawEnemies();
+    this.drawIntent();
   }
 
   private drawBackground(): void {
@@ -300,6 +333,173 @@ export class GridRenderer {
     }
   }
 
+
+  // ── Siege: the map, the enemy, and what it will do next ──
+
+  /**
+   * The mission map. Graybox and static: it is drawn once when the run starts
+   * and again on a resize, never per frame.
+   *
+   * A gold Keep with a K on it, gates as red-outlined cells on the border, and
+   * ruins as dead grey stone. Nothing here animates, because everything that
+   * moves on this board should be the enemy or the player.
+   */
+  drawTerrain(terrain: TerrainGrid): void {
+    this.terrain = terrain;
+    const g = this.terrainGraphics;
+    g.clear();
+    if (!this.layout) return;
+    const { gridOriginX, gridOriginY, cellSize } = this.layout;
+    const s = cellSize - CELL_GAP * 2;
+
+    for (let r = 0; r < GRID_SIZE; r++) {
+      for (let c = 0; c < GRID_SIZE; c++) {
+        const kind = terrain[r][c];
+        if (kind === 'floor') continue;
+        const x = gridOriginX + c * cellSize + CELL_GAP;
+        const y = gridOriginY + r * cellSize + CELL_GAP;
+
+        if (kind === 'ruin') {
+          // Old stone: flat, unlit, obviously not something you built
+          g.roundRect(x, y, s, s, 3);
+          g.fill({ color: SIEGE.ruin });
+          g.roundRect(x + 2, y + 2, s - 4, s - 4, 2);
+          g.stroke({ color: darken(SIEGE.ruin, 0.4), width: 1 });
+        } else if (kind === 'gate') {
+          g.roundRect(x, y, s, s, CELL_RADIUS);
+          g.fill({ color: SIEGE.gate, alpha: 0.18 });
+          g.roundRect(x + 1, y + 1, s - 2, s - 2, CELL_RADIUS);
+          g.stroke({ color: SIEGE.gate, alpha: 0.95, width: 2 });
+        } else {
+          g.roundRect(x, y, s, s, CELL_RADIUS);
+          g.fill({ color: SIEGE.keep });
+          g.roundRect(x + 1.5, y + 1.5, s - 3, s - 3, CELL_RADIUS - 1);
+          g.stroke({ color: lighten(SIEGE.keep, 0.4), alpha: 0.8, width: 1.5 });
+          this.drawKeepMark(g, x, y, s);
+        }
+      }
+    }
+  }
+
+  /**
+   * A K, in strokes. Cheaper than carrying a Text through every resize, and
+   * at graybox sizes a letterform drawn as three lines reads as well as a
+   * glyph would.
+   */
+  private drawKeepMark(g: Graphics, x: number, y: number, s: number): void {
+    const left = x + s * 0.32;
+    const top = y + s * 0.26;
+    const bottom = y + s * 0.74;
+    const mid = (top + bottom) / 2;
+    const right = x + s * 0.7;
+    g.moveTo(left, top);
+    g.lineTo(left, bottom);
+    g.moveTo(left, mid);
+    g.lineTo(right, top);
+    g.moveTo(left, mid);
+    g.lineTo(right, bottom);
+    g.stroke({ color: SIEGE.keepMark, width: Math.max(1.5, s * 0.1) });
+  }
+
+  /** Where the enemy is. Raiders are circles, the tide is a flood. */
+  setEnemies(raiders: GridPos[], tide: GridPos[]): void {
+    this.raiderCells = raiders;
+    this.tideCells = tide;
+    this.drawEnemies();
+  }
+
+  private drawEnemies(): void {
+    const g = this.enemyGraphics;
+    g.clear();
+    if (!this.layout) return;
+    const { gridOriginX, gridOriginY, cellSize } = this.layout;
+    const s = cellSize - CELL_GAP * 2;
+
+    for (const cell of this.tideCells) {
+      const x = gridOriginX + cell.col * cellSize + CELL_GAP;
+      const y = gridOriginY + cell.row * cellSize + CELL_GAP;
+      g.roundRect(x, y, s, s, CELL_RADIUS);
+      g.fill({ color: SIEGE.enemy, alpha: TIDE_ALPHA });
+      g.roundRect(x + 1, y + 1, s - 2, s - 2, CELL_RADIUS - 1);
+      g.stroke({ color: SIEGE.enemy, alpha: 0.55, width: 1 });
+    }
+
+    const radius = cellSize * RAIDER_RADIUS;
+    for (const cell of this.raiderCells) {
+      const cx = gridOriginX + cell.col * cellSize + cellSize / 2;
+      const cy = gridOriginY + cell.row * cellSize + cellSize / 2;
+      g.circle(cx, cy + 1, radius);
+      g.fill({ color: SIEGE.enemyDark, alpha: 0.9 });
+      g.circle(cx, cy, radius);
+      g.fill({ color: SIEGE.enemy });
+      g.circle(cx - radius * 0.3, cy - radius * 0.35, radius * 0.3);
+      g.fill({ color: 0xffffff, alpha: 0.35 });
+    }
+  }
+
+  /**
+   * What the enemy does next, drawn before the player commits.
+   *
+   * The make-or-break feature of the mode: an arrow into the cell each raider
+   * will step to, a red outline round any wall that will be attacked, and a
+   * countdown ring on the tide's next cell. Redrawn whenever the placement
+   * might have changed the answer, which is on every snapped drag position.
+   */
+  setIntent(intent: SiegeIntent | null, tideProgress: number = 0): void {
+    this.intent = intent;
+    this.tideProgress = Math.max(0, Math.min(1, tideProgress));
+    this.drawIntent();
+  }
+
+  private drawIntent(): void {
+    const g = this.intentGraphics;
+    g.clear();
+    if (!this.layout || !this.intent) return;
+    const { gridOriginX, gridOriginY, cellSize } = this.layout;
+    const centre = (cell: GridPos): [number, number] => [
+      gridOriginX + cell.col * cellSize + cellSize / 2,
+      gridOriginY + cell.row * cellSize + cellSize / 2,
+    ];
+    // One shared breath, so every mark on the layer pulses together
+    const pulse = 0.7 + Math.sin(this.intentPhase) * 0.3;
+
+    for (const [, target] of this.intent.steps) {
+      const [cx, cy] = centre(target);
+      const r = cellSize * 0.22;
+      g.circle(cx, cy, r);
+      g.stroke({ color: SIEGE.intent, alpha: 0.5 + pulse * 0.35, width: 2 });
+      g.circle(cx, cy, r * 0.35);
+      g.fill({ color: SIEGE.intent, alpha: 0.35 + pulse * 0.3 });
+    }
+
+    // A wall about to come down is outlined, not filled: the player still has
+    // it, and the outline is a warning rather than a loss.
+    for (const wall of this.intent.threatenedWalls) {
+      const x = gridOriginX + wall.col * cellSize + CELL_GAP;
+      const y = gridOriginY + wall.row * cellSize + CELL_GAP;
+      const s = cellSize - CELL_GAP * 2;
+      g.roundRect(x, y, s, s, CELL_RADIUS);
+      g.stroke({ color: SIEGE.threat, alpha: 0.55 + pulse * 0.4, width: 2.5 });
+    }
+
+    // The tide has no turn to count down to, so it counts down in seconds:
+    // the ring closes as its next expansion comes due.
+    const next = this.intent.tideTarget;
+    if (next) {
+      const [cx, cy] = centre(next);
+      const r = cellSize * 0.32;
+      g.circle(cx, cy, r);
+      g.stroke({ color: SIEGE.intent, alpha: 0.28, width: 2 });
+      const sweep = Math.PI * 2 * this.tideProgress;
+      if (sweep > 0.01) {
+        const start = -Math.PI / 2;
+        g.moveTo(cx + Math.cos(start) * r, cy + Math.sin(start) * r);
+        g.arc(cx, cy, r, start, start + sweep);
+        g.stroke({ color: SIEGE.threat, alpha: 0.95, width: 3 });
+      }
+    }
+  }
+
   popCells(cells: GridPos[], color: CellColor): void {
     for (const cell of cells) this.pops.push({ row: cell.row, col: cell.col, color, life: 0 });
   }
@@ -454,6 +654,12 @@ export class GridRenderer {
       drawBeveledBlock(dg, cx - size / 2, cy - size / 2, size, d.color, CELL_RADIUS, alpha);
       dg.roundRect(cx - size / 2, cy - size / 2, size, size, CELL_RADIUS);
       dg.fill({ color: lighten(d.color, 0.7), alpha: flash * 0.85 * alpha });
+    }
+
+    // The intent layer breathes, so an arrow reads as live rather than painted
+    if (this.intent) {
+      this.intentPhase += dt * 3;
+      this.drawIntent();
     }
 
     // Closing-cell hints

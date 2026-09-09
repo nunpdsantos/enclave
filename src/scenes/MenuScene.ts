@@ -1,27 +1,43 @@
 import { Container, Graphics, Text, TextStyle } from 'pixi.js';
 import { Scene } from './SceneManager';
 import { Leaderboard } from '../core/Leaderboard';
-import { Difficulty, DIFFICULTY_LABELS, DIFFICULTY_CONFIGS } from '../core/Config';
+import {
+  Difficulty, DIFFICULTY_LABELS, DIFFICULTY_CONFIGS, SIEGE_FINITE_PIECES,
+} from '../core/Config';
 import { dailyKey, dailyNumber, formatCountdown, msUntilNextDaily } from '../core/Daily';
-import { PaletteSetting, getPersonalBest, getGamesPlayed, loadSettings, updateSettings } from '../core/Settings';
+import {
+  MISSIONS, MISSION_ORDER, SiegeMissionId, isMissionId, missionLabel,
+} from '../core/Missions';
+import {
+  PaletteSetting, getPersonalBest, getGamesPlayed, getSiegeBest, loadSettings, updateSettings,
+} from '../core/Settings';
 import { MOTION_LABELS, MOTION_ORDER, getPiecePalette, remapColor } from '../core/Accessibility';
 import {
   LifetimeStats, formatPlayTime, formatRoomSize, loadStats, mostCommonRoomSize,
 } from '../core/Stats';
 import { AudioManager } from '../audio/AudioManager';
+import { siegeVariantKey } from '../core/types';
 import { FONT_DISPLAY, FONT_MONO, THEME, DIFFICULTY_COLORS, drawPanel, drawBeveledBlock, easeOutBack } from '../rendering/Theme';
 import {
   createButton, createToggle, createCycleToggle, createSectionLabel, createBodyText,
   createSlider, createTextButton,
 } from '../rendering/Widgets';
 
-const DIFFICULTIES: Difficulty[] = ['classic', 'blitz', 'daily'];
+const DIFFICULTIES: Difficulty[] = ['classic', 'blitz', 'daily', 'siege'];
 const DIFFICULTY_DESCRIPTIONS: Record<Difficulty, string> = {
   classic: 'A minute on the clock. Build big rooms, close them with care.',
   blitz: 'Thirty-five seconds. Fence fast, claim faster.',
   // The daily's line is written at build time: it carries today's number
   daily: '30 pieces · no clock. Same pieces for everyone.',
+  // The siege's is written from the picker below it
+  siege: 'Hold the Keep. Fence the enemy in before it reaches you.',
 };
+
+// The siege picker's three switches. Index 0 is the default in each.
+const ENEMY_ORDER: ('raiders' | 'tide')[] = ['raiders', 'tide'];
+const ENEMY_LABELS = ['RAIDERS', 'TIDE'];
+const GOAL_ORDER: ('finite' | 'endless')[] = ['finite', 'endless'];
+const GOAL_LABELS = [`${SIEGE_FINITE_PIECES} PIECES`, 'ENDLESS'];
 
 /** How often the RESETS IN readout is rewritten. It only shows hh:mm. */
 const RESET_REFRESH_SECONDS = 60;
@@ -359,9 +375,20 @@ export class MenuScene implements Scene {
 
   /** Mode blurb. The daily's carries its number, so it changes every day. */
   private describeSelected(): string {
+    if (this.selectedDifficulty === 'siege') {
+      const s = loadSettings();
+      const mission = MISSIONS[this.pickedMission()];
+      return `${mission.name} · ${s.siegeEnemy === 'tide' ? 'a spreading tide' : 'raiders at the gates'}.`;
+    }
     if (this.selectedDifficulty !== 'daily') return DIFFICULTY_DESCRIPTIONS[this.selectedDifficulty];
     const budget = DIFFICULTY_CONFIGS.daily.pieceBudget ?? 0;
     return `Daily #${dailyNumber(dailyKey())} · ${budget} pieces · no clock. Same pieces for everyone.`;
+  }
+
+  /** The stored mission, defaulted if the blob held something unexpected */
+  private pickedMission(): SiegeMissionId {
+    const stored = loadSettings().siegeMission;
+    return isMissionId(stored) ? stored : 'm1';
   }
 
   /**
@@ -370,6 +397,18 @@ export class MenuScene implements Scene {
    * lifetime best would mean nothing, since every day is a different puzzle.
    */
   private statsLine(): string {
+    if (this.selectedDifficulty === 'siege') {
+      const s = loadSettings();
+      const key = siegeVariantKey({
+        missionId: this.pickedMission(), enemy: s.siegeEnemy, mission: s.siegeGoal,
+      });
+      const best = getSiegeBest(key);
+      // A siege best belongs to one square of the 2x2, so it is labelled with
+      // the square rather than presented as "your best" in general
+      return best > 0
+        ? `BEST HERE ${best.toLocaleString()}   ·   40s COMMAND CLOCK`
+        : `40s COMMAND CLOCK   ·   NO RUNS YET`;
+    }
     if (this.selectedDifficulty === 'daily') {
       const key = dailyKey();
       const best = getPersonalBest('daily', key);
@@ -404,9 +443,119 @@ export class MenuScene implements Scene {
       this.buildOptions(group);
     } else if (this.showingStats) {
       this.buildStats(group);
+    } else if (this.selectedDifficulty === 'siege') {
+      // The siege has no board to show — nothing is posted from it — so the
+      // space the leaderboard would take is where the mission is chosen.
+      this.buildSiegePicker(group);
     } else {
       this.buildLeaderboard(group);
     }
+  }
+
+  /**
+   * Which siege to play: the map, the enemy, and whether it ends.
+   *
+   * Three rows rather than a mission list, because the point of the prototype
+   * is the 2×2: enemy and goal have to be switchable independently or a
+   * playtest cannot say which of the two is doing the work. Every choice is
+   * persisted the moment it is made, so PLAY needs no confirmation.
+   */
+  private buildSiegePicker(group: Container): void {
+    const cx = this.width / 2;
+    const top = this.height * 0.47;
+    const panelW = Math.min(360, this.width - 32);
+    const rowW = Math.min(240, panelW - 48);
+    const settings = loadSettings();
+
+    group.addChild(createSectionLabel('HOLD THE KEEP', cx, top + 14, panelW - 60));
+
+    // Mission chips: three short labels in one row, with the map's name under
+    const chipW = Math.min(64, (rowW - 16) / 3);
+    const chipH = 32;
+    const totalW = chipW * MISSION_ORDER.length + 8 * (MISSION_ORDER.length - 1);
+    const chipY = top + 44;
+    const current = this.pickedMission();
+    for (let i = 0; i < MISSION_ORDER.length; i++) {
+      const id = MISSION_ORDER[i];
+      const x = cx - totalW / 2 + i * (chipW + 8);
+      const selected = id === current;
+      const chip = new Graphics();
+      if (selected) {
+        chip.roundRect(x, chipY, chipW, chipH, 8);
+        chip.fill({ color: DIFFICULTY_COLORS.siege });
+      } else {
+        chip.roundRect(x, chipY, chipW, chipH, 8);
+        chip.fill({ color: 0x000000, alpha: 0.3 });
+        chip.roundRect(x, chipY, chipW, chipH, 8);
+        chip.stroke({ color: 0xffffff, alpha: 0.1, width: 1 });
+      }
+      const label = new Text({
+        text: missionLabel(id),
+        style: new TextStyle({
+          fontFamily: FONT_DISPLAY, fontSize: 12, fontWeight: selected ? '800' : '600',
+          fill: selected ? THEME.textPrimary : THEME.textSecondary, letterSpacing: 2,
+        }),
+      });
+      label.anchor.set(0.5);
+      label.x = x + chipW / 2;
+      label.y = chipY + chipH / 2;
+
+      const hit = new Container();
+      hit.addChild(chip);
+      hit.addChild(label);
+      hit.eventMode = 'static';
+      hit.cursor = 'pointer';
+      hit.on('pointerdown', (e) => e.stopPropagation());
+      hit.on('pointerup', (e) => {
+        e.stopPropagation();
+        if (id === current) return;
+        this.audio.playUiClick();
+        updateSettings({ siegeMission: id });
+        this.buildDifficultySelector();
+        this.buildLowerSection();
+      });
+      group.addChild(hit);
+    }
+
+    const name = createBodyText(MISSIONS[current].name, cx, chipY + chipH + 8, {
+      fontSize: 11, color: DIFFICULTY_COLORS.siege, wrapWidth: panelW - 40,
+    });
+    name.style.letterSpacing = 2;
+    group.addChild(name);
+
+    let y = chipY + chipH + 40;
+    group.addChild(createCycleToggle(
+      'ENEMY', cx, y, ENEMY_LABELS, Math.max(0, ENEMY_ORDER.indexOf(settings.siegeEnemy)),
+      (i) => {
+        updateSettings({ siegeEnemy: ENEMY_ORDER[i] });
+        this.audio.playUiClick();
+        this.buildDifficultySelector();
+      }, rowW,
+    ));
+    group.addChild(createBodyText(
+      'Raiders step after every placement. The tide creeps on the clock.',
+      cx, y + 20, { fontSize: 10, color: THEME.textMuted, wrapWidth: panelW - 56 },
+    ));
+
+    y += 62;
+    group.addChild(createCycleToggle(
+      'MISSION', cx, y, GOAL_LABELS, Math.max(0, GOAL_ORDER.indexOf(settings.siegeGoal)),
+      (i) => {
+        updateSettings({ siegeGoal: GOAL_ORDER[i] });
+        this.audio.playUiClick();
+        this.buildDifficultySelector();
+      }, rowW,
+    ));
+    const goalNote = createBodyText(
+      `Survive ${SIEGE_FINITE_PIECES} pieces to win, or hold out as long as you can.`,
+      cx, y + 20, { fontSize: 10, color: THEME.textMuted, wrapWidth: panelW - 56 },
+    );
+    group.addChild(goalNote);
+
+    const bottom = goalNote.y + goalNote.height + 14;
+    const panel = new Graphics();
+    drawPanel(panel, cx - panelW / 2, top, panelW, bottom - top, 16, 0.55);
+    group.addChildAt(panel, 0);
   }
 
   /**
@@ -817,6 +966,8 @@ export class MenuScene implements Scene {
 
   /** Called when remote leaderboard data arrives after the menu was built */
   refreshLeaderboard(): void {
+    // The siege's lower section is the picker, and no remote data feeds it
+    if (this.selectedDifficulty === 'siege') return;
     if (!this.showingHelp && !this.showingOptions && !this.showingStats) this.buildLowerSection();
   }
 

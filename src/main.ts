@@ -6,8 +6,9 @@ import { GameScene } from './scenes/GameScene';
 import { GameOverScene } from './scenes/GameOverScene';
 import { AudioManager } from './audio/AudioManager';
 import { Leaderboard, requestRunTicket } from './core/Leaderboard';
-import { Difficulty, DIFFICULTY_CONFIGS, GameConfig } from './core/Config';
-import { incrementGamesPlayed } from './core/Settings';
+import { Difficulty, DIFFICULTY_CONFIGS, GameConfig, siegeConfig } from './core/Config';
+import { isMissionId } from './core/Missions';
+import { incrementGamesPlayed, loadSettings } from './core/Settings';
 import { RunSummary } from './core/types';
 import { THEME } from './rendering/Theme';
 
@@ -16,9 +17,25 @@ const LAST_DIFFICULTY_KEY = 'enclave_last_difficulty';
 function readLastDifficulty(): Difficulty {
   try {
     const raw = localStorage.getItem(LAST_DIFFICULTY_KEY);
-    if (raw === 'classic' || raw === 'blitz' || raw === 'daily') return raw;
+    if (raw === 'classic' || raw === 'blitz' || raw === 'daily' || raw === 'siege') return raw;
   } catch { /* */ }
   return 'classic';
+}
+
+/**
+ * The siege the picker last left selected.
+ *
+ * Read here rather than held in the menu because the run is started from
+ * here, and a config assembled from anything but the persisted choice would
+ * be a run that does not match the screen the player pressed PLAY on.
+ */
+function currentSiegeConfig(): GameConfig {
+  const s = loadSettings();
+  return siegeConfig(
+    isMissionId(s.siegeMission) ? s.siegeMission : 'm1',
+    s.siegeEnemy,
+    s.siegeGoal,
+  );
 }
 
 function saveLastDifficulty(d: Difficulty): void {
@@ -68,6 +85,9 @@ async function boot() {
       (difficulty) => {
         selectedDifficulty = difficulty;
         saveLastDifficulty(difficulty);
+        // The siege has no shared board in this prototype, so there is nothing
+        // to fetch and nothing the server would recognise if we asked.
+        if (difficulty === 'siege') return;
         leaderboard.switchDifficulty(difficulty).then(() => {
           if (sceneManager.current === menu) menu.refreshLeaderboard();
         });

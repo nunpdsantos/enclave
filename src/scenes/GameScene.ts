@@ -12,6 +12,7 @@ import { FXManager } from '../rendering/FXManager';
 import { DragController, DragState } from '../input/DragController';
 import { AudioManager } from '../audio/AudioManager';
 import { INNER_CELLS } from '../core/Board';
+import { stepsToKeep, tideIntervalAt } from '../core/Siege';
 import { FeedbackEvent, GRID_SIZE, GridPos, PieceInstance, Region, RunEndCause, RunSummary } from '../core/types';
 import { Difficulty, DIFFICULTY_LABELS, GameConfig } from '../core/Config';
 import { getProgressStatus } from '../core/Progression';
@@ -25,6 +26,15 @@ import { FONT_DISPLAY, THEME, drawPanel } from '../rendering/Theme';
 import { createButton, createToggle, createCycleToggle, createBodyText } from '../rendering/Widgets';
 
 type Phase = 'tutorial' | 'countdown' | 'playing' | 'gameOver';
+
+/**
+ * How long the raiders' phase is held on screen.
+ *
+ * The clock does not drain through it: the player is not deciding anything
+ * while the enemy moves, and charging them for watching would make the mode
+ * about reading quickly rather than about placing well.
+ */
+const ENEMY_PHASE_SECONDS = 0.25;
 
 /** What the ghost's current drop would seal, and what it would pay */
 interface ClosePreview {
@@ -64,6 +74,15 @@ export class GameScene implements Scene {
   private countdownTime = 3;
   private countdownText: Text | null = null;
   private lastCountdownNumber = 4;
+
+  /**
+   * The siege's enemy phase. While it runs the clock is frozen and the board
+   * is not accepting a drag: the player watches the answer to what they just
+   * did, then gets their time back.
+   */
+  private enemyPhaseRemaining = 0;
+  /** Last siege state this scene drew, so it only redraws when it moved */
+  private siegeVersion = -1;
 
   private alertsFired = { ten: false, five: false, two: false };
   private lastTickSecond = -1;
@@ -190,7 +209,15 @@ export class GameScene implements Scene {
     this.gridRenderer.drawBlocks(this.gameState.board.grid);
     if (this.gameState.config.territory.enabled) {
       this.gridRenderer.drawFloor(this.gameState.board.lit);
-      this.uiRenderer.updateSurvey(0, INNER_CELLS, 0);
+      // The siege prices relit floor but has no survey to finish, so it gets
+      // no readout for one
+      if (this.gameState.config.territory.surveyEnabled) {
+        this.uiRenderer.updateSurvey(0, INNER_CELLS, 0);
+      }
+    }
+    if (this.gameState.config.siege) {
+      this.gridRenderer.drawTerrain(this.gameState.board.terrain);
+      this.refreshSiege();
     }
     this.refreshHand(true);
     this.uiRenderer.updateScore(this.gameState.score);
@@ -215,6 +242,7 @@ export class GameScene implements Scene {
     this.lastTickSecond = -1;
     this.lastHapticSecond = -1;
     this.lastPaceSecond = -1;
+    this.enemyPhaseRemaining = 0;
     this.progressTierIndex = getProgressStatus(this.gameState.difficulty, this.gameState.score).tierIndex;
     this.gameOverSequenceActive = false;
     this.gameOverElapsed = 0;
@@ -276,6 +304,10 @@ export class GameScene implements Scene {
     this.animationManager.setLayout(layout);
     this.fxManager.setLayout(layout);
     this.gridRenderer.drawBlocks(this.gameState.board.grid);
+    if (this.gameState.config.siege) {
+      this.gridRenderer.drawTerrain(this.gameState.board.terrain);
+      this.refreshSiege();
+    }
     this.refreshHand(false);
     this.updateProgressPresentation(false);
     this.buildPauseButton();
@@ -298,7 +330,29 @@ export class GameScene implements Scene {
     if (this.phase === 'countdown') { this.updateCountdown(dt); this.fxManager.update(dt, 1, 0); return; }
 
     this.animationManager.update(animDt);
-    if (this.gameState.tick(dt)) { this.startGameOverSequence(); return; }
+
+    // The enemy's turn. The clock is stopped, so `tick` is not called at all —
+    // which also means the tide cannot expand while the raiders are stepping,
+    // and the two enemies can never overlap.
+    if (this.enemyPhaseRemaining > 0) {
+      this.enemyPhaseRemaining = Math.max(0, this.enemyPhaseRemaining - dt);
+      if (this.enemyPhaseRemaining === 0) this.endEnemyPhase();
+      this.fxManager.update(dt, this.gameState.drainRate, this.gameState.gameElapsed);
+      this.gridRenderer.updateGlow(dt, this.gameState.timeRemaining, this.gameState.board.occupiedCount() / 81);
+      return;
+    }
+
+    if (this.gameState.tick(dt)) {
+      // The tide can end the run from inside the clock, so its events have to
+      // be drained before the game-over sequence swallows the frame
+      this.processFeedback(this.gameState.drainEvents(), null);
+      this.startGameOverSequence();
+      return;
+    }
+    // The tide expands on the clock rather than on a placement
+    const clockEvents = this.gameState.drainEvents();
+    if (clockEvents.length > 0) this.processFeedback(clockEvents, null);
+    if (this.gameState.config.siege) this.updateSiegeHud();
     this.syncEchoWalls();
     this.updatePaceReadout();
 
@@ -329,6 +383,69 @@ export class GameScene implements Scene {
       const sec = Math.ceil(this.gameState.timeRemaining);
       if (sec !== this.lastHapticSecond && sec > 0) { this.lastHapticSecond = sec; this.haptic(16); }
     }
+  }
+
+
+  // ── Siege ──
+
+  /** Redraw the enemy and its intent, and refresh the readouts */
+  private refreshSiege(): void {
+    const gs = this.gameState;
+    if (!gs.config.siege) return;
+    this.siegeVersion = gs.siegeVersion;
+    const raiders = gs.raiders.map(r => ({ row: r.row, col: r.col }));
+    const tide = gs.config.siege.enemy === 'tide' ? gs.enemyCells() : [];
+    this.gridRenderer.setEnemies(raiders, tide);
+    this.gridRenderer.setIntent(gs.intent, this.tideProgress());
+    this.updateSiegeHud();
+  }
+
+  /**
+   * How far through the tide's current interval we are, 0–1, which is what the
+   * countdown ring draws. Zero for the raiders, whose tempo is the placement.
+   */
+  private tideProgress(): number {
+    const siege = this.gameState.config.siege;
+    if (!siege || siege.enemy !== 'tide') return 0;
+    const interval = tideIntervalAt(siege, this.gameState.tideTickCount);
+    if (interval <= 0) return 0;
+    const left = this.gameState.nextTideDueAt - this.gameState.gameElapsed;
+    return Math.max(0, Math.min(1, 1 - left / interval));
+  }
+
+  private updateSiegeHud(): void {
+    const gs = this.gameState;
+    const siege = gs.config.siege;
+    if (!siege) return;
+    const budget = gs.config.pieceBudget;
+    const enemies = gs.enemyCells();
+    this.uiRenderer.updateSiege({
+      pieces: budget !== undefined ? gs.piecesRemaining : null,
+      budget: budget ?? 0,
+      turn: gs.totalTurns,
+      enemies: enemies.length,
+      stepsToKeep: stepsToKeep(enemies, gs.keep),
+    });
+    // The ring is the only part of the HUD that moves between placements
+    if (siege.enemy === 'tide') {
+      this.gridRenderer.setIntent(gs.intent, this.tideProgress());
+    }
+  }
+
+  /**
+   * Hold the frame while the enemy moves. The drag is detached for the whole
+   * of it, so a piece cannot be dropped onto a cell a raider is walking into.
+   */
+  private beginEnemyPhase(): void {
+    if (this.phase !== 'playing' || this.gameState.isGameOver) return;
+    this.enemyPhaseRemaining = ENEMY_PHASE_SECONDS;
+    this.dragController.detach(this.canvas);
+  }
+
+  private endEnemyPhase(): void {
+    if (this.phase !== 'playing' || this.paused || this.gameState.isGameOver) return;
+    this.dragController.attach(this.canvas);
+    this.refreshSiege();
   }
 
   private beginPlay(): void {
@@ -509,11 +626,17 @@ export class GameScene implements Scene {
     // Running out of ration is an ending, not a death: it gets the gold
     // treatment and none of the alarm the other two causes earn.
     const cause = this.gameState.deathCause;
-    const complete = cause === 'complete';
-    const endLabel = complete ? 'RATION SPENT' : cause === 'board_lock' ? 'NO ROOM LEFT' : "TIME'S UP";
-    this.showCenterAlert(endLabel, complete ? THEME.gold : THEME.danger, 30);
-    this.fxManager.triggerFlash(complete ? 0.35 : 0.6, 3, complete ? THEME.gold : undefined);
-    this.fxManager.triggerShake(complete ? 4 : 12, complete ? 0.2 : 0.4);
+    const won = cause === 'complete' || cause === 'victory';
+    const endLabel = cause === 'victory'
+      ? 'THE KEEP HOLDS'
+      : cause === 'complete'
+        ? 'RATION SPENT'
+        : cause === 'breach'
+          ? 'BREACHED'
+          : cause === 'board_lock' ? 'NO ROOM LEFT' : "TIME'S UP";
+    this.showCenterAlert(endLabel, won ? THEME.gold : THEME.danger, 30);
+    this.fxManager.triggerFlash(won ? 0.35 : 0.6, 3, won ? THEME.gold : undefined);
+    this.fxManager.triggerShake(won ? 4 : 12, won ? 0.2 : 0.4);
     this.fxManager.triggerImpactFrame(0.2, 0.5);
     const layout = this.layoutManager.layout;
     this.animationManager.spawnExplosion(layout.gridOriginX + layout.gridSize / 2, layout.gridOriginY + layout.gridSize / 2, 50);
@@ -752,6 +875,11 @@ export class GameScene implements Scene {
   private syncInput(): void {
     this.dragController.setCurrent(this.gameState.current);
     this.dragController.updateBoard(this.gameState.board);
+    // A siege redraws the map's own state on every input, because a placement
+    // can move a route without moving a block
+    if (this.gameState.config.siege && this.gameState.siegeVersion !== this.siegeVersion) {
+      this.refreshSiege();
+    }
   }
 
   private refreshHand(animate: boolean): void {
@@ -873,6 +1001,7 @@ export class GameScene implements Scene {
             this.animationManager.spawnSpeedLines(cx / event.placedCells.length, cy / event.placedCells.length, 8);
           }
           if (event.timeBonus) this.showTimeBonusPopup(event.timeBonus, false);
+          if (this.gameState.config.siege) this.refreshSiege();
           this.updateProgressPresentation(true);
           if (event.streakBroken) {
             this.audioManager.playStreakBreak();
@@ -939,6 +1068,10 @@ export class GameScene implements Scene {
             if (rooms >= 2) parts.push(`${rooms} ROOMS ×${breakdown.multiCloseMultiplier.toFixed(1)}`);
             if (breakdown.streakMultiplier > 1) parts.push(`STREAK ×${breakdown.streakMultiplier.toFixed(2)}`);
           }
+          const captured = event.enemiesCaptured ?? 0;
+          if (captured > 0) {
+            parts.push(`${captured} ${captured === 1 ? 'ENEMY' : 'ENEMIES'} TAKEN`);
+          }
           if (parts.length === 0 && biggest >= 9) {
             parts.push(biggest >= 16 ? 'MASSIVE ROOM' : 'BIG ROOM');
           }
@@ -956,8 +1089,11 @@ export class GameScene implements Scene {
           if (this.gameState.config.territory.enabled) {
             // The claim just lit its floor (and a survey may have wiped it)
             this.gridRenderer.drawFloor(this.gameState.board.lit);
-            this.uiRenderer.updateSurvey(event.litCount ?? 0, INNER_CELLS, this.gameState.surveys);
+            if (this.gameState.config.territory.surveyEnabled) {
+              this.uiRenderer.updateSurvey(event.litCount ?? 0, INNER_CELLS, this.gameState.surveys);
+            }
           }
+          if (this.gameState.config.siege) this.refreshSiege();
           this.updateProgressPresentation(true);
           this.uiRenderer.updateStreak(this.gameState.streakCount, this.gameState.streakSafeMoves, this.gameState.config.scoring.streakWindow);
           this.fxManager.boostFlow(Math.min(0.9, 0.2 + biggest * 0.06 + (rooms - 1) * 0.2));
@@ -988,6 +1124,30 @@ export class GameScene implements Scene {
           this.fxManager.boostFlow(0.5);
           this.animationManager.spawnExplosion(gridCenterX, gridCenterY - 40, 20);
           this.haptic([30, 40, 60]);
+          break;
+        }
+
+        case 'enemy': {
+          // The board changed under the player: a wall may be gone, and the
+          // route certainly has. Redraw before the phase is handed back.
+          this.refreshBoard();
+          this.refreshSiege();
+          const broken = event.wallsBroken ?? [];
+          if (broken.length > 0) {
+            this.audioManager.playInvalid();
+            this.fxManager.triggerShake(2.5 + broken.length, 0.14);
+            this.haptic(24);
+            this.gridRenderer.popCells(broken, THEME.danger);
+          }
+          this.beginEnemyPhase();
+          break;
+        }
+
+        case 'breach': {
+          this.showCenterAlert('THE KEEP IS BREACHED', THEME.danger, 26);
+          this.fxManager.triggerFlash(0.55, 4, THEME.danger);
+          this.fxManager.triggerShake(10, 0.35);
+          this.haptic([60, 40, 120]);
           break;
         }
 

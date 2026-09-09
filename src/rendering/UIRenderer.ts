@@ -1,6 +1,6 @@
 import { Container, Graphics, Text, TextStyle } from 'pixi.js';
 import { Layout } from './LayoutManager';
-import { FONT_DISPLAY, FONT_MONO, THEME, drawPanel } from './Theme';
+import { FONT_DISPLAY, FONT_MONO, SIEGE, THEME, drawPanel } from './Theme';
 import { Difficulty } from '../core/Config';
 import { getProgressStatus } from '../core/Progression';
 
@@ -10,6 +10,9 @@ const SURVEY_GOLD_AT = 40;
 const PIECES_LOW_AT = 5;
 /** How long "SURVEY ✓ ×N" holds before the readout drops back to the count */
 const SURVEY_FLASH_SECONDS = 2.2;
+
+/** Steps from the Keep at which the siege HUD starts shouting */
+export const BREACH_WARNING_STEPS = 2;
 
 /**
  * Heads-up display for the game scene.
@@ -38,6 +41,13 @@ export class UIRenderer {
   private goalText: Text;
   private surveyText: Text;
   private paceText: Text;
+  /** Siege: pieces left or turn number, above the clock bar */
+  private siegeCountText: Text;
+  /** Siege: enemies still on the board */
+  private siegeEnemyText: Text;
+  /** Siege: an enemy is within two steps of the Keep */
+  private siegeBreachText: Text;
+  private breachPhase = 0;
   private progressBarGfx: Graphics;
   private layout!: Layout;
 
@@ -188,6 +198,34 @@ export class UIRenderer {
     });
     this.paceText.visible = false;
 
+    // The siege HUD. All three start hidden, so a Classic run never shows a
+    // readout for a mode it is not in.
+    this.siegeCountText = new Text({
+      text: '',
+      style: new TextStyle({
+        fontFamily: FONT_MONO, fontSize: 13, fill: THEME.textPrimary, letterSpacing: 1,
+      }),
+    });
+    this.siegeCountText.visible = false;
+
+    this.siegeEnemyText = new Text({
+      text: '',
+      style: new TextStyle({
+        fontFamily: FONT_MONO, fontSize: 10, fill: THEME.textMuted, letterSpacing: 1,
+      }),
+    });
+    this.siegeEnemyText.visible = false;
+
+    this.siegeBreachText = new Text({
+      text: 'BREACH',
+      style: new TextStyle({
+        fontFamily: FONT_DISPLAY, fontSize: 12, fontWeight: '800',
+        fill: SIEGE.threat, letterSpacing: 3,
+        dropShadow: { alpha: 0.6, blur: 8, color: SIEGE.threat, distance: 0 },
+      }),
+    });
+    this.siegeBreachText.visible = false;
+
     this.timerBarGfx = new Graphics();
     this.speedBarGfx = new Graphics();
     this.progressBarGfx = new Graphics();
@@ -208,6 +246,9 @@ export class UIRenderer {
     this.container.addChild(this.timerText);
     this.container.addChild(this.speedText);
     this.container.addChild(this.paceText);
+    this.container.addChild(this.siegeCountText);
+    this.container.addChild(this.siegeEnemyText);
+    this.container.addChild(this.siegeBreachText);
   }
 
   setLayout(layout: Layout): void {
@@ -268,6 +309,21 @@ export class UIRenderer {
     this.paceText.anchor.set(0.5, 1);
     this.paceText.x = layout.width / 2;
     this.paceText.y = layout.gridOriginY - 28;
+
+    // The siege takes the same three slots the other modes use: the count
+    // where the speed readout sits, the enemy tally under the tier chip, and
+    // the warning in the free band down the middle.
+    this.siegeCountText.anchor.set(1, 1);
+    this.siegeCountText.x = right;
+    this.siegeCountText.y = layout.gridOriginY - 27;
+
+    this.siegeEnemyText.anchor.set(0, 0);
+    this.siegeEnemyText.x = left + 10;
+    this.siegeEnemyText.y = 52;
+
+    this.siegeBreachText.anchor.set(0.5, 1);
+    this.siegeBreachText.x = layout.width / 2;
+    this.siegeBreachText.y = layout.gridOriginY - 28;
   }
 
   /** Per-frame: score punch decay, and the survey celebration timing out */
@@ -283,6 +339,53 @@ export class UIRenderer {
       this.surveyFlash = Math.max(0, this.surveyFlash - dt);
       if (this.surveyFlash === 0) this.renderSurvey();
     }
+
+    // A breach warning that sat still would be one more static label. It has
+    // to be the thing on screen that is moving.
+    if (this.siegeBreachText.visible) {
+      this.breachPhase += dt * 7;
+      this.siegeBreachText.alpha = 0.55 + Math.sin(this.breachPhase) * 0.45;
+    }
+  }
+
+  /**
+   * The siege readouts: how much of the mission is left, how many enemies are
+   * on the board, and whether one of them is about to be inside the Keep.
+   *
+   * `pieces` is null in an endless siege, where `turn` is the number that
+   * means something instead.
+   */
+  updateSiege(opts: {
+    pieces: number | null;
+    budget: number;
+    turn: number;
+    enemies: number;
+    stepsToKeep: number;
+  }): void {
+    this.siegeCountText.text = opts.pieces !== null
+      ? `PIECES ${opts.pieces}/${opts.budget}`
+      : `TURN ${opts.turn}`;
+    this.siegeCountText.style.fill = opts.pieces !== null && opts.pieces <= PIECES_LOW_AT
+      ? THEME.gold
+      : THEME.textPrimary;
+    this.siegeCountText.visible = true;
+
+    this.siegeEnemyText.text = `ENEMIES ${opts.enemies}`;
+    this.siegeEnemyText.style.fill = opts.enemies > 0 ? SIEGE.threat : THEME.textMuted;
+    this.siegeEnemyText.visible = true;
+
+    const warn = opts.enemies > 0 && opts.stepsToKeep <= BREACH_WARNING_STEPS;
+    if (warn) {
+      this.siegeBreachText.text = opts.stepsToKeep <= 1 ? 'BREACH IMMINENT' : 'BREACH WARNING';
+    } else {
+      this.breachPhase = 0;
+      this.siegeBreachText.alpha = 1;
+    }
+    this.siegeBreachText.visible = warn;
+
+    // The siege has no speed bonus and no streak, so nothing of either shows
+    this.speedBarGfx.clear();
+    this.speedText.visible = false;
   }
 
   /**
