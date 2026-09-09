@@ -83,8 +83,20 @@ export interface GameConfig {
   previewCount: number;
   /** Total pieces the run will ever be dealt. Undefined means unlimited. */
   pieceBudget?: number;
-  /** Fixed deal seed. Undefined mints a fresh one per run (free play). */
+  /**
+   * Fixed deal seed. Undefined mints a fresh one per run (free play).
+   *
+   * Live play fills this in from the run ticket the server issues at the
+   * start of a run — the seed is the server's choice, not the client's — and
+   * the replay simulation fills it in from the log it is re-playing.
+   */
   seed?: number;
+  /**
+   * Which daily this run is dealt from, 'YYYY-MM-DD'. Set from the run
+   * ticket so the run belongs to the server's UTC date rather than to the
+   * device's idea of it. Undefined falls back to this browser's date.
+   */
+  dailyDate?: string;
 }
 
 const SHARED_SCORING: ScoringConfig = {

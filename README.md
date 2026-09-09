@@ -45,18 +45,24 @@ Each mode has its own leaderboard and its own personal best.
 | Echo window | 2.0 s | 1.5 s | off |
 | Survey bonus | 5,000 | 2,500 | 2,000 |
 | Bag by tier | yes | yes | no |
-| Deal | fresh seed per run | fresh seed per run | the UTC date |
+| Deal | fresh seed per run | fresh seed per run | one seed per UTC date |
 | Personal best | lifetime | lifetime | per day |
+
+Every deal is the server's: a run asks `/api/run-start` for a seed before the
+first piece is dealt, and plays what it is given. See [How a score gets on the
+board](#how-a-score-gets-on-the-board).
 
 Tier thresholds (SETTLER, BUILDER, ARCHITECT, WARDEN, SOVEREIGN, LEGEND) are per mode and live in `src/core/Progression.ts`.
 
 ## The Rationed Daily
 
-One puzzle a day, the same one for everyone: **30 pieces, no clock**. The seed is the UTC date, so two players anywhere in the world are dealt the same shapes in the same rotations and the same colours, and the whole game becomes planning rather than speed. HOLD works as it always does; the only refusal is parking the last piece of the ration with an empty hold slot, which would leave the hand with nothing to place. When the last piece is placed the run ends as `complete` and the score counts in full.
+One puzzle a day, the same one for everyone: **30 pieces, no clock**. Every player of a date is dealt the same seed, so two players anywhere in the world get the same shapes in the same rotations and the same colours, and the whole game becomes planning rather than speed. HOLD works as it always does; the only refusal is parking the last piece of the ration with an empty hold slot, which would leave the hand with nothing to place. A piece parked earlier always comes back: when the bag and the queue run dry the hold slot empties into the hand, so a ration is thirty placements whether or not you used HOLD. When the last piece is placed the run ends as `complete` and the score counts in full.
 
 - The day rolls over at **UTC midnight**, not local midnight — everyone has to be on the same puzzle at the same instant.
-- **First submission counts.** Replaying the day is allowed and is labelled `PRACTICE RUN · NOT SUBMITTED`; the leaderboard keeps the score you posted first, higher or not, so the board measures the puzzle and not how many attempts you had.
-- Each day is its own leaderboard (`leaderboard:enclave:daily:YYYY-MM-DD`), readable for a week and expiring after eight days. Scores can only be posted to today's or yesterday's board — the second so a run that crossed midnight still lands where it was dealt.
+- **The seed is the server's, not the date's.** It is the first 32 bits of an HMAC of the date under the server's secret, handed out with the run ticket. A date hash would let anyone deal next Tuesday's puzzle tonight, solve it at leisure and post a studied run as a first attempt. `dailySeed` in `src/core/Daily.ts` still computes the old public hash, for tests and for the offline practice run — that deal is a different puzzle from the one on the board, and it cannot be submitted.
+- **First submission counts** — and "first" means the first submission, not the first one good enough to rank. Replaying the day is allowed and is labelled `PRACTICE RUN · NOT SUBMITTED`; the leaderboard keeps the score you posted first, higher or not, so the board measures the puzzle and not how many attempts you had.
+- **No hurry, and no gap limit.** A daily has no clock, so leaving it open over lunch is legal play. The per-gap limit that timed runs are held to (half an hour) does not apply; the run ticket's 24-hour life is the only bound.
+- Each day is its own leaderboard (`leaderboard:enclave:v2:daily:YYYY-MM-DD`), readable for a week and expiring after eight days. Scores can only be posted to today's or yesterday's board — the second so a run that crossed midnight still lands where it was dealt.
 - The personal best is per day, for the same reason: a lifetime daily best would only say you once had a good seed.
 - **No echo walls and no tier bag.** An echo window is measured in seconds and the Daily has no clock, and a bag that tightens with the score would deal two players different pieces on the same puzzle. Both are off, so the mix and the order are the same for everyone.
 - Its own tier ladder, lower than Classic's: 600 / 1,600 / 3,500 / 7,000 / 14,000. Thirty pieces without a clock cannot out-last a timed run, so the ladder sits between Blitz and Classic. A first pass, tunable once telemetry says where daily scores land.
@@ -113,16 +119,22 @@ npm run build
 
 ## Deployment
 
-- Deploy on Vercel. The leaderboard API lives in `api/leaderboard.ts`.
+- Deploy on Vercel. The leaderboard API lives in `api/leaderboard.ts` and the run tickets that gate it in `api/run-start.ts`.
 - Anonymous run telemetry lives in `api/runs.ts` and shares the same credentials. `POST /api/runs` stores one finished run; `GET /api/runs` returns aggregates only — never raw runs and never player ids. Without credentials it answers 503 and the client, which is fire-and-forget, simply ignores it.
 - To enable the shared leaderboard, set these in the Vercel project's environment variables:
   - `KV_REST_API_URL`
   - `KV_REST_API_TOKEN`
-- Never commit those values. `.env` files are git-ignored.
-- Redis keys, so a board can be found without reading the handler:
-  - `leaderboard:enclave:classic` and `leaderboard:enclave:blitz` — permanent, ten entries, one per player.
-  - `leaderboard:enclave:daily:YYYY-MM-DD` — one per UTC date, expiring 8 days after its last write. A score may only be posted to today's or yesterday's board, and the menu reads back a week.
+  - `ENCLAVE_SECRET` — optional. The key run tickets are signed with and the daily seed is derived from. **It falls back to `KV_REST_API_TOKEN`**, which is already a server-only secret and must be set for any of this to work, so an existing deployment gets tickets without configuring anything new. Set `ENCLAVE_SECRET` to sign with something you can rotate independently of the database credential. Rotating either one changes every daily seed, so rotate at a UTC midnight; tickets issued under the old key stop verifying immediately, which costs at most the runs in flight.
+- Never commit those values. `.env` files are git-ignored, and no secret is ever sent to a client.
+- Redis keys, so a board can be found without reading the handler. `v2` is `RULES_VERSION` (`src/core/Rules.ts`): the boards are versioned by the rules their scores were proved under, and bumping it starts every board empty. The old keys are left in place, untouched and unread — what to do with them is a product decision, not the handler's.
+  - `leaderboard:enclave:v2:classic`, `leaderboard:enclave:v2:blitz` — permanent sorted sets, member = player id, score = score. One entry per player, replaced only by a higher one (`ZADD ... GT`).
+  - `leaderboard:enclave:v2:daily:YYYY-MM-DD` — the same, one per UTC date, first score wins (`ZADD ... NX`), expiring 8 days after its last write.
+  - `...:meta` beside each board — a hash of player id → `{ name, date }`. Names and dates never take part in ordering, so they do not belong in the sorted set.
+  - `leaderboard:enclave:v2:daily:YYYY-MM-DD:ids` — every id that submitted that day, ranked or not. This is what makes first-submission-wins true for a player whose first run missed the top ten. Expires with the board.
+  - `leaderboard:enclave:replays:v2:<board>` — the SHA-256 of each run already banked on that board, so one replay cannot be posted twice. Kept 30 days on a daily board, forever on a permanent one. It is the one key here that grows without bound — 64 bytes per accepted score — and the first candidate for a TTL if a ladder ever gets busy.
+  - `leaderboard:enclave:used-tokens:YYYY-MM-DD` — spent run tickets, bucketed by the day the ticket was *issued* so a token can never fall between two buckets. Expires after 2 days, which outlives the 24-hour ticket.
   - `telemetry:enclave:runs` — the newest 5,000 finished runs, aggregated on read.
+- The sorted sets are not trimmed to ten. A player who drops out of the top ten keeps their entry, so they can still beat their own score years later, and `GET` only ever reads the top ten. The cost is one member and one hash field (about a hundred bytes) per player who has ever posted a score.
 - Bump `CACHE_NAME` in `public/sw.js` on each deploy. The menu shows the `package.json` version in the bottom-right corner, so it is obvious when a new build has arrived.
 
 ## Repository map
@@ -134,7 +146,8 @@ npm run build
 - `src/core/Rules.ts`: `RULES_VERSION` — bump it whenever dealing or scoring changes
 - `src/core/Replay.ts`: re-playing a run from its seed and its inputs, and the reconstructed clock
 - `src/core/Random.ts`: mulberry32, FNV-1a, and the per-run seed
-- `src/core/Daily.ts`: which day it is, what it deals, and what this browser has done with it
+- `src/core/Daily.ts`: which day it is, and what this browser has done with it. Its `dailySeed` is the old public deal, kept for tests and practice only
+- `src/core/Ticket.ts`: the run ticket format, its HMAC, the daily's derived seed and the replay fingerprint. Pure — the secret is a parameter, so it is never bundled into the client
 - `src/core/GameState.ts`: the run loop: hand, queue, hold, claims, scoring, streaks, echo walls, territory, clock, piece budget, score timeline
 - `src/core/Config.ts`: per-mode scoring, timer, territory, echo, bag and budget numbers
 - `src/core/Progression.ts`: score tiers (SETTLER through LEGEND), per mode
@@ -148,7 +161,7 @@ npm run build
 - `src/core/Stats.ts`: lifetime stats per mode — the fold, the derived readouts and the storage
 - `src/core/ShareCard.ts`: the 1080×1350 card; `layoutShareCard` decides every string and position, `renderShareCard` paints them
 - `src/core/Telemetry.ts`: the anonymous run report and its fire-and-forget send
-- `src/core/Leaderboard.ts`: the shared board, the local fallback, and the stored player id
+- `src/core/Leaderboard.ts`: the shared board, the local fallback, the stored player id, and the run-ticket request
 
 ### Presentation
 
@@ -165,7 +178,8 @@ npm run build
 
 ### Server
 
-- `api/leaderboard.ts`: the permanent and daily boards, and the replay check every score has to pass
+- `api/run-start.ts`: the deal a run is played from, and the signed ticket that says so
+- `api/leaderboard.ts`: the permanent and daily boards, and the three checks every score has to pass
 - `api/runs.ts`: anonymous run telemetry, aggregates on read
 - `public/how-to-play.html`: the interactive Playbook, served at `/how-to-play`
 - `public/sw.js`, `public/manifest.json`: the service worker and the PWA manifest
@@ -178,18 +192,60 @@ The fill takes an optional set of extra walls — the echo cells — which hold 
 
 ## How a score gets on the board
 
-Every run records its inputs: `{ t: 'p', row, col, rot, at }` for a placement, `{ t: 'h', at }` for a hold, where `at` is the second of the run the input landed on. That log, plus the seed and the mode, is the **replay**, and it travels with the score.
+A score has to get past three separate things, and each answers a question the others cannot: the **replay** proves the rules produce that number, the **run ticket** proves somebody played it, and the **fingerprints** stop a proven run from being banked twice.
+
+### The ticket
+
+A run starts by asking the server for one. `POST /api/run-start { id, mode }` answers with the seed the run will be dealt from, the daily's date if it is a daily, and a token:
+
+```
+base64url({"v":1,"id":"…","mode":"classic","seed":2748215883,"issuedAt":1757400000000})
+  . base64url(HMAC-SHA-256(secret, that same base64url text))
+```
+
+The seed is the server's choice — 32 bits from `crypto.getRandomValues` for Classic and Blitz, and for the Daily the first 32 bits of `HMAC(secret, 'enclave-daily-' + date)`, so a future puzzle cannot be dealt and studied offline. The MAC covers the encoded payload, so the seed, the id, the mode and the issue time are one indivisible claim rather than four hints. `GET /api/run-start?mode=daily` answers today's date and seed without a token, for anything that wants to know the deal without identifying itself; it cannot be used to post a score.
+
+If the request fails — offline, API down, slower than two and a half seconds — the run still plays, on a local seed, and the game-over screen says `NOT VERIFIED · SCORE KEPT LOCALLY` without attempting to submit. On a Daily that means a practice puzzle rather than the shared one.
+
+### The replay
+
+Every run records its inputs: `{ t: 'p', row, col, rot, at }` for a placement, `{ t: 'h', at }` for a hold, where `at` is the second of the run the input landed on, unrounded. That log, plus the seed and the mode, is the **replay**, and it travels with the score and the token.
 
 The server does not take the score. It re-plays the log — same `GameState`, same seeded bag, same echo window, same territory map — and the score only lands on the board if the run comes out at exactly that number. Everything a score depends on is reproduced: the bag tightens with the score, echo walls fade on `at`, claims light the floor. Colours come from the same RNG draw whatever palette is set, and no rule reads them.
 
-The clock is the one thing the server cannot reproduce exactly, because a browser drains it a frame at a time. Instead it reconstructs the bank analytically — the drain rate integrated between moves, closed form — and allows a second of slack. The client's frame-wise drain uses the rate at the *end* of each frame and the rate never falls, so a browser always drains at least as much as the integral: an honest run cannot fail this check, and a run that sat out its clock cannot pass it.
+Times are recorded to the full double and the simulation *assigns* them to its clock rather than accumulating gaps, so an echo wall's `expiresAt` — which is `gameElapsed + window` — is bit-identical on both sides and a claim taken a microsecond inside a ghost wall is judged the same way in both places.
 
-`RULES_VERSION` in `src/core/Rules.ts` guards the whole arrangement. Bump it whenever dealing or scoring changes: old replays will no longer re-play to their scores, and the server answers those clients with `Update required` rather than calling them cheats.
+The clock is the one thing the server cannot reproduce exactly, because a browser drains it a frame at a time. Instead it reconstructs the bank analytically — the drain rate integrated between moves, closed form — and allows 0.05 s of slack. The client's frame-wise drain uses the rate at the *end* of each frame and the rate never falls, so a browser always drains at least as much as the integral; both sides then add the same engine-computed bonus and clamp at the same cap, and clamping is monotonic. The reconstructed bank is therefore never below the bank the browser really had, and the slack only has to absorb float noise.
+
+Two limits on the log itself: placements at least 0.08 s apart (nobody drags a piece onto a board twelve times a second), and, in a timed mode, no gap over half an hour. A run with no clock has no gap limit beyond the ticket's own day.
+
+### The submission
+
+`POST /api/leaderboard?difficulty=…` carries `{ id, name, score, replay, token }` and is checked in this order:
+
+1. the board exists, and a daily board is today's or yesterday's;
+2. the body is under 64 KB, is JSON, and is an object — `null`, `[]` and `"x"` are 400s, and so is a `name` that is not a string;
+3. `id`, `name` and `score` have the right types, and `replay` and `token` are present (a client missing either is told `Update required`, not called a cheat);
+4. the replay's shape: rules version, mode, seed range, monotonic times, real board coordinates, and that the run's mode matches the board it is posted to;
+5. the ticket's MAC verifies, and its `id`, `mode`, `seed` and `dailyKey` match the body, the replay and the board;
+6. the ticket is under 24 hours old and not dated in the future;
+7. **the wall clock has allowed the run**: the time since `issuedAt` covers the replay's last move, less two seconds for the countdown and clock skew. A run cannot be played faster than real time, and this is the one check a log's own timestamps can never make;
+8. the replay re-plays to exactly the score claimed;
+9. the ticket has not been spent (`SADD` on the used-token set — a ticket is one run);
+10. the replay has not been banked (`SADD` of its fingerprint — a replay is one score);
+11. on a daily, the player has not already submitted today (`SADD` on the per-day id set, which counts a first score whether or not it ranked);
+12. and only then the write: `ZADD ... GT` on a permanent board, `ZADD ... NX` on a daily, with the name and date going into the meta hash beside it.
+
+Everything before step 9 is a pure function of the request, so a submission that fails any of it has spent nothing. From step 9 on it consumes state, which is what makes each of those a one-shot.
+
+`RULES_VERSION` in `src/core/Rules.ts` guards the whole arrangement. Bump it whenever dealing or scoring changes: old replays will no longer re-play to their scores, the boards move to fresh keys, and the server answers stale clients with `Update required` rather than calling them cheats.
 
 ## Known limitations
 
-- **Verification proves the run, not the player.** A bot that scripts legal moves through the real rules produces a replay that verifies, because it did play the run. What is closed is the fabricated score, not the automated one.
-- **The clock check has a second of slack**, so a run that overran its bank by less than that is still accepted. Widening the check would start refusing honest runs; the slack is where that trade sits.
-- **Move times are recorded to the millisecond**, and the echo window is the one rule that reads them. A claim decided within a millisecond of a ghost wall's expiry can in principle re-play differently, and such a run would be marked `NOT VERIFIED · SCORE KEPT LOCALLY` rather than shared.
+- **Verification proves the run, not the player.** A bot that scripts legal moves through the real rules, at human speed, produces a run that is real in every sense the server can test: it was dealt a ticket, it took as long as it says, and the rules pay it that score. What is closed is the fabricated score, not the automated one. Closing that needs something none of this is — behavioural analysis, or an account.
+- **Tickets can be collected in advance.** `/api/run-start` will mint one for any id that asks, so a patient attacker can hold a batch of them. It buys nothing but patience: each is single-use, bound to one seed, and still has to wait out the run it vouches for in real time. There is no rate limit on the endpoint yet.
+- **A daily replay can be perturbed.** The fingerprint dedupe refuses the same log twice, but a shared daily run with one timestamp nudged is a different log, and every player of a date is dealt the same seed. What stops the obvious version of this is the per-day id set: one submission per player per day, so a passed-around run costs the receiver their own attempt.
+- **The clock check has 0.05 s of slack**, down from a second. The argument that an honest run cannot fail it is in `drainIntegral` and above; the slack absorbs float noise, not model error.
 - **A run past 600 recorded inputs is playable but unprovable.** The log stops at the cap, is marked `truncated`, and the server refuses it. Six hundred placements is far past what any bank can fund.
-- **A score kept locally is not a shared score.** When the server refuses one, the game says so under the board instead of implying it went out.
+- **A score kept locally is not a shared score.** When the server refuses one, or the run never got a ticket, the game says so under the board instead of implying it went out.
+- **Starting a run mints an anonymous id**, because a ticket has to be bound to one. A player who never posts a score used to stay unidentified; now the id exists from the first run. It is a random UUID in `localStorage`, it is never returned by `GET`, and nothing else is stored against it.

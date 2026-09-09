@@ -43,6 +43,12 @@ export class GameOverScene implements Scene {
   private leaderboard: Leaderboard;
   private audio: AudioManager;
   private difficulty: Difficulty;
+  /**
+   * The run ticket this run was started with, or null when the server could
+   * not be reached at the start. Null means the score cannot be posted at
+   * all, and the screen says so instead of trying.
+   */
+  private runToken: string | null;
   /** Which daily this run belongs to — the day it was dealt, not necessarily today */
   private dailyDate: string;
   /**
@@ -84,6 +90,7 @@ export class GameOverScene implements Scene {
     leaderboard: Leaderboard,
     audio: AudioManager,
     difficulty: Difficulty,
+    runToken: string | null,
     onReplay: () => void,
     onMenu: () => void,
   ) {
@@ -93,6 +100,7 @@ export class GameOverScene implements Scene {
     this.leaderboard = leaderboard;
     this.audio = audio;
     this.difficulty = difficulty;
+    this.runToken = runToken;
     this.dailyDate = summary.dailyKey ?? dailyKey();
     this.isPracticeRun = difficulty === 'daily' && hasSubmittedDaily(this.dailyDate);
     this.onReplay = onReplay;
@@ -456,7 +464,9 @@ export class GameOverScene implements Scene {
 
     const name = this.htmlInput?.value || '';
     this.removeNameInputGroup();
-    const result = await this.leaderboard.submit(this.summary.score, name, this.summary.replay);
+    const result = await this.leaderboard.submit(
+      this.summary.score, name, this.summary.replay, this.runToken,
+    );
     this.rank = result.rank;
     // 'rules' is the one refusal that is the game's fault rather than the
     // run's: this build records replays the server no longer understands.
@@ -465,8 +475,11 @@ export class GameOverScene implements Scene {
       : result.reason === 'rules' ? 'UPDATE THE GAME' : 'NOT VERIFIED · SCORE KEPT LOCALLY';
     // One submission per daily, and this was it. The flag is only a local
     // convenience — the server is what actually enforces first-submission-wins
-    // — so it is set whether or not the request reached the network.
-    if (this.difficulty === 'daily') markDailySubmitted(this.dailyDate);
+    // — so it is set whether or not the request reached the network. The one
+    // case it is not set is a run with no ticket: nothing was sent, the
+    // server has no record of the player having played today, and marking it
+    // would cost them the attempt they never spent.
+    if (this.difficulty === 'daily' && this.runToken) markDailySubmitted(this.dailyDate);
     this.refreshLeaderboard();
   }
 

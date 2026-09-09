@@ -172,15 +172,31 @@ describe('what the simulation refuses', () => {
       .toMatchObject({ valid: false, reason: 'clock', moves: 0 });
   });
 
-  it('refuses a daily whose seed is not its date', () => {
+  it('refuses a daily that does not say which day it is', () => {
     const key = dailyKey();
     const daily = playBotRun('daily', dailySeed(key), 10);
     expect(simulateRun(daily.replay)).toMatchObject({ valid: true });
 
-    expect(simulateRun({ ...daily.replay, seed: dailySeed(key) + 1 }).reason).toBe('seed');
-    expect(simulateRun({ ...daily.replay, dailyKey: '2020-01-01' }).reason).toBe('seed');
     expect(simulateRun({ ...daily.replay, dailyKey: undefined }).reason).toBe('seed');
     expect(simulateRun({ ...daily.replay, dailyKey: 'yesterday' }).reason).toBe('seed');
+    expect(simulateRun({ ...daily.replay, dailyKey: '2026-02-30' }).reason).toBe('seed');
+
+    // What is deliberately NOT refused here any more: a seed that is not the
+    // one the date hashes to. The daily's deal comes from an HMAC under the
+    // server's secret now, so that a future puzzle cannot be dealt and
+    // studied offline — and a module with no secret cannot check it. The
+    // seed is bound to the day by the run ticket, in api/leaderboard.ts,
+    // and there is a test there for exactly that.
+    const otherSeed = simulateRun({ ...daily.replay, seed: dailySeed(key) + 1 });
+    expect(otherSeed.reason).not.toBe('seed');
+    // A different deal deals different pieces, so the log stops making sense
+    // at the first placement that no longer fits.
+    expect(otherSeed.valid).toBe(false);
+
+    // Another day's key, with this day's deal, is likewise the ticket's
+    // business: the simulation only insists the key is a real date.
+    expect(simulateRun({ ...daily.replay, dailyKey: '2020-01-01' }))
+      .toMatchObject({ valid: true, score: daily.score });
   });
 
   it('refuses another rules version outright', () => {
@@ -197,6 +213,111 @@ describe('what the simulation refuses', () => {
 
     const tooMany = { ...run.replay, moves: new Array(MAX_REPLAY_MOVES + 1).fill(run.replay.moves[0]) };
     expect(simulateRun(tooMany).reason).toBe('shape');
+  });
+});
+
+describe('a claim taken at the edge of an echo window', () => {
+  /**
+   * The run this needs cannot be found by playing normally: it has to be
+   * aimed. Each move waits until the tightest ghost wall standing has fifty
+   * microseconds of life left and then places, so every claim in it is
+   * decided a hair inside an expiry — the one comparison where a client and
+   * a server can disagree about what the board even looked like.
+   */
+  const EDGE_MARGIN = 0.00005;
+  let edgeLandings = 0;
+
+  const edge = playBotRun('classic', 5, 60, {
+    step: (_i, gs) => {
+      const live = gs.echoWalls().map(w => w.remaining).filter(r => r > EDGE_MARGIN * 2);
+      if (live.length === 0) return 0.3;
+      edgeLandings++;
+      return Math.min(...live) - EDGE_MARGIN;
+    },
+  });
+
+  it('was a run worth verifying: claims decided inside the last millisecond', () => {
+    expect(edgeLandings).toBeGreaterThan(5);
+    expect(edge.replay.moves.length).toBe(60);
+    // Move times are recorded as they were, not rounded to the millisecond
+    const offGrid = edge.replay.moves.filter(
+      m => Math.abs(m.at * 1000 - Math.round(m.at * 1000)) > 1e-9);
+    expect(offGrid.length).toBeGreaterThan(40);
+    // And the ghosts were doing work: claims closed against them and paid
+    const echoed = edge.events.filter(ev =>
+      ev.some(e => e.type === 'claim' && (e.scoreBreakdown?.echoMultiplier ?? 1) > 1));
+    expect(echoed.length).toBeGreaterThan(0);
+  });
+
+  it('re-simulates to exactly the score it was played for', () => {
+    expect(simulateRun(edge.replay)).toMatchObject({ valid: true, score: edge.score });
+  });
+
+  it('would not survive the millisecond rounding the log used to carry', () => {
+    // What the old recording did to those times. A ghost with fifty
+    // microseconds left is rounded either side of its own expiry, the claim
+    // it was holding up goes a different way, and the run stops matching the
+    // board a few moves later.
+    const rounded = edge.replay.moves.map(m => ({ ...m, at: round3(m.at) }));
+    const result = simulateRun({ ...edge.replay, moves: rounded });
+    expect(result.valid && result.score === edge.score).toBe(false);
+  });
+});
+
+describe('a run the browser ticked a frame at a time', () => {
+  /**
+   * The case the fix is really for. A browser reaches a move's time by adding
+   * up sixty frames a second; a simulation adding up the gaps between moves
+   * lands on a different double. Here the run is played frame by frame AND
+   * aimed at the edge of each echo window, so both halves of the
+   * disagreement are in play at once.
+   */
+  const framed = playBotRun('classic', 13, 60, {
+    frameSeconds: 1 / 60,
+    step: (_i, gs) => {
+      const live = gs.echoWalls().map(w => w.remaining).filter(r => r > 0.0002);
+      return live.length > 0 ? Math.min(...live) - 0.0001 : 0.3;
+    },
+  });
+
+  it('lands moves inside the last millisecond of a ghost wall', () => {
+    // The frame loop cannot land exactly where it aimed, which is the point:
+    // these are the margins a real client produces.
+    expect(framed.replay.moves.length).toBeGreaterThan(40);
+    const claims = framed.events.filter(ev => ev.some(e => e.type === 'claim'));
+    expect(claims.length).toBeGreaterThan(3);
+  });
+
+  it('re-plays to exactly the score the frames produced', () => {
+    expect(simulateRun(framed.replay)).toMatchObject({ valid: true, score: framed.score });
+
+    // And would not have, on the millisecond grid the log used to be
+    // recorded on: 45 claims, and the ghosts holding them up land either
+    // side of their own expiry once the times are rounded.
+    const rounded = framed.replay.moves.map(m => ({ ...m, at: round3(m.at) }));
+    const result = simulateRun({ ...framed.replay, moves: rounded });
+    expect(result.valid && result.score === framed.score).toBe(false);
+  });
+});
+
+describe('the cadence floor', () => {
+  const run = playBotRun('classic', 11, 20);
+
+  it('refuses placements a human hand could not have made', () => {
+    // Every move legal, every score honest, the whole run typed out at forty
+    // placements a second.
+    const rushed: Move[] = run.replay.moves.map((m, i) => ({ ...m, at: 0.5 + i * 0.025 }));
+    expect(simulateRun({ ...run.replay, moves: rushed })).toMatchObject({ reason: 'cadence' });
+
+    // The floor is 0.08 s between placements: a hair under it fails, a hair
+    // over it is a fast player and nothing more.
+    const at = (gap: number): Move[] => run.replay.moves.map((m, i) => ({ ...m, at: 0.5 + i * gap }));
+    expect(simulateRun({ ...run.replay, moves: at(0.0799) }).reason).toBe('cadence');
+    expect(simulateRun({ ...run.replay, moves: at(0.0801) }).reason).not.toBe('cadence');
+
+    // A hold does not reset it: the floor is between one piece landing and
+    // the next, whatever happened in between.
+    expect(run.replay.moves.some(m => m.t === 'h')).toBe(true);
   });
 });
 

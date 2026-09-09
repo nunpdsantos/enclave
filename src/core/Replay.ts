@@ -1,5 +1,5 @@
 import { DIFFICULTY_CONFIGS, GameConfig, TimerConfig } from './Config';
-import { dailySeed, isDailyKey } from './Daily';
+import { isDailyKey } from './Daily';
 import { GameState } from './GameState';
 import { rotationCount } from './Pieces';
 import { RULES_VERSION } from './Rules';
@@ -20,7 +20,7 @@ import { GRID_SIZE, MAX_REPLAY_MOVES, Replay, RunEndCause } from './types';
  */
 
 /** Why a replay was refused. 'score' belongs to the caller that compares. */
-export type SimFailure = 'rules' | 'shape' | 'seed' | 'move' | 'clock' | 'score';
+export type SimFailure = 'rules' | 'shape' | 'seed' | 'move' | 'clock' | 'cadence' | 'score';
 
 export interface SimResult {
   valid: boolean;
@@ -33,16 +33,50 @@ export interface SimResult {
 }
 
 /**
- * The longest a run may sit between two moves. Half an hour is a tab left
- * open, not a run, and it bounds the work one submission can ask of us.
+ * The longest a *timed* run may sit between two moves. Half an hour is a tab
+ * left open, not a run, and it bounds the work one submission can ask of us.
  */
 const MAX_GAP_SECONDS = 1800;
 
 /**
- * How far under zero the reconstructed bank may go before the run is called
- * dead. See `drainIntegral` for why one second is generous.
+ * The same limit for a run with no clock.
+ *
+ * The Daily is thirty pieces and no timer: leaving it open over lunch, or
+ * overnight, is legal play and used to be refused as a forgery by a limit
+ * that was never written down anywhere a player could read it. A day is the
+ * honest bound, and it costs nothing — the run ticket's own 24-hour lifetime
+ * already caps how long a submittable run can span.
  */
-const CLOCK_SLACK_SECONDS = 1.0;
+const MAX_UNCLOCKED_GAP_SECONDS = 24 * 60 * 60;
+
+/**
+ * How far under zero the reconstructed bank may go before the run is called
+ * dead.
+ *
+ * Fifty milliseconds, not the second this used to allow. The argument for
+ * the tight bound is in `drainIntegral`: the client drains per frame at the
+ * rate at the END of each frame, the rate never falls, so a browser always
+ * eats at least the closed-form integral this reconstruction subtracts. Both
+ * sides then add the same engine-computed bonus and clamp at the same cap,
+ * and clamping is monotonic — so the reconstructed bank is greater than or
+ * equal to the bank the browser actually had at every move. A run that
+ * survived on the client therefore reconstructs to a bank at or above zero,
+ * and the slack only has to absorb float noise, not model error. A whole
+ * second of slack was a whole second of free play for a forged log.
+ */
+const CLOCK_SLACK_SECONDS = 0.05;
+
+/**
+ * The shortest gap allowed between two placements.
+ *
+ * Nothing in the rules says how fast a person can drag a piece onto a board,
+ * so a fabricated log used to be free to place six hundred pieces at a
+ * millisecond apart and re-play perfectly. Eighty milliseconds is under half
+ * of a fast human tap and still refuses the machine-gun log outright. It is
+ * a floor on the *inputs*, so it holds in the Daily too, where there is no
+ * clock to make haste cost anything.
+ */
+const MIN_PLACEMENT_INTERVAL = 0.08;
 
 /**
  * Move times are recorded to the millisecond, and our clock is advanced by
@@ -109,21 +143,31 @@ export function simulateRun(replay: Replay): SimResult {
   if (!Array.isArray(moves) || moves.length > MAX_REPLAY_MOVES) return fail('shape', 0, 0);
 
   if (replay.mode === 'daily') {
-    // The daily's whole promise is that everyone played the same deal, so the
-    // seed is not the client's to choose: it is the date's.
+    // A daily run has to say which day it belongs to: the board it can be
+    // posted to is a date, and the ticket that vouches for it names one.
+    //
+    // What is deliberately NOT checked here is that the seed is the one the
+    // date implies. It no longer is: the daily's deal comes from an HMAC
+    // under the server's secret (see Ticket.dailySeedFor), so that a future
+    // puzzle cannot be dealt offline and studied. This module holds no
+    // secret and simulates rules, so the seed is bound to the day one level
+    // up, where `api/leaderboard.ts` checks the replay's seed against the
+    // signed ticket that issued it.
     const key = replay.dailyKey;
     if (typeof key !== 'string' || !isDailyKey(key)) return fail('seed', 0, 0);
-    if (replay.seed !== dailySeed(key)) return fail('seed', 0, 0);
   }
 
   const gs = new GameState({ ...base, seed: replay.seed }, replay.mode);
   gs.start();
 
   const clocked = base.clock.enabled;
+  const maxGap = clocked ? MAX_GAP_SECONDS : MAX_UNCLOCKED_GAP_SECONDS;
   // The reconstructed bank, in seconds. Only ever consulted, never the thing
   // that ends the run: the engine's own timeout cannot be reproduced here.
   let bank = base.timer.startSeconds;
   let previousAt = 0;
+  /** When the last piece went down, for the cadence floor. */
+  let previousPlacementAt = -Infinity;
 
   for (let i = 0; i < moves.length; i++) {
     const move = moves[i];
@@ -132,10 +176,15 @@ export function simulateRun(replay: Replay): SimResult {
     const at = move.at;
     if (typeof at !== 'number' || !Number.isFinite(at) || at < 0) return fail('shape', gs.score, i);
     const dt = at - gs.gameElapsed;
-    if (dt < -TIME_EPSILON || dt > MAX_GAP_SECONDS) return fail('move', gs.score, i);
+    if (dt < -TIME_EPSILON || dt > maxGap) return fail('move', gs.score, i);
     // A run the engine has already ended cannot take another input
     if (gs.isGameOver) return fail('move', gs.score, i, gs.deathCause ?? undefined);
-    if (dt > 0) gs.advanceClock(dt);
+    // Assigned, not accumulated. The client records `at` as its own
+    // `gameElapsed` to the last bit, so setting the clock to that number
+    // makes every echo wall's `expiresAt` — computed as gameElapsed + window
+    // — bit-identical on both sides, and a claim decided a microsecond
+    // either side of an expiry is decided the same way here as it was there.
+    gs.advanceClockTo(at);
 
     if (clocked) {
       bank -= drainIntegral(base.timer, previousAt, at);
@@ -149,6 +198,14 @@ export function simulateRun(replay: Replay): SimResult {
       if (gs.hold().length === 0) return fail('move', gs.score, i);
       continue;
     }
+
+    // Nobody drags a piece onto a board twelve times a second. Checked
+    // before the placement is simulated, so a machine-gun log costs the
+    // server the two moves it takes to spot rather than all six hundred.
+    if (at - previousPlacementAt < MIN_PLACEMENT_INTERVAL - TIME_EPSILON) {
+      return fail('cadence', gs.score, i);
+    }
+    previousPlacementAt = at;
 
     const piece = gs.current;
     if (!piece) return fail('move', gs.score, i);

@@ -5,8 +5,8 @@ import { MenuScene } from './scenes/MenuScene';
 import { GameScene } from './scenes/GameScene';
 import { GameOverScene } from './scenes/GameOverScene';
 import { AudioManager } from './audio/AudioManager';
-import { Leaderboard } from './core/Leaderboard';
-import { Difficulty, DIFFICULTY_CONFIGS } from './core/Config';
+import { Leaderboard, requestRunTicket } from './core/Leaderboard';
+import { Difficulty, DIFFICULTY_CONFIGS, GameConfig } from './core/Config';
 import { incrementGamesPlayed } from './core/Settings';
 import { RunSummary } from './core/types';
 import { THEME } from './rendering/Theme';
@@ -72,7 +72,7 @@ async function boot() {
           if (sceneManager.current === menu) menu.refreshLeaderboard();
         });
       },
-      () => startGame(false),
+      () => { void startGame(false); },
     );
     sceneManager.switchTo(menu);
     // Remote scores may arrive after the menu is drawn
@@ -86,11 +86,32 @@ async function boot() {
     app.renderer.background.color = color;
   }
 
-  function startGame(skipCountdown: boolean = false) {
+  /**
+   * The ticket the current run was started with, or null when it could not
+   * be had. It travels no further than the game-over screen, which is the
+   * only place it is used: posting the score.
+   */
+  let runToken: string | null = null;
+
+  async function startGame(skipCountdown: boolean = false) {
     // Recompute the layout on the way in: handedness may have been changed
     // in the menu since it was last measured.
     layoutManager.recalculate(window.innerWidth, window.innerHeight);
-    const config = DIFFICULTY_CONFIGS[selectedDifficulty];
+
+    // The deal is the server's to choose, so the ticket has to be in hand
+    // before the first piece is dealt. Without one the run still plays — on
+    // a local seed, as practice — and the game-over screen says the score
+    // stayed here rather than pretending it went out.
+    const ticket = await requestRunTicket(selectedDifficulty);
+    runToken = ticket?.token ?? null;
+    const base = DIFFICULTY_CONFIGS[selectedDifficulty];
+    const config: GameConfig = ticket
+      ? {
+        ...base,
+        seed: ticket.seed,
+        ...(ticket.dailyKey ? { dailyDate: ticket.dailyKey } : {}),
+      }
+      : base;
     incrementGamesPlayed(selectedDifficulty);
     const gameScene = new GameScene(
       app.canvas,
@@ -114,7 +135,8 @@ async function boot() {
       leaderboard,
       audioManager,
       selectedDifficulty,
-      () => startGame(false),
+      runToken,
+      () => { void startGame(false); },
       () => showMenu(),
     );
     sceneManager.switchTo(gameOver);

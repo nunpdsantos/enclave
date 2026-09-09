@@ -39,7 +39,20 @@ function keyToMs(key: string): number {
   return Date.parse(`${key}T00:00:00.000Z`);
 }
 
-/** The seed every player of that day shares. */
+/**
+ * The public seed for a date. **Not the deal for shared play.**
+ *
+ * Anyone can compute this, which is the problem: it means tomorrow's puzzle
+ * can be dealt tonight, solved at leisure and posted as a first attempt the
+ * moment the day opens. The deal a score can be posted from now comes from
+ * the server, as the first 32 bits of an HMAC under its secret, handed out
+ * with the run ticket (`Ticket.dailySeedFor`, `api/run-start.ts`).
+ *
+ * This is kept for the two places where reproducibility matters more than
+ * secrecy: the tests, and the offline practice run a browser falls back to
+ * when it cannot get a ticket. A run dealt from here has no ticket, so it is
+ * never submitted — it is a different puzzle from the one on the board.
+ */
 export function dailySeed(key: string): number {
   return hashString(`enclave-daily-${key}`);
 }

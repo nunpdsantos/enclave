@@ -44,15 +44,6 @@ function territoryFactorOf(t: TerritoryConfig, fresh: number, area: number): num
 }
 
 /**
- * A recorded move time, in seconds. Milliseconds is all the precision the
- * echo window — the only rule that reads a time — can act on, and it keeps a
- * six-hundred-move log to about 27 KB.
- */
-function round3(seconds: number): number {
-  return Math.round(seconds * 1000) / 1000;
-}
-
-/**
  * area² × pointsPerAreaSquared × territoryFactor, with the division by area
  * cancelled off. Algebraically the same number, but an exact one: written the
  * obvious way, a 7-cell room on 2 fresh cells lands on 314.99999999999994 and
@@ -277,6 +268,14 @@ export class GameState {
    * Log one input. Past the cap the run goes on exactly as before and only
    * the log stops: a player who somehow gets there is still playing, they
    * just cannot prove the score afterwards.
+   *
+   * `at` goes in as the full double `gameElapsed` is, never rounded. The
+   * echo window is decided by comparing `expiresAt` against the clock, and
+   * `expiresAt` is itself `gameElapsed + window`: round the recorded time to
+   * the millisecond and a claim taken a few microseconds inside a ghost wall
+   * re-plays on the server as a claim taken a few microseconds outside it,
+   * for a different score. Full precision costs about 4 KB on a
+   * six-hundred-move log and removes the disagreement entirely.
    */
   private record(move: Move): void {
     if (this.moves.length < MAX_REPLAY_MOVES) this.moves.push(move);
@@ -295,12 +294,18 @@ export class GameState {
 
   start(): FeedbackEvent {
     this.board.reset();
-    // The daily's seed is its date, so every player deals the same 30 pieces;
-    // anything else takes the config's seed if it has one and a throwaway if
-    // it does not. An explicit seed wins even for the daily, which is how the
-    // replay simulation re-deals a run from *its* day rather than from today
-    // — the shipped daily config carries no seed, so live play is unchanged.
-    this.dailyDate = this.difficulty === 'daily' ? dailyKey() : null;
+    // Which day this run belongs to. The server's date when a run ticket
+    // supplied one — a device clock a few hours out must not deal itself
+    // yesterday's puzzle — and this browser's UTC date otherwise, which is
+    // the offline practice case.
+    this.dailyDate = this.difficulty === 'daily'
+      ? (this.config.dailyDate ?? dailyKey())
+      : null;
+    // The deal. A run that got a ticket carries the server's seed in its
+    // config and uses that, which is the only deal a score can be posted
+    // from. Without one the run is practice: the daily falls back to the
+    // public date hash and free play to a throwaway, and neither can be
+    // submitted, because neither has a ticket to submit it with.
     this.seed = this.config.seed
       ?? (this.dailyDate !== null ? dailySeed(this.dailyDate) : randomSeed());
     this.bag = new PieceBag(mulberry32(this.seed), this.config.pieceBudget);
@@ -364,6 +369,31 @@ export class GameState {
     this.sampleTimeline();
     // Echo walls run on the game clock, not on placements, so this is the one
     // place they can fade out.
+    this.filterEchoes(c => c.expiresAt > this.gameElapsed);
+  }
+
+  /**
+   * Age the run to an absolute `gameElapsed`, rather than by a delta.
+   *
+   * This exists for the replay simulation, and the difference is the whole
+   * point of it. A browser reaches a move's time by adding up frames; a
+   * simulation reaching it by adding up the gaps between moves lands on a
+   * double a few bits away. Every echo wall's `expiresAt` is
+   * `gameElapsed + windowSeconds`, and whether a claim pays the ECHO
+   * multiplier is `expiresAt > gameElapsed` — so a few bits is the whole
+   * difference between two scores. Assigning the recorded time makes both
+   * sides compare the same two numbers.
+   *
+   * Never runs backwards: a move that claims to be earlier than the clock is
+   * the caller's to refuse, and silently rewinding one would un-expire the
+   * echo walls that have already been swept.
+   */
+  advanceClockTo(elapsed: number): void {
+    if (this.isGameOver) return;
+    if (!(elapsed > this.gameElapsed)) return;
+    this.pieceElapsed += elapsed - this.gameElapsed;
+    this.gameElapsed = elapsed;
+    this.sampleTimeline();
     this.filterEchoes(c => c.expiresAt > this.gameElapsed);
   }
 
@@ -432,7 +462,7 @@ export class GameState {
     this.held = outgoing;
     this.holdUsed = true;
     this.holds++;
-    this.record({ t: 'h', at: round3(this.gameElapsed) });
+    this.record({ t: 'h', at: this.gameElapsed });
     events.push({ type: 'hold' });
     events.push({ type: 'newHand' });
     if (this.checkGameOver()) {
@@ -517,7 +547,7 @@ export class GameState {
     this.totalTurns++;
     // Recorded before anything is scored: what the log has to carry is the
     // input, and the rules turn that into a score on both sides.
-    this.record({ t: 'p', row, col, rot: piece.rotation, at: round3(this.gameElapsed) });
+    this.record({ t: 'p', row, col, rot: piece.rotation, at: this.gameElapsed });
     const placedCells = this.board.place(piece.shape, row, col, piece.color);
     // An echo wall is empty ground: a piece may land on one, and then it is a
     // real block again rather than a block and a ghost in the same cell.
@@ -626,8 +656,15 @@ export class GameState {
     this.syncBagTier();
 
     // Deal the next piece. Under a budget both the queue and the bag can be
-    // empty, and then the run is finished rather than dead.
+    // empty, and then the hold slot is the last place a piece can come from:
+    // a ration parked early has to come back out, or holding once would
+    // quietly cost the run its thirtieth placement. The run is finished only
+    // when the hand and the hold slot are both empty.
     this.current = this.queue.shift() ?? null;
+    if (!this.current && this.held) {
+      this.current = this.held;
+      this.held = null;
+    }
     const dealt = this.bag.next();
     if (dealt) this.queue.push(dealt);
     this.holdUsed = false;

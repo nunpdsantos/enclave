@@ -119,8 +119,14 @@ export type RunEndCause = 'timeout' | 'board_lock' | 'quit' | 'complete';
  * Rotations are not recorded on their own: a placement carries the rotation
  * index the piece was actually placed at, which is all a simulation needs to
  * turn the dealt piece to match, and it makes a spun-in-place fidget cost
- * nothing. `at` is `gameElapsed` in seconds, rounded to milliseconds — the
- * echo window is the one rule that reads it, and it is measured in seconds.
+ * nothing.
+ *
+ * `at` is `gameElapsed` in seconds, unrounded. It used to be rounded to the
+ * millisecond, which was a millisecond of disagreement about the one rule
+ * that reads a time: an echo wall expires at `gameElapsed + window`, and a
+ * claim decided just inside that could re-play as a claim just outside it.
+ * The simulation now assigns the recorded number to its own clock, so the
+ * comparison is between bit-identical doubles on both sides.
  */
 export type Move =
   | { t: 'p'; row: number; col: number; rot: number; at: number }

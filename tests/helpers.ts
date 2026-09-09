@@ -137,15 +137,38 @@ export interface BotOptions {
   /** Move index at which to park a piece instead of placing one. -1 for never. */
   holdAt?: number;
   /**
-   * Seconds between moves. The default varies with the move index, which
-   * keeps the gaps off exact multiples of an echo window: a move landing on
-   * the millisecond a ghost expires is the one thing a 3-decimal timestamp
-   * cannot reproduce, and a test should not be sitting on that edge.
+   * Seconds before the next input. The default varies with the move index,
+   * which keeps the gaps off exact multiples of an echo window.
+   *
+   * It is handed the live GameState as well, so a test can aim a move at the
+   * edge of a ghost wall's life — the case where the client and the server
+   * have to agree on a comparison of two doubles.
    */
-  step?: (i: number) => number;
+  step?: (i: number, gs: GameState) => number;
+  /**
+   * Advance the clock in frames of about this many seconds rather than in one
+   * jump per move, which is what a browser actually does: `gameElapsed`
+   * becomes a sum of sixty small doubles a second instead of one addition,
+   * and lands a few bits away from the number a simulation would reach by
+   * adding up the gaps between moves. That difference is the whole reason
+   * the replay simulation assigns the recorded time instead.
+   */
+  frameSeconds?: number;
 }
 
 const DEFAULT_STEP = (i: number): number => 0.25 + 0.11 * (i % 4);
+
+/** Age the run by `wait`, in one jump or a frame at a time. True if time ran out. */
+function advance(gs: GameState, wait: number, frameSeconds?: number): boolean {
+  if (!frameSeconds || frameSeconds <= 0) return gs.tick(wait);
+  let left = wait;
+  while (left > 1e-12) {
+    const dt = Math.min(frameSeconds, left);
+    if (gs.tick(dt)) return true;
+    left -= dt;
+  }
+  return false;
+}
 
 /** Play `moves` inputs of a real run and hand back the recorded replay. */
 export function playBotRun(
@@ -157,7 +180,7 @@ export function playBotRun(
   gs.start();
   const events: FeedbackEvent[][] = [];
   for (let i = 0; i < moves && !gs.isGameOver; i++) {
-    if (gs.tick(step(i))) break;
+    if (advance(gs, step(i, gs), opts.frameSeconds)) break;
     if (i === holdAt && !gs.holdUsed && (gs.held !== null || gs.queue.length > 0)) {
       gs.hold();
       continue;
