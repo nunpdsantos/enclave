@@ -6,7 +6,7 @@ import {
 } from '../src/core/Config';
 import { GameState } from '../src/core/GameState';
 import { MISSIONS, PICKER_MISSIONS, cellsOfTerrain, terrainOf } from '../src/core/Missions';
-import { PIECE_TYPES, cellCount, makePiece } from '../src/core/Pieces';
+import { PIECE_TYPES, cellCount, makePiece, rotatePiece, rotationCount } from '../src/core/Pieces';
 import { mulberry32 } from '../src/core/Random';
 import { simulateRun } from '../src/core/Replay';
 import {
@@ -673,6 +673,67 @@ describe('the preview promises the resolution', () => {
     placeDot(gs, 10, 0);
     expect(gs.board.grid[5][4]).toBeNull();
     expect(gs.buildRunSummary().siege!.wallsLost).toBe(1);
+  });
+
+  it('keeps its promise on every turn of a whole run', () => {
+    // The single case above proves the wiring; this proves the invariant. For
+    // every turn of a real run, the preview of the drop that is about to be
+    // made has to match what the turn then does — captures, held ground,
+    // points and the walls the raiders take down. The mode is unplayable if
+    // this is ever false, and it is exactly the sort of thing that goes
+    // quietly false when the resolution order is edited.
+    const gs = siegeGame();
+    let turns = 0;
+    while (!gs.isGameOver && gs.current) {
+      // A player who reads the preview: never lose, then take the points,
+      // then keep the raiders as far from the Keep as the piece allows. It is
+      // what makes this run touch captures, courtyards and broken walls
+      // rather than stacking blocks in a corner.
+      let target: { row: number; col: number; rot: number } | null = null;
+      let bestValue = -Infinity;
+      let piece = gs.current;
+      for (let t = 0; t < rotationCount(gs.current); t++) {
+        for (let r = 0; r + piece.rows <= N; r++) {
+          for (let c = 0; c + piece.cols <= N; c++) {
+            if (!gs.board.canPlace(piece.shape, r, c)) continue;
+            const pv = gs.previewPlacement(piece, r, c);
+            if (!pv) continue;
+            const routes = [...pv.intent.routeLengths.values()];
+            const nearest = routes.length > 0 ? Math.min(...routes) : 99;
+            const value = (pv.breach ? -1e6 : 0) + pv.points * 10 + nearest;
+            if (value > bestValue) {
+              bestValue = value;
+              target = { row: r, col: c, rot: piece.rotation };
+            }
+          }
+        }
+        piece = rotatePiece(piece);
+      }
+      if (!target) { gs.skipPiece(); continue; }
+      for (let n = 0; n < 4 && gs.current && gs.current.rotation !== target.rot; n++) gs.rotate();
+
+      const scoreBefore = gs.score;
+      const preview = gs.previewPlacement(gs.current!, target.row, target.col)!;
+      const events = gs.tryPlace(target.row, target.col);
+      turns++;
+
+      const capture = events.find(e => e.type === 'capture');
+      expect(capture?.capturedCells ?? [], `turn ${turns} captures`)
+        .toEqual(preview.captured);
+      if (preview.breach) {
+        expect(gs.deathCause, `turn ${turns} breach`).toBe('breach');
+        break;
+      }
+      expect(heldKeys(gs), `turn ${turns} held`).toEqual(sortedCells(preview.held));
+      expect(gs.score - scoreBefore, `turn ${turns} points`).toBe(preview.points);
+      const broken = events.find(e => e.type === 'enemy')?.wallsBroken ?? [];
+      expect(sortedCells(broken), `turn ${turns} walls`)
+        .toEqual(sortedCells(preview.wallsBroken));
+    }
+    // ...and the run it walked through was a real one, not an empty board
+    expect(turns).toBeGreaterThan(8);
+    expect(gs.capturedCount).toBeGreaterThan(0);
+    expect(gs.buildRunSummary().siege!.wallsLost).toBeGreaterThan(0);
   });
 
   it('says so when a drop would lose the run', () => {
