@@ -19,7 +19,8 @@ function readLastDifficulty(): Difficulty {
     const raw = localStorage.getItem(LAST_DIFFICULTY_KEY);
     if (raw === 'classic' || raw === 'blitz' || raw === 'daily' || raw === 'siege') return raw;
   } catch { /* */ }
-  return 'classic';
+  // The siege branch opens on the siege picker: this preview exists to play it.
+  return 'siege';
 }
 
 /**
