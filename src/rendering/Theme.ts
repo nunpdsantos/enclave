@@ -39,6 +39,7 @@ export const THEME = {
 export const DIFFICULTY_COLORS: Record<Difficulty, number> = {
   classic: THEME.accent,
   blitz: 0xf97316,
+  daily: THEME.gold,
 };
 
 export interface BoardTokens {

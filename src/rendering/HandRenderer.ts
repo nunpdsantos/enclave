@@ -101,12 +101,22 @@ export class HandRenderer {
     r.stroke({ color: 0xffffff, alpha: 0.12, width: 1 });
   }
 
-  /** Redraw hand contents. `animate` slides the new current piece in. */
-  drawHand(current: PieceInstance | null, held: PieceInstance | null, queue: PieceInstance[], animate: boolean): void {
+  /**
+   * Redraw hand contents. `animate` slides the new current piece in.
+   *
+   * `slots` is how many queue positions to lay out, which is the preview size
+   * rather than the queue length: under a piece budget the queue runs dry and
+   * the empty slots have to stay visible, or the last few pieces would appear
+   * to grow as the column re-divided itself.
+   */
+  drawHand(
+    current: PieceInstance | null, held: PieceInstance | null, queue: PieceInstance[],
+    animate: boolean, slots: number = queue.length,
+  ): void {
     this.current = current;
     if (animate) this.introT = 0;
     this.drawMini(this.holdGfx, held, this.layout.holdRect, 1);
-    this.drawQueue(queue);
+    this.drawQueue(queue, slots);
     this.renderCurrent();
   }
 
@@ -127,16 +137,24 @@ export class HandRenderer {
     this.rotateFrom = -Math.PI / 2;
   }
 
-  private drawQueue(queue: PieceInstance[]): void {
+  private drawQueue(queue: PieceInstance[], slots: number): void {
     const g = this.nextGfx;
     g.clear();
     const { nextRect } = this.layout;
-    const n = Math.max(1, queue.length);
+    const n = Math.max(1, slots);
     const slotH = nextRect.h / n;
-    queue.forEach((piece, i) => {
+    for (let i = 0; i < n; i++) {
       const rect: Rect = { x: nextRect.x, y: nextRect.y + slotH * i, w: nextRect.w, h: slotH };
-      this.drawPieceInRect(g, piece, rect, this.layout.miniCellSize, i === 0 ? 1 : 0.75);
-    });
+      const piece = queue[i];
+      if (piece) {
+        this.drawPieceInRect(g, piece, rect, this.layout.miniCellSize, i === 0 ? 1 : 0.75);
+      } else {
+        // A dashed-looking empty well: the ration is spent, nothing is coming
+        const pad = Math.min(10, slotH * 0.22);
+        g.roundRect(rect.x + pad, rect.y + pad, rect.w - pad * 2, rect.h - pad * 2, 6);
+        g.stroke({ color: 0xffffff, alpha: 0.1, width: 1 });
+      }
+    }
   }
 
   private drawMini(g: Graphics, piece: PieceInstance | null, rect: Rect, alpha: number): void {

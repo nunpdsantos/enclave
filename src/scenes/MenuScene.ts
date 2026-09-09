@@ -2,17 +2,23 @@ import { Container, Graphics, Text, TextStyle } from 'pixi.js';
 import { Scene } from './SceneManager';
 import { Leaderboard } from '../core/Leaderboard';
 import { Difficulty, DIFFICULTY_LABELS, DIFFICULTY_CONFIGS } from '../core/Config';
+import { dailyKey, dailyNumber, formatCountdown, msUntilNextDaily } from '../core/Daily';
 import { PaletteSetting, getPersonalBest, getGamesPlayed, loadSettings, updateSettings } from '../core/Settings';
 import { MOTION_LABELS, MOTION_ORDER, getPiecePalette, remapColor } from '../core/Accessibility';
 import { AudioManager } from '../audio/AudioManager';
 import { FONT_DISPLAY, FONT_MONO, THEME, DIFFICULTY_COLORS, drawPanel, drawBeveledBlock, easeOutBack } from '../rendering/Theme';
 import { createButton, createToggle, createCycleToggle, createSectionLabel, createBodyText } from '../rendering/Widgets';
 
-const DIFFICULTIES: Difficulty[] = ['classic', 'blitz'];
+const DIFFICULTIES: Difficulty[] = ['classic', 'blitz', 'daily'];
 const DIFFICULTY_DESCRIPTIONS: Record<Difficulty, string> = {
   classic: 'A minute on the clock. Build big rooms, close them with care.',
   blitz: 'Thirty-five seconds. Fence fast, claim faster.',
+  // The daily's line is written at build time: it carries today's number
+  daily: '30 pieces · no clock. Same pieces for everyone.',
 };
+
+/** How often the RESETS IN readout is rewritten. It only shows hh:mm. */
+const RESET_REFRESH_SECONDS = 60;
 
 // Cycle orders for the OPTIONS panel. Index 0 is the default in each.
 const PALETTE_ORDER: PaletteSetting[] = ['standard', 'highContrast'];
@@ -47,6 +53,9 @@ export class MenuScene implements Scene {
   private lowerContainer: Container | null = null;
   private title: Text | null = null;
   private titlePhase = 0;
+  /** The BEST / RESETS IN line, kept so the daily countdown can be rewritten */
+  private statsText: Text | null = null;
+  private resetElapsed = 0;
 
   // Ambient background
   private bgGfx: Graphics;
@@ -224,15 +233,20 @@ export class MenuScene implements Scene {
       this.container.removeChild(this.difficultyContainer);
       this.difficultyContainer.destroy({ children: true });
     }
+    this.statsText = null;
 
     const group = new Container();
     this.difficultyContainer = group;
     this.container.addChild(group);
 
     const selectorY = this.height * 0.175;
-    const chipW = Math.min(92, (this.width - 60) / 3);
     const chipH = 36;
-    const gap = 10;
+    const gap = 8;
+    // Three chips have to fit a 360-wide phone, so the row is sized from the
+    // count and the label tightens with it rather than wrapping to two lines.
+    const chipW = Math.min(92, (this.width - 44 - gap * (DIFFICULTIES.length - 1)) / DIFFICULTIES.length);
+    const labelSize = chipW >= 76 ? 12 : 11;
+    const labelSpacing = chipW >= 88 ? 2 : 1;
     const totalW = DIFFICULTIES.length * chipW + (DIFFICULTIES.length - 1) * gap;
     const startX = this.width / 2 - totalW / 2;
 
@@ -262,10 +276,10 @@ export class MenuScene implements Scene {
         text: DIFFICULTY_LABELS[diff],
         style: new TextStyle({
           fontFamily: FONT_DISPLAY,
-          fontSize: 12,
+          fontSize: labelSize,
           fontWeight: isSelected ? '800' : '600',
           fill: isSelected ? THEME.textPrimary : THEME.textSecondary,
-          letterSpacing: 2,
+          letterSpacing: labelSpacing,
         }),
       });
       label.anchor.set(0.5);
@@ -291,21 +305,15 @@ export class MenuScene implements Scene {
       });
     }
 
-    const cfg = DIFFICULTY_CONFIGS[this.selectedDifficulty].timer;
-    const desc = createBodyText(DIFFICULTY_DESCRIPTIONS[this.selectedDifficulty], this.width / 2, selectorY + chipH + 12, {
+    const desc = createBodyText(this.describeSelected(), this.width / 2, selectorY + chipH + 12, {
       fontSize: 11,
       color: DIFFICULTY_COLORS[this.selectedDifficulty],
       wrapWidth: Math.min(300, this.width - 40),
     });
     group.addChild(desc);
 
-    const best = getPersonalBest(this.selectedDifficulty);
-    const games = getGamesPlayed(this.selectedDifficulty);
-    const statsLine = best > 0
-      ? `BEST ${best.toLocaleString()}   ·   ${games} ${games === 1 ? 'GAME' : 'GAMES'}   ·   ${cfg.startSeconds}s CLOCK`
-      : `${cfg.startSeconds}s CLOCK   ·   NO RUNS YET`;
     const stats = new Text({
-      text: statsLine,
+      text: this.statsLine(),
       style: new TextStyle({
         fontFamily: FONT_MONO,
         fontSize: 11,
@@ -317,6 +325,37 @@ export class MenuScene implements Scene {
     stats.x = this.width / 2;
     stats.y = selectorY + chipH + 50;
     group.addChild(stats);
+    this.statsText = stats;
+    this.resetElapsed = 0;
+  }
+
+  /** Mode blurb. The daily's carries its number, so it changes every day. */
+  private describeSelected(): string {
+    if (this.selectedDifficulty !== 'daily') return DIFFICULTY_DESCRIPTIONS[this.selectedDifficulty];
+    const budget = DIFFICULTY_CONFIGS.daily.pieceBudget ?? 0;
+    return `Daily #${dailyNumber(dailyKey())} · ${budget} pieces · no clock. Same pieces for everyone.`;
+  }
+
+  /**
+   * The line under the blurb: a lifetime best and games played for the timed
+   * modes, today's best and the reset countdown for the daily — where a
+   * lifetime best would mean nothing, since every day is a different puzzle.
+   */
+  private statsLine(): string {
+    if (this.selectedDifficulty === 'daily') {
+      const key = dailyKey();
+      const best = getPersonalBest('daily', key);
+      const resets = `RESETS IN ${formatCountdown(msUntilNextDaily())}`;
+      return best > 0
+        ? `BEST TODAY ${best.toLocaleString()}   ·   ${resets}`
+        : `NOT PLAYED YET   ·   ${resets}`;
+    }
+    const cfg = DIFFICULTY_CONFIGS[this.selectedDifficulty].timer;
+    const best = getPersonalBest(this.selectedDifficulty);
+    const games = getGamesPlayed(this.selectedDifficulty);
+    return best > 0
+      ? `BEST ${best.toLocaleString()}   ·   ${games} ${games === 1 ? 'GAME' : 'GAMES'}   ·   ${cfg.startSeconds}s CLOCK`
+      : `${cfg.startSeconds}s CLOCK   ·   NO RUNS YET`;
   }
 
   // ── Lower section: leaderboard, help or options ──
@@ -481,7 +520,10 @@ export class MenuScene implements Scene {
     const cx = this.width / 2;
     const startY = this.height * 0.47;
 
-    group.addChild(createSectionLabel(`LEADERBOARD — ${DIFFICULTY_LABELS[this.selectedDifficulty]}`, cx, startY));
+    const boardName = this.selectedDifficulty === 'daily'
+      ? `DAILY #${dailyNumber(dailyKey())}`
+      : DIFFICULTY_LABELS[this.selectedDifficulty];
+    group.addChild(createSectionLabel(`LEADERBOARD — ${boardName}`, cx, startY));
 
     if (entries.length === 0) {
       group.addChild(createBodyText('No scores yet. Be the first on the board.', cx, startY + 40, {
@@ -588,6 +630,16 @@ export class MenuScene implements Scene {
   }
 
   update(dt: number): void {
+    // The daily countdown is only accurate to the minute, so rewrite it on
+    // the minute rather than every frame
+    if (this.selectedDifficulty === 'daily' && this.statsText) {
+      this.resetElapsed += dt;
+      if (this.resetElapsed >= RESET_REFRESH_SECONDS) {
+        this.resetElapsed = 0;
+        this.statsText.text = this.statsLine();
+      }
+    }
+
     // Title breathing glow
     this.titlePhase += dt;
     if (this.title) {

@@ -1,4 +1,5 @@
 import { Difficulty } from './Config';
+import { dailyKey, getDailyBest, recordDailyBest } from './Daily';
 
 /**
  * Persisted player preferences and personal bests.
@@ -79,7 +80,15 @@ export function updateSettings(partial: Partial<GameSettings>): GameSettings {
   return next;
 }
 
-export function getPersonalBest(difficulty: Difficulty): number {
+/**
+ * The best worth beating.
+ *
+ * For the daily that is the best on *that date*, not a lifetime figure: every
+ * day is a different puzzle, so a lifetime daily best would only ever say
+ * "you once had a good seed". `dailyDate` defaults to today.
+ */
+export function getPersonalBest(difficulty: Difficulty, dailyDate: string = dailyKey()): number {
+  if (difficulty === 'daily') return getDailyBest(dailyDate);
   try {
     const raw = localStorage.getItem(bestKey(difficulty));
     const n = raw ? parseInt(raw, 10) : 0;
@@ -90,7 +99,10 @@ export function getPersonalBest(difficulty: Difficulty): number {
 }
 
 /** Store a new personal best if it beats the stored one. Returns true if it did. */
-export function recordPersonalBest(difficulty: Difficulty, score: number): boolean {
+export function recordPersonalBest(
+  difficulty: Difficulty, score: number, dailyDate: string = dailyKey(),
+): boolean {
+  if (difficulty === 'daily') return recordDailyBest(dailyDate, score);
   const current = getPersonalBest(difficulty);
   if (score <= current) return false;
   try {

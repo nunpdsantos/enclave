@@ -2,6 +2,7 @@ import { Container, Graphics, Text, TextStyle } from 'pixi.js';
 import { Scene } from './SceneManager';
 import { Leaderboard } from '../core/Leaderboard';
 import { Difficulty, DIFFICULTY_CONFIGS, DIFFICULTY_LABELS } from '../core/Config';
+import { dailyKey, dailyNumber, hasSubmittedDaily, markDailySubmitted } from '../core/Daily';
 import { INNER_CELLS } from '../core/Board';
 import { RunSummary } from '../core/types';
 import { getProgressStatus } from '../core/Progression';
@@ -26,6 +27,13 @@ export class GameOverScene implements Scene {
   private leaderboard: Leaderboard;
   private audio: AudioManager;
   private difficulty: Difficulty;
+  /** Which daily this run belongs to — the day it was dealt, not necessarily today */
+  private dailyDate: string;
+  /**
+   * True when this browser had already submitted today's daily before the run
+   * started. Read once, here, because submitting is what sets the flag.
+   */
+  private isPracticeRun: boolean;
   private nameSubmitted = false;
   private rank: number | null = null;
   private leaderboardContainer: Container | null = null;
@@ -60,6 +68,8 @@ export class GameOverScene implements Scene {
     this.leaderboard = leaderboard;
     this.audio = audio;
     this.difficulty = difficulty;
+    this.dailyDate = summary.dailyKey ?? dailyKey();
+    this.isPracticeRun = difficulty === 'daily' && hasSubmittedDaily(this.dailyDate);
     this.onReplay = onReplay;
     this.onMenu = onMenu;
     this.container = new Container();
@@ -67,9 +77,21 @@ export class GameOverScene implements Scene {
   }
 
   private async init(): Promise<void> {
+    // A run that crossed UTC midnight belongs to the day it was dealt from,
+    // not to whichever board the menu happened to have loaded
+    if (this.difficulty === 'daily' && this.leaderboard.getBoardId() !== `daily-${this.dailyDate}`) {
+      await this.leaderboard.switchDifficulty('daily', this.dailyDate);
+    }
     this.build();
     await this.leaderboard.waitForRemote();
     this.refreshLeaderboard();
+  }
+
+  /** 'DAILY #9' or the plain mode name */
+  private get boardLabel(): string {
+    return this.difficulty === 'daily'
+      ? `DAILY #${dailyNumber(this.dailyDate)}`
+      : DIFFICULTY_LABELS[this.difficulty];
   }
 
   private build(): void {
@@ -106,8 +128,10 @@ export class GameOverScene implements Scene {
       ? "TIME RAN OUT"
       : summary.endCause === 'board_lock'
         ? 'NO PIECE FIT THE BOARD'
-        : 'RUN ENDED EARLY';
-    const cause = createBodyText(`${DIFFICULTY_LABELS[this.difficulty]} · ${causeLabel}`, cx, h * 0.055 + 22, {
+        : summary.endCause === 'complete'
+          ? 'ALL PIECES PLACED'
+          : 'RUN ENDED EARLY';
+    const cause = createBodyText(`${this.boardLabel} · ${causeLabel}`, cx, h * 0.055 + 22, {
       fontSize: 10,
       color: DIFFICULTY_COLORS[this.difficulty],
     });
@@ -171,11 +195,22 @@ export class GameOverScene implements Scene {
       nextY = statsY + 52;
     }
 
-    const wouldRank = this.leaderboard.wouldRank(summary.score);
+    const wouldRank = !this.isPracticeRun && this.leaderboard.wouldRank(summary.score);
 
     if (wouldRank) {
       this.buildNameInput(nextY);
       nextY += 92;
+    } else if (this.isPracticeRun) {
+      // Where the name entry would have been, so the label answers the
+      // question it leaves behind: a second go at the same 30 pieces is
+      // practice, and the board keeps the score you posted first
+      const practice = createBodyText('PRACTICE RUN · NOT SUBMITTED', cx, nextY, {
+        fontSize: 11,
+        color: THEME.textMuted,
+      });
+      practice.style.letterSpacing = 2;
+      this.container.addChild(practice);
+      nextY += 26;
     }
 
     this.leaderboardTop = nextY;
@@ -343,6 +378,10 @@ export class GameOverScene implements Scene {
     const name = this.htmlInput?.value || '';
     this.removeNameInputGroup();
     this.rank = await this.leaderboard.submit(this.summary.score, name);
+    // One submission per daily, and this was it. The flag is only a local
+    // convenience — the server is what actually enforces first-submission-wins
+    // — so it is set whether or not the request reached the network.
+    if (this.difficulty === 'daily') markDailySubmitted(this.dailyDate);
     this.refreshLeaderboard();
   }
 
@@ -385,7 +424,10 @@ export class GameOverScene implements Scene {
   /** Share the result via the Web Share API, falling back to the clipboard */
   private async share(): Promise<void> {
     const s = this.summary;
-    const text = `I scored ${s.score.toLocaleString()} in Enclave (${DIFFICULTY_LABELS[this.difficulty]}) — ` +
+    const label = this.difficulty === 'daily'
+      ? `Daily #${dailyNumber(this.dailyDate)}`
+      : DIFFICULTY_LABELS[this.difficulty];
+    const text = `I scored ${s.score.toLocaleString()} in Enclave (${label}) — ` +
       `${s.claims} rooms claimed, biggest ${s.biggestRoom} cells, ×${s.maxStreak} streak. Can you beat it?`;
     const url = window.location.origin;
     try {
@@ -417,7 +459,7 @@ export class GameOverScene implements Scene {
 
     const cx = this.width / 2;
     const startY = this.leaderboardTop;
-    lbContainer.addChild(createSectionLabel(`LEADERBOARD — ${DIFFICULTY_LABELS[this.difficulty]}`, cx, startY));
+    lbContainer.addChild(createSectionLabel(`LEADERBOARD — ${this.boardLabel}`, cx, startY));
 
     if (entries.length === 0) {
       lbContainer.addChild(createBodyText('No scores yet.', cx, startY + 36, { fontSize: 12, color: THEME.textMuted }));

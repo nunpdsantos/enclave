@@ -23,6 +23,17 @@ export const PROGRESS_TIERS: Record<Difficulty, ProgressTier[]> = {
     { minScore: 10000, label: 'SOVEREIGN', color: 0xef4444 },
     { minScore: 20000, label: 'LEGEND', color: 0xd946ef },
   ],
+  // Thirty pieces with no clock: a careful run out-scores a fast one, but it
+  // cannot out-last one, so the ladder sits between Blitz and Classic. First
+  // pass, tunable once the telemetry says where daily scores actually land.
+  daily: [
+    { minScore: 0, label: 'SETTLER', color: 0x3b82f6 },
+    { minScore: 600, label: 'BUILDER', color: 0x10b981 },
+    { minScore: 1600, label: 'ARCHITECT', color: 0xfbbf24 },
+    { minScore: 3500, label: 'WARDEN', color: 0xf59e0b },
+    { minScore: 7000, label: 'SOVEREIGN', color: 0xef4444 },
+    { minScore: 14000, label: 'LEGEND', color: 0xd946ef },
+  ],
 };
 
 export interface ProgressStatus {

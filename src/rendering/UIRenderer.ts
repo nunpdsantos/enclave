@@ -6,6 +6,8 @@ import { getProgressStatus } from '../core/Progression';
 
 /** Lit floor at which the survey readout turns gold: the home straight */
 const SURVEY_GOLD_AT = 40;
+/** Pieces left at which the budget readout turns gold: the last few moves */
+const PIECES_LOW_AT = 5;
 /** How long "SURVEY ✓ ×N" holds before the readout drops back to the count */
 const SURVEY_FLASH_SECONDS = 2.2;
 
@@ -449,6 +451,23 @@ export class UIRenderer {
     } else {
       this.timerText.scale.set(1);
     }
+  }
+
+  /**
+   * The clockless HUD: how many pieces are left of the ration.
+   *
+   * It takes the timer's slot and blanks both bars, so nothing on screen
+   * suggests a clock that is not running. Call it instead of updateTimer and
+   * updateSpeedBar, never alongside them.
+   */
+  updatePieces(remaining: number, total: number): void {
+    this.timerBarGfx.clear();
+    this.speedBarGfx.clear();
+    this.speedText.visible = false;
+    this.timerText.text = `PIECES ${remaining}/${total}`;
+    this.timerText.style.fill = remaining <= PIECES_LOW_AT ? THEME.gold : THEME.textPrimary;
+    this.timerText.scale.set(1);
+    this.timerText.visible = true;
   }
 
   /** Thin "speed bonus" bar under the timer: full right after a placement, draining as you hesitate */

@@ -20,6 +20,8 @@ const API_URL = '/api/runs';
 export interface RunReport {
   v: string;
   mode: Difficulty;
+  /** The deal, so a daily's scores can be read against the pieces it gave */
+  seed: number;
   durationS: number;
   endCause: string;
   score: number;
@@ -50,6 +52,7 @@ export function buildRunReport(summary: RunSummary): RunReport {
   const report: RunReport = {
     v: __APP_VERSION__,
     mode: summary.difficulty,
+    seed: summary.seed,
     durationS: round1(summary.gameElapsed),
     endCause: summary.endCause,
     score: Math.round(summary.score),

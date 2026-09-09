@@ -16,7 +16,7 @@ const LAST_DIFFICULTY_KEY = 'enclave_last_difficulty';
 function readLastDifficulty(): Difficulty {
   try {
     const raw = localStorage.getItem(LAST_DIFFICULTY_KEY);
-    if (raw === 'classic' || raw === 'blitz') return raw;
+    if (raw === 'classic' || raw === 'blitz' || raw === 'daily') return raw;
   } catch { /* */ }
   return 'classic';
 }

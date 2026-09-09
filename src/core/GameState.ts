@@ -1,6 +1,8 @@
 import { Board, INNER_CELLS } from './Board';
 import { PieceBag, rotatePiece } from './Pieces';
 import { Difficulty, GameConfig, TerritoryConfig, DEFAULT_CONFIG } from './Config';
+import { dailyKey, dailySeed } from './Daily';
+import { mulberry32, randomSeed } from './Random';
 import { getPersonalBest, recordPersonalBest } from './Settings';
 import {
   PieceInstance, FeedbackEvent, ClaimResult, ClaimPoints, ScoreBreakdown, Region,
@@ -70,6 +72,11 @@ export class GameState {
   surveys = 0;
   newBestReached = false;
 
+  /** The deal this run is playing. Fixed by the date for the daily. */
+  seed = 0;
+  /** 'YYYY-MM-DD' of the daily being played, or null outside the daily */
+  dailyDate: string | null = null;
+
   private bag = new PieceBag();
   readonly config: GameConfig;
   readonly difficulty: Difficulty;
@@ -85,11 +92,28 @@ export class GameState {
     return this.config.timer.maxSeconds;
   }
 
-  /** 1.0 right after a placement, decaying to minSpeedFraction */
+  /**
+   * 1.0 right after a placement, decaying to minSpeedFraction.
+   *
+   * With no clock there is no reward for hurrying, so it is flat 1 — which
+   * also keeps the HUD off a fraction that would mean nothing.
+   */
   get currentSpeedFraction(): number {
+    if (!this.config.clock.enabled) return 1;
     const { speedWindowSeconds, minSpeedFraction } = this.config.timer;
     const t = Math.min(this.pieceElapsed / speedWindowSeconds, 1);
     return 1 - (1 - minSpeedFraction) * t;
+  }
+
+  /**
+   * Pieces this run has left to play: the hand, the hold slot, the queue and
+   * whatever the bag can still deal. Starts at the budget, ends at zero, so
+   * "PIECES 17/30" means seventeen more placements are possible.
+   */
+  get piecesRemaining(): number {
+    const undealt = this.bag.remaining;
+    const inPlay = (this.current ? 1 : 0) + (this.held ? 1 : 0) + this.queue.length;
+    return Number.isFinite(undealt) ? undealt + inPlay : Infinity;
   }
 
   get streakSafeMoves(): number {
@@ -104,7 +128,14 @@ export class GameState {
 
   start(): FeedbackEvent {
     this.board.reset();
-    this.bag = new PieceBag();
+    // The daily's seed is its date, so every player deals the same 30 pieces;
+    // anything else takes the config's seed if it has one and a throwaway if
+    // it does not.
+    this.dailyDate = this.difficulty === 'daily' ? dailyKey() : null;
+    this.seed = this.dailyDate !== null
+      ? dailySeed(this.dailyDate)
+      : this.config.seed ?? randomSeed();
+    this.bag = new PieceBag(mulberry32(this.seed), this.config.pieceBudget);
     this.score = 0;
     this.streakCount = 0;
     this.movesSinceLastClaim = 0;
@@ -127,12 +158,17 @@ export class GameState {
     this.newBestReached = false;
     this.held = null;
     this.holdUsed = false;
-    this.highScore = getPersonalBest(this.difficulty);
+    this.highScore = getPersonalBest(this.difficulty, this.dailyDate ?? undefined);
 
-    // Deal the hand plus exactly previewCount upcoming pieces
+    // Deal the hand plus up to previewCount upcoming pieces. Under a budget
+    // the bag can run dry, and the queue is simply shorter than the preview.
     this.current = this.bag.next();
     this.queue = [];
-    for (let i = 0; i < this.config.previewCount; i++) this.queue.push(this.bag.next());
+    for (let i = 0; i < this.config.previewCount; i++) {
+      const piece = this.bag.next();
+      if (!piece) break;
+      this.queue.push(piece);
+    }
     return { type: 'newHand' };
   }
 
@@ -141,6 +177,9 @@ export class GameState {
     if (this.isGameOver) return false;
     this.pieceElapsed += dt;
     this.gameElapsed += dt;
+    // No clock: the run still ages (telemetry wants a duration) but nothing
+    // drains and nothing can time out.
+    if (!this.config.clock.enabled) return false;
     const t = this.config.timer;
     this.drainRate = Math.min(t.drainCap, 1 + (this.gameElapsed / 60) * t.drainAccelPerMinute);
     this.timeRemaining = Math.max(0, this.timeRemaining - dt * this.drainRate);
@@ -154,6 +193,7 @@ export class GameState {
   }
 
   addTime(seconds: number): void {
+    if (!this.config.clock.enabled) return;
     this.timeRemaining = Math.min(this.timeRemaining + seconds, this.config.timer.maxSeconds);
   }
 
@@ -163,16 +203,25 @@ export class GameState {
     this.current = rotatePiece(this.current, steps);
   }
 
-  /** Swap the hand with the hold slot (once per piece) */
+  /**
+   * Swap the hand with the hold slot (once per piece).
+   *
+   * A swap costs no budget: parking a piece and taking the next one deals
+   * nothing new. The one refusal is parking with an empty hold and an empty
+   * queue — the last piece of a rationed run would go into the slot and leave
+   * the hand with nothing to place.
+   */
   hold(): FeedbackEvent[] {
     if (!this.current || this.isGameOver || this.holdUsed) return [];
+    if (!this.held && this.queue.length === 0) return [];
     const events: FeedbackEvent[] = [];
     const outgoing = this.current;
     if (this.held) {
       this.current = this.held;
     } else {
       this.current = this.queue.shift()!;
-      this.queue.push(this.bag.next());
+      const dealt = this.bag.next();
+      if (dealt) this.queue.push(dealt);
     }
     this.held = outgoing;
     this.holdUsed = true;
@@ -284,13 +333,13 @@ export class GameState {
       }
     }
 
-    // Time bonus
+    // Time bonus. Nothing to bank without a clock, so it is not even quoted.
     const t = this.config.timer;
     let bonus = t.placeBonus;
     if (claim) {
       bonus += Math.min(t.claimBonusCap, t.claimBaseBonus + t.claimPerCellBonus * claim.totalArea);
     }
-    const timeBonus = Math.round(bonus * speedFraction * 10) / 10;
+    const timeBonus = this.config.clock.enabled ? Math.round(bonus * speedFraction * 10) / 10 : 0;
     this.addTime(timeBonus);
     events[0].timeBonus = timeBonus;
 
@@ -339,11 +388,21 @@ export class GameState {
       events.push({ type: 'newBest', previousBest: this.highScore });
     }
 
-    // Deal the next piece
-    this.current = this.queue.shift()!;
-    this.queue.push(this.bag.next());
+    // Deal the next piece. Under a budget both the queue and the bag can be
+    // empty, and then the run is finished rather than dead.
+    this.current = this.queue.shift() ?? null;
+    const dealt = this.bag.next();
+    if (dealt) this.queue.push(dealt);
     this.holdUsed = false;
     events.push({ type: 'newHand' });
+
+    if (!this.current) {
+      this.isGameOver = true;
+      this.deathCause = 'complete';
+      this.finalizeBest();
+      events.push({ type: 'gameOver' });
+      return events;
+    }
 
     // Game over: nothing fits, even after a hold swap
     if (this.checkGameOver()) {
@@ -375,7 +434,10 @@ export class GameState {
   }
 
   private checkGameOver(): boolean {
-    if (this.current && this.fitsAnyRotation(this.current)) return false;
+    // An empty hand under a budget means the run is complete, not locked.
+    // Callers decide that before asking, so never report a lock for it.
+    if (!this.current) return false;
+    if (this.fitsAnyRotation(this.current)) return false;
     // A hold swap could rescue the player
     if (!this.holdUsed) {
       const alt = this.held ?? this.queue[0];
@@ -385,7 +447,7 @@ export class GameState {
   }
 
   finalizeBest(): void {
-    recordPersonalBest(this.difficulty, this.score);
+    recordPersonalBest(this.difficulty, this.score, this.dailyDate ?? undefined);
   }
 
   buildRunSummary(endCauseOverride?: RunEndCause): RunSummary {
@@ -393,6 +455,8 @@ export class GameState {
     return {
       score: this.score,
       difficulty: this.difficulty,
+      seed: this.seed,
+      ...(this.dailyDate !== null ? { dailyKey: this.dailyDate } : {}),
       endCause: endCauseOverride ?? this.deathCause ?? 'board_lock',
       totalTurns: this.totalTurns,
       claims: this.claims,

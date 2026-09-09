@@ -54,6 +54,7 @@ afterAll(() => { server.close(); });
 const VALID = {
   v: '0.1.0',
   mode: 'classic',
+  seed: 1702173874,
   durationS: 40,
   endCause: 'timeout',
   score: 1000,
@@ -102,6 +103,8 @@ describe('api/runs', () => {
       ['non-integer count', { ...VALID, rooms: 1.5 }],
       ['missing surveys', { ...VALID, surveys: undefined }],
       ['negative litCells', { ...VALID, litCells: -1 }],
+      ['negative seed', { ...VALID, seed: -1 }],
+      ['non-numeric seed', { ...VALID, seed: 'abc' }],
       ['NaN', { ...VALID, score: 'NaN' }],
       ['bad roomSizes key', { ...VALID, roomSizes: { abc: 1 } }],
       ['array body', [1, 2, 3]],
@@ -130,8 +133,13 @@ describe('api/runs', () => {
       durationS: 10, score: 100, holds: 0, rooms: 1, roomSizes: { '1': 1 },
       surveys: 0, litCells: 5,
     }))).status).toBe(204);
+    // The Rationed Daily: a mode that ends by running out of pieces
+    expect((await h(post({
+      ...VALID, mode: 'daily', endCause: 'complete', durationS: 90, score: 2000,
+      rooms: 3, holds: 0, surveys: 0, litCells: 18, roomSizes: { '4': 3 },
+    }))).status).toBe(204);
 
-    expect(store.get('telemetry:enclave:runs')).toHaveLength(3);
+    expect(store.get('telemetry:enclave:runs')).toHaveLength(4);
   });
 
   it('aggregates on GET without echoing runs or pids', async () => {
@@ -141,8 +149,8 @@ describe('api/runs', () => {
     const body = await res.json();
 
     expect(JSON.stringify(body)).not.toContain(VALID.pid);
-    expect(body.total).toBe(3);
-    expect(body.versions).toEqual({ '0.1.0': 2, '0.2.0': 1 });
+    expect(body.total).toBe(4);
+    expect(body.versions).toEqual({ '0.1.0': 3, '0.2.0': 1 });
     expect(body.modes.classic.count).toBe(2);
     expect(body.modes.classic.medianDurationS).toBe(30);   // (40 + 20) / 2
     expect(body.modes.classic.medianScore).toBe(750);
@@ -157,6 +165,24 @@ describe('api/runs', () => {
     expect(body.modes.blitz.holdUsageRate).toBe(0);
     expect(body.modes.blitz.meanSurveys).toBe(0);
     expect(body.modes.blitz.meanLitCells).toBe(5);
+    expect(body.modes.daily.count).toBe(1);
+    expect(body.modes.daily.medianScore).toBe(2000);
+    expect(body.modes.daily.endCauses).toEqual({ complete: 1 });
+    expect(body.modes.daily.roomSizes).toEqual({ '4': 3 });
+  });
+
+  it('keeps the seed on the stored record, so a daily can be read by deal', async () => {
+    const h = await handler();
+    store.clear();
+
+    await h(post({ ...VALID, mode: 'daily', endCause: 'complete', seed: 1702173874 }));
+    const stored = JSON.parse(store.get('telemetry:enclave:runs')![0]);
+    expect(stored.mode).toBe('daily');
+    expect(stored.seed).toBe(1702173874);
+
+    // A report from an older client carries no seed, and still stores
+    await h(post({ ...VALID, seed: undefined }));
+    expect(JSON.parse(store.get('telemetry:enclave:runs')![0]).seed).toBeUndefined();
   });
 
   it('rejects other methods with 405', async () => {

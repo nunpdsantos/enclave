@@ -79,12 +79,20 @@ export interface ScoreBreakdown extends ClaimPoints {
   totalScore: number;
 }
 
-export type RunEndCause = 'timeout' | 'board_lock' | 'quit';
+/**
+ * 'complete' is the Rationed Daily's happy ending: the budget ran out with
+ * the last piece placed. It is not a death, and the score counts in full.
+ */
+export type RunEndCause = 'timeout' | 'board_lock' | 'quit' | 'complete';
 
 export interface RunSummary {
   score: number;
   /** Which mode the run was played in — needed to read the score's tier */
   difficulty: Difficulty;
+  /** The deal this run played. Same seed, same pieces, on any device. */
+  seed: number;
+  /** 'YYYY-MM-DD' of the daily this run belongs to; absent for free play */
+  dailyKey?: string;
   endCause: RunEndCause;
   totalTurns: number;
   claims: number;

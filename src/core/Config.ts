@@ -1,8 +1,9 @@
-export type Difficulty = 'classic' | 'blitz';
+export type Difficulty = 'classic' | 'blitz' | 'daily';
 
 export const DIFFICULTY_LABELS: Record<Difficulty, string> = {
   classic: 'CLASSIC',
   blitz: 'BLITZ',
+  daily: 'DAILY',
 };
 
 export interface ScoringConfig {
@@ -46,12 +47,26 @@ export interface TerritoryConfig {
   surveyBonus: number;
 }
 
+export interface ClockConfig {
+  /**
+   * Off means the run is not timed at all: `tick` does not drain, `addTime`
+   * is a no-op and `timeRemaining` is meaningless. The timer numbers below
+   * stay in the config but nothing reads them.
+   */
+  enabled: boolean;
+}
+
 export interface GameConfig {
   scoring: ScoringConfig;
   timer: TimerConfig;
   territory: TerritoryConfig;
+  clock: ClockConfig;
   /** Number of upcoming pieces shown */
   previewCount: number;
+  /** Total pieces the run will ever be dealt. Undefined means unlimited. */
+  pieceBudget?: number;
+  /** Fixed deal seed. Undefined mints a fresh one per run (free play). */
+  seed?: number;
 }
 
 const SHARED_SCORING: ScoringConfig = {
@@ -81,6 +96,7 @@ export const DIFFICULTY_CONFIGS: Record<Difficulty, GameConfig> = {
       drainAccelPerMinute: 0.16,
       drainCap: 1.7,
     },
+    clock: { enabled: true },
     previewCount: 2,
   },
   blitz: {
@@ -98,7 +114,33 @@ export const DIFFICULTY_CONFIGS: Record<Difficulty, GameConfig> = {
       drainAccelPerMinute: 0.3,
       drainCap: 2.0,
     },
+    clock: { enabled: true },
     previewCount: 2,
+  },
+  // The Rationed Daily: 30 pieces, no clock, the same deal for everyone.
+  // Scarcity replaces time as the pressure, so the streak window matches
+  // Classic and the survey pays less than Classic's 5,000 — 30 pieces is a
+  // short run, and a survey inside one should not dwarf everything else.
+  daily: {
+    scoring: SHARED_SCORING,
+    territory: { enabled: true, relitFloorFactor: 0.5, surveyBonus: 2000 },
+    // Inert: kept so the shape of a GameConfig stays uniform and nothing has
+    // to branch on whether a timer block exists.
+    timer: {
+      startSeconds: 60,
+      maxSeconds: 90,
+      placeBonus: 0,
+      claimBaseBonus: 0,
+      claimPerCellBonus: 0,
+      claimBonusCap: 0,
+      speedWindowSeconds: 8,
+      minSpeedFraction: 1,
+      drainAccelPerMinute: 0,
+      drainCap: 1,
+    },
+    clock: { enabled: false },
+    previewCount: 2,
+    pieceBudget: 30,
   },
 };
 

@@ -1,12 +1,21 @@
 import { Difficulty } from './Config';
+import { dailyKey } from './Daily';
 
 const NAME_KEY = 'enclave_lastname';
 const PLAYER_ID_KEY = 'enclave_playerid';
 const MAX_ENTRIES = 10;
 const API_URL = '/api/leaderboard';
 
-function storageKey(difficulty: Difficulty): string {
-  return `enclave_${difficulty}_top10`;
+/**
+ * What the server calls this board. Every daily date is its own board, so the
+ * id carries the date: 'daily-2026-09-09'. Classic and Blitz are unchanged.
+ */
+function boardId(difficulty: Difficulty, dailyDate: string): string {
+  return difficulty === 'daily' ? `daily-${dailyDate}` : difficulty;
+}
+
+function storageKey(board: string): string {
+  return `enclave_${board}_top10`;
 }
 
 /**
@@ -34,9 +43,12 @@ export class Leaderboard {
   private entries: LeaderboardEntry[] = [];
   private fetchPromise: Promise<void> | null = null;
   private difficulty: Difficulty;
+  /** Which day's daily board this is. Ignored outside the daily. */
+  private dailyDate: string;
 
-  constructor(difficulty: Difficulty = 'classic') {
+  constructor(difficulty: Difficulty = 'classic', dailyDate: string = dailyKey()) {
     this.difficulty = difficulty;
+    this.dailyDate = dailyDate;
     this.loadLocal();
     this.fetchPromise = this.fetchRemote();
   }
@@ -45,12 +57,22 @@ export class Leaderboard {
     return this.difficulty;
   }
 
-  /** Switch to a different difficulty's leaderboard */
-  async switchDifficulty(difficulty: Difficulty): Promise<void> {
-    if (difficulty === this.difficulty) return;
+  /** The server's name for the board currently loaded */
+  getBoardId(): string {
+    return boardId(this.difficulty, this.dailyDate);
+  }
+
+  /**
+   * Switch boards. The daily takes a date as well, because a run that started
+   * before UTC midnight still belongs to the day it was dealt from.
+   */
+  async switchDifficulty(difficulty: Difficulty, dailyDate: string = dailyKey()): Promise<void> {
+    if (boardId(difficulty, dailyDate) === this.getBoardId()) return;
     this.difficulty = difficulty;
+    this.dailyDate = dailyDate;
     this.loadLocal();
-    await this.fetchRemote();
+    this.fetchPromise = this.fetchRemote();
+    await this.fetchPromise;
   }
 
   getEntries(): LeaderboardEntry[] {
@@ -92,7 +114,7 @@ export class Leaderboard {
     this.saveLastName(cleanName);
 
     try {
-      const res = await fetch(`${API_URL}?difficulty=${this.difficulty}`, {
+      const res = await fetch(`${API_URL}?difficulty=${this.getBoardId()}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -128,6 +150,9 @@ export class Leaderboard {
     const existingIdx = this.entries.findIndex(e => e.id === playerId);
 
     if (existingIdx >= 0) {
+      // On a daily board the first submission is the one that counts, so a
+      // second run cannot rank however good it was
+      if (this.difficulty === 'daily') return false;
       // Player already on board — server rejects scores <= existing
       if (score <= this.entries[existingIdx].score) return false;
       // Beating own score replaces the entry — always ranks
@@ -141,7 +166,7 @@ export class Leaderboard {
 
   private async fetchRemote(): Promise<void> {
     try {
-      const res = await fetch(`${API_URL}?difficulty=${this.difficulty}`);
+      const res = await fetch(`${API_URL}?difficulty=${this.getBoardId()}`);
       if (!res.ok) throw new Error('API error');
       const contentType = res.headers.get('content-type') || '';
       if (!contentType.includes('application/json')) throw new Error('Not JSON');
@@ -175,7 +200,7 @@ export class Leaderboard {
 
   private loadLocal(): void {
     try {
-      const raw = localStorage.getItem(storageKey(this.difficulty));
+      const raw = localStorage.getItem(storageKey(this.getBoardId()));
       if (raw) {
         this.entries = JSON.parse(raw);
       } else {
@@ -188,7 +213,7 @@ export class Leaderboard {
 
   private saveLocal(): void {
     try {
-      localStorage.setItem(storageKey(this.difficulty), JSON.stringify(this.entries));
+      localStorage.setItem(storageKey(this.getBoardId()), JSON.stringify(this.entries));
     } catch { /* */ }
   }
 }

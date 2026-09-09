@@ -188,8 +188,10 @@ export class GameScene implements Scene {
     this.uiRenderer.updateScore(this.gameState.score);
     this.uiRenderer.updateHighScore(this.gameState.highScore);
     this.uiRenderer.updateStreak(0);
-    this.uiRenderer.updateTimer(this.gameState.timeRemaining, this.gameState.maxTime, 0);
-    this.uiRenderer.updateSpeedBar(1, this.gameState.config.timer.speedWindowSeconds, 0);
+    if (this.gameState.config.clock.enabled) {
+      this.uiRenderer.updateTimer(this.gameState.timeRemaining, this.gameState.maxTime, 0);
+      this.uiRenderer.updateSpeedBar(1, this.gameState.config.timer.speedWindowSeconds, 0);
+    }
     this.updateProgressPresentation(false);
 
     this.countdownTime = this.skipCountdown ? 0 : 3;
@@ -283,23 +285,29 @@ export class GameScene implements Scene {
     if (this.gameState.tick(dt)) { this.startGameOverSequence(); return; }
 
     this.fxManager.update(dt, this.gameState.drainRate, this.gameState.gameElapsed);
-    this.uiRenderer.updateTimer(this.gameState.timeRemaining, this.gameState.maxTime, dt);
-    this.uiRenderer.updateSpeedBar(
-      this.gameState.currentSpeedFraction,
-      this.gameState.config.timer.speedWindowSeconds,
-      this.gameState.pieceElapsed,
-    );
+    // Without a clock there is no bar to fill, no urgency to announce and no
+    // second to tick: the budget readout is refreshed by the hand instead.
+    // Everything downstream of the clock still reads a resting timeRemaining,
+    // which keeps the glow and the music in their calm state rather than NaN.
+    if (this.gameState.config.clock.enabled) {
+      this.uiRenderer.updateTimer(this.gameState.timeRemaining, this.gameState.maxTime, dt);
+      this.uiRenderer.updateSpeedBar(
+        this.gameState.currentSpeedFraction,
+        this.gameState.config.timer.speedWindowSeconds,
+        this.gameState.pieceElapsed,
+      );
+      this.updateCountdownTicks();
+      this.updateCriticalAlerts();
+    }
     this.audioManager.updateMusic(
       this.gameState.drainRate,
       this.gameState.streakCount,
       this.gameState.timeRemaining / this.gameState.maxTime,
       this.fxManager.currentFlowIntensity,
     );
-    this.updateCountdownTicks();
-    this.updateCriticalAlerts();
     this.gridRenderer.updateGlow(dt, this.gameState.timeRemaining, this.gameState.board.occupiedCount() / 81);
 
-    if (this.gameState.timeRemaining <= 5) {
+    if (this.gameState.config.clock.enabled && this.gameState.timeRemaining <= 5) {
       const sec = Math.ceil(this.gameState.timeRemaining);
       if (sec !== this.lastHapticSecond && sec > 0) { this.lastHapticSecond = sec; this.haptic(16); }
     }
@@ -480,10 +488,14 @@ export class GameScene implements Scene {
     this.ghostRenderer.hide();
     this.handRenderer.hideDragPiece();
 
+    // Running out of ration is an ending, not a death: it gets the gold
+    // treatment and none of the alarm the other two causes earn.
     const cause = this.gameState.deathCause;
-    this.showCenterAlert(cause === 'board_lock' ? 'NO ROOM LEFT' : "TIME'S UP", THEME.danger, 30);
-    this.fxManager.triggerFlash(0.6, 3);
-    this.fxManager.triggerShake(12, 0.4);
+    const complete = cause === 'complete';
+    const endLabel = complete ? 'RATION SPENT' : cause === 'board_lock' ? 'NO ROOM LEFT' : "TIME'S UP";
+    this.showCenterAlert(endLabel, complete ? THEME.gold : THEME.danger, 30);
+    this.fxManager.triggerFlash(complete ? 0.35 : 0.6, 3, complete ? THEME.gold : undefined);
+    this.fxManager.triggerShake(complete ? 4 : 12, complete ? 0.2 : 0.4);
     this.fxManager.triggerImpactFrame(0.2, 0.5);
     const layout = this.layoutManager.layout;
     this.animationManager.spawnExplosion(layout.gridOriginX + layout.gridSize / 2, layout.gridOriginY + layout.gridSize / 2, 50);
@@ -701,8 +713,17 @@ export class GameScene implements Scene {
   }
 
   private refreshHand(animate: boolean): void {
-    this.handRenderer.drawHand(this.gameState.current, this.gameState.held, this.gameState.queue, animate);
+    this.handRenderer.drawHand(
+      this.gameState.current, this.gameState.held, this.gameState.queue, animate,
+      this.gameState.config.previewCount,
+    );
     this.handRenderer.setCurrentUnplaceable(!this.gameState.canPlaceCurrentAnywhere());
+    // The ration only moves when the hand does, so this is the one place it
+    // needs recomputing — no per-frame text writes for a number that is still.
+    const budget = this.gameState.config.pieceBudget;
+    if (!this.gameState.config.clock.enabled && budget !== undefined) {
+      this.uiRenderer.updatePieces(this.gameState.piecesRemaining, budget);
+    }
   }
 
   private refreshBoard(): void {

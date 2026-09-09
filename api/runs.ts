@@ -14,7 +14,7 @@ const KEY = 'telemetry:enclave:runs';
 /** Keep the newest 5,000 runs — enough to tune the clock, small enough to scan */
 const MAX_RUNS = 5000;
 
-const VALID_MODES = ['classic', 'blitz'] as const;
+const VALID_MODES = ['classic', 'blitz', 'daily'] as const;
 type Mode = (typeof VALID_MODES)[number];
 
 // ── Limits. Anything outside these is a bug or an attack, not a real run. ──
