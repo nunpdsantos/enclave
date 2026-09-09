@@ -1,5 +1,5 @@
 import {
-  MISSIONS, SiegeMission, SiegeMissionId, SpawnEvent, buildSpawnSchedule,
+  MISSIONS, SiegeMission, SiegeMissionId, SpawnEvent, buildSpawnSchedule, finiteSpawnHorizon,
 } from './Missions';
 
 export type Difficulty = 'classic' | 'blitz' | 'daily' | 'siege';
@@ -29,8 +29,6 @@ export interface ScoringConfig {
    * against it, and it would hide whether the siege itself is the fun part.
    */
   streakEnabled: boolean;
-  /** Points a captured enemy pays, flat. Zero outside the siege. */
-  pointsPerEnemy: number;
 }
 
 export interface TimerConfig {
@@ -44,6 +42,15 @@ export interface TimerConfig {
   /** Seconds a captured enemy is worth on top of the floor it stood on */
   claimPerEnemyBonus: number;
   claimBonusCap: number;
+  /**
+   * On, a claim that captured nothing refunds no time at all.
+   *
+   * The siege's clock is meant to be bought with captures, not with rooms: an
+   * empty room still scores, but if fencing empty ground bought time too then
+   * the safe play — build a little box in the corner, away from everything —
+   * would also be the play that keeps the run alive.
+   */
+  claimRefundNeedsCapture: boolean;
   /** Placing within this window after the last placement earns the full bonus */
   speedWindowSeconds: number;
   /** Slowest placements still earn this fraction of the bonus */
@@ -99,6 +106,27 @@ export interface EchoConfig {
  * Hold the Keep. Present only on a siege config, and its presence is what the
  * engine reads to know a siege is being played at all.
  */
+/**
+ * How the command clock behaves.
+ *
+ *  - 'off'                     no clock at all; nothing drains
+ *  - 'bank'                    drains whenever the run is running
+ *  - 'bankPausedInEnemyPhase'  drains except while the enemy is answering
+ *
+ * Game time is *not* the bank: the tide runs on game time and keeps running
+ * through the pause, which is why the two are different words here.
+ */
+export type SiegeClockMode = 'off' | 'bank' | 'bankPausedInEnemyPhase';
+
+/**
+ * How a capture is paid.
+ *
+ *  - 'flat'     area² × 10 for the room, plus `enemyBonus` per unit caught
+ *  - 'squared'  (area + captured)² × 10 and no flat bonus, so a capture is
+ *               worth more inside a big room than a small one
+ */
+export type SiegeCaptureScoring = 'flat' | 'squared';
+
 export interface SiegeConfig {
   /** Which enemy is besieging: discrete raiders, or a spreading tide */
   enemy: 'raiders' | 'tide';
@@ -109,8 +137,31 @@ export interface SiegeConfig {
   map: string[];
   /** When raiders arrive, and at which gate */
   spawns: SpawnEvent[];
+  /**
+   * What entering a player wall costs the enemy, in the weighted distance
+   * field. Four means a wall is worth about four cells of detour before it
+   * gets broken through instead of walked around. The knob the playtest turns
+   * first: at 2 a wall barely diverts anything, at 8 it is nearly a fence.
+   */
+  wallCost: number;
+  /** What one captured enemy pays, flat and outside every multiplier */
+  enemyBonus: number;
+  /** How a capture is paid. See SiegeCaptureScoring. */
+  captureScoring: SiegeCaptureScoring;
+  clockMode: SiegeClockMode;
+  /**
+   * On, a claim leaves the player's fence standing — the "gatehouse" question
+   * from the direction document. Off (the default) is total removal, which is
+   * what makes a claim a sacrifice rather than pure upside.
+   */
+  fenceSurvivesEnemyPhase: boolean;
   /** Seconds between the tide's first expansions */
   tideSeconds: number;
+  /**
+   * Seconds a finite tide mission must be survived before its pieces can win
+   * it. Zero for the raiders, whose pace is the placement.
+   */
+  tideMinSurvivalSeconds: number;
   /** Each expansion comes this much sooner than the last... */
   tideRampPerTick: number;
   /** ...down to here, and no faster */
@@ -158,11 +209,13 @@ const SHARED_SCORING: ScoringConfig = {
   streakCap: 3,
   streakWindow: 3,
   streakEnabled: true,
-  pointsPerEnemy: 0,
 };
 
 /** What one captured enemy pays. Flat, so it is one number to tune. */
-export const SIEGE_POINTS_PER_ENEMY = 75;
+export const SIEGE_ENEMY_BONUS = 75;
+
+/** What entering a player wall costs the enemy. See SiegeConfig.wallCost. */
+export const SIEGE_WALL_COST = 4;
 
 /** The command clock: it starts here and it caps here */
 export const SIEGE_CLOCK_SECONDS = 40;
@@ -187,10 +240,18 @@ function siegeVariant(
     mission,
     missionId,
     map: m.map,
-    spawns: buildSpawnSchedule(m, endless, endless ? Infinity : SIEGE_FINITE_PIECES),
+    wallCost: SIEGE_WALL_COST,
+    enemyBonus: SIEGE_ENEMY_BONUS,
+    captureScoring: 'flat',
+    clockMode: 'bankPausedInEnemyPhase',
+    fenceSurvivesEnemyPhase: false,
+    spawns: buildSpawnSchedule(m, endless, endless ? Infinity : finiteSpawnHorizon(m)),
     tideSeconds: m.tideSeconds,
     tideRampPerTick: TIDE_RAMP_PER_TICK,
     tideMinSeconds: TIDE_MIN_SECONDS,
+    // Only the tide can be outrun by dumping pieces, so only the tide has a
+    // survival floor to meet before eighteen placements are a win
+    tideMinSurvivalSeconds: enemy === 'tide' ? m.minSurvivalSeconds : 0,
   };
 }
 
@@ -208,6 +269,7 @@ export const DIFFICULTY_CONFIGS: Record<Difficulty, GameConfig> = {
       claimPerCellBonus: 0.8,
       claimPerEnemyBonus: 0,
       claimBonusCap: 16,
+      claimRefundNeedsCapture: false,
       speedWindowSeconds: 8,
       minSpeedFraction: 0.45,
       drainAccelPerMinute: 0.16,
@@ -232,6 +294,7 @@ export const DIFFICULTY_CONFIGS: Record<Difficulty, GameConfig> = {
       claimPerCellBonus: 0.6,
       claimPerEnemyBonus: 0,
       claimBonusCap: 10,
+      claimRefundNeedsCapture: false,
       speedWindowSeconds: 5,
       minSpeedFraction: 0.3,
       drainAccelPerMinute: 0.3,
@@ -262,6 +325,7 @@ export const DIFFICULTY_CONFIGS: Record<Difficulty, GameConfig> = {
       claimPerCellBonus: 0,
       claimPerEnemyBonus: 0,
       claimBonusCap: 0,
+      claimRefundNeedsCapture: false,
       speedWindowSeconds: 8,
       minSpeedFraction: 1,
       drainAccelPerMinute: 0,
@@ -290,13 +354,16 @@ export const DIFFICULTY_CONFIGS: Record<Difficulty, GameConfig> = {
       // Nothing for laying a block: the siege has to make a claim the reward
       // and a wall the cost, not pay a little for every move either way.
       pointsPerBlockPlaced: 0,
+      // Nor for closing two rooms at once: a multiplier on top of area² is a
+      // second thing to optimise, and the siege already has one.
+      multiCloseBonusPerRoom: 0,
       streakEnabled: false,
-      pointsPerEnemy: SIEGE_POINTS_PER_ENEMY,
     },
-    // Freshness pricing stays: taking the same ground twice should pay less,
-    // which is what stops the answer being one small room round the Keep
-    // forever. The survey does not — it is a second objective.
-    territory: { enabled: true, relitFloorFactor: 0.5, surveyBonus: 0, surveyEnabled: false },
+    // Off for now. Freshness pricing is a real answer to camping one small
+    // room round the Keep, but it is a second pressure on top of a new one,
+    // and the first playtest has to be able to say what the siege alone does.
+    // The flag is the whole switch — turn it on and relit floor pays half.
+    territory: { enabled: false, relitFloorFactor: 0.5, surveyBonus: 0, surveyEnabled: false },
     timer: {
       // A command clock, not a metronome: it starts full, caps where it
       // starts, drains at a flat rate, and only a claim refills it.
@@ -307,6 +374,7 @@ export const DIFFICULTY_CONFIGS: Record<Difficulty, GameConfig> = {
       claimPerCellBonus: 0.6,
       claimPerEnemyBonus: 1.5,
       claimBonusCap: 8,
+      claimRefundNeedsCapture: true,
       speedWindowSeconds: 8,
       minSpeedFraction: 1,
       drainAccelPerMinute: 0,
@@ -316,6 +384,8 @@ export const DIFFICULTY_CONFIGS: Record<Difficulty, GameConfig> = {
     clock: { enabled: true },
     echo: { enabled: false, windowSeconds: 0, multiplier: 1 },
     bagByTier: false,
+    // `queuePreview` in the playtest notes: how many pieces ahead the player
+    // can plan. Two today, worth trying at four once the siege is legible.
     previewCount: 2,
     siege: siegeVariant('m1', 'raiders', 'finite'),
     pieceBudget: SIEGE_FINITE_PIECES,
@@ -339,9 +409,13 @@ export function siegeConfig(
 ): GameConfig {
   const base = DIFFICULTY_CONFIGS.siege;
   const finite = mission === 'finite';
+  const siege = siegeVariant(missionId, enemy, mission);
   return {
     ...base,
-    siege: siegeVariant(missionId, enemy, mission),
+    siege,
+    // 'off' is the one clock mode the engine itself has to know about; the
+    // other two differ only in whether the scene pauses the drain
+    clock: { enabled: siege.clockMode !== 'off' },
     // Eighteen pieces and a win, or a bag that never runs out
     ...(finite ? { pieceBudget: SIEGE_FINITE_PIECES } : { pieceBudget: undefined }),
     ...(seed !== undefined ? { seed } : {}),

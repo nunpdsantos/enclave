@@ -16,6 +16,23 @@ import { GRID_SIZE, GridPos, Terrain, TerrainGrid } from './types';
 
 export type SiegeMissionId = 'm1' | 'm2' | 'm3';
 
+/**
+ * What each terrain does, in one table, because four kinds times four
+ * questions is exactly the sort of thing that drifts between modules:
+ *
+ *   terrain | takes a piece | holds the flood back | counts in a room's area | survives a claim
+ *   --------|---------------|----------------------|-------------------------|-----------------
+ *   floor   | yes           | no                   | yes                     | (nothing there)
+ *   keep    | no            | no                   | yes                     | yes
+ *   gate    | no            | no                   | yes                     | yes
+ *   ruin    | no            | YES (boundary)       | no                      | yes
+ *
+ * The enemy walks over floor, gates and the Keep alike, and never through a
+ * ruin. A raider with no route to the Keep at all waits where it stands.
+ * Enemies are floor occupants: they block a placement, never the flood fill,
+ * and the cell they stand on counts in the area of a room that encloses them.
+ */
+
 /** One scheduled arrival: a raider on `gate` after placement `turn`. */
 export interface SpawnEvent {
   turn: number;
@@ -42,6 +59,16 @@ export interface SiegeMission {
   spawn: SpawnPlan;
   /** Seconds between tide expansions at the start of the mission */
   tideSeconds: number;
+  /**
+   * How long a finite tide mission has to be *survived* before its eighteen
+   * pieces count as a win.
+   *
+   * The tide runs on the clock, not on placements, so without this the fastest
+   * way to "hold the Keep" is to dump eighteen pieces anywhere in twenty
+   * seconds and never meet the siege at all. The raiders need no equivalent:
+   * every placement is a raider step, so there is no clock to outrun.
+   */
+  minSurvivalSeconds: number;
 }
 
 // ── Map characters ──
@@ -72,6 +99,7 @@ export const MISSIONS: Record<SiegeMissionId, SiegeMission> = {
     ],
     spawn: { firstTurn: 1, interval: 2, rampTurn: Infinity, rampInterval: 2 },
     tideSeconds: 3.0,
+    minSurvivalSeconds: 60,
   },
 
   // Two fronts at the same tempo: the same arrivals, but a wall that answers
@@ -92,6 +120,7 @@ export const MISSIONS: Record<SiegeMissionId, SiegeMission> = {
     ],
     spawn: { firstTurn: 1, interval: 2, rampTurn: Infinity, rampInterval: 2 },
     tideSeconds: 2.6,
+    minSurvivalSeconds: 60,
   },
 
   // Ruins: six cells of old wall with one gap in the middle of them. Free
@@ -113,6 +142,7 @@ export const MISSIONS: Record<SiegeMissionId, SiegeMission> = {
     ],
     spawn: { firstTurn: 1, interval: 2, rampTurn: 11, rampInterval: 1 },
     tideSeconds: 2.6,
+    minSurvivalSeconds: 60,
   },
 };
 
@@ -151,6 +181,59 @@ export function cellsOfTerrain(terrain: TerrainGrid, kind: Terrain): GridPos[] {
 }
 
 // ── Schedules ──
+
+/**
+ * The turn an unopposed raider from the last wave should reach the Keep on.
+ *
+ * Sixteen of eighteen, so a finite mission has a climax two placements before
+ * it ends rather than a queue of arrivals with nothing left to answer them.
+ * The last scheduled wave is therefore this minus the walk from the nearest
+ * gate, and a raider does not move on the phase it arrives in.
+ */
+export const FINITE_ARRIVAL_TURN = 16;
+
+/**
+ * Steps from the nearest gate to the Keep on an empty board.
+ *
+ * A plain BFS over floor: no player walls exist yet, ruins are impassable, and
+ * the Keep and the gates are walkable. Local to this module rather than shared
+ * with Siege.ts, because Siege.ts reads a SiegeConfig and this is what builds
+ * one — the import would be a cycle for a nine-line flood fill.
+ */
+export function stepsFromNearestGate(map: string[]): number {
+  const terrain = terrainOf(map);
+  const keeps = cellsOfTerrain(terrain, 'keep');
+  const gates = cellsOfTerrain(terrain, 'gate');
+  if (keeps.length === 0 || gates.length === 0) return 0;
+  const dist: number[][] = Array.from({ length: GRID_SIZE }, () =>
+    Array(GRID_SIZE).fill(Infinity),
+  );
+  const start = keeps[0];
+  dist[start.row][start.col] = 0;
+  const queue: GridPos[] = [start];
+  const dirs: [number, number][] = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+  for (let head = 0; head < queue.length; head++) {
+    const p = queue[head];
+    for (const [dr, dc] of dirs) {
+      const nr = p.row + dr, nc = p.col + dc;
+      if (nr < 0 || nc < 0 || nr >= GRID_SIZE || nc >= GRID_SIZE) continue;
+      if (terrain[nr][nc] === 'ruin' || dist[nr][nc] !== Infinity) continue;
+      dist[nr][nc] = dist[p.row][p.col] + 1;
+      queue.push({ row: nr, col: nc });
+    }
+  }
+  let best = Infinity;
+  for (const g of gates) best = Math.min(best, dist[g.row][g.col]);
+  return Number.isFinite(best) ? best : 0;
+}
+
+/**
+ * The last turn a finite mission schedules a wave on, so that an unopposed
+ * raider from it walks into the Keep on FINITE_ARRIVAL_TURN.
+ */
+export function finiteSpawnHorizon(mission: SiegeMission): number {
+  return Math.max(1, FINITE_ARRIVAL_TURN - stepsFromNearestGate(mission.map));
+}
 
 /**
  * How long an endless siege goes on being scheduled for. One arrival per

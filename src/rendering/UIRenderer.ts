@@ -361,16 +361,36 @@ export class UIRenderer {
     turn: number;
     enemies: number;
     stepsToKeep: number;
+    /** Which gate the next wave uses and how many placements away it is */
+    nextSpawn: { gate: number; inTurns: number } | null;
+    /** Seconds until the tide's next expansion, or null for the raiders */
+    nextTideIn: number | null;
+    /** The pieces are spent and the mission is now only being outlasted */
+    holdingOut: boolean;
   }): void {
-    this.siegeCountText.text = opts.pieces !== null
-      ? `PIECES ${opts.pieces}/${opts.budget}`
-      : `TURN ${opts.turn}`;
-    this.siegeCountText.style.fill = opts.pieces !== null && opts.pieces <= PIECES_LOW_AT
+    // Once the pieces are gone the count means nothing and the only question
+    // left is whether the Keep outlasts the flood
+    this.siegeCountText.text = opts.holdingOut
+      ? 'HOLD OUT'
+      : opts.pieces !== null
+        ? `PIECES ${opts.pieces}/${opts.budget}`
+        : `TURN ${opts.turn}`;
+    this.siegeCountText.style.fill = opts.holdingOut
       ? THEME.gold
-      : THEME.textPrimary;
+      : opts.pieces !== null && opts.pieces <= PIECES_LOW_AT
+        ? THEME.gold
+        : THEME.textPrimary;
     this.siegeCountText.visible = true;
 
-    this.siegeEnemyText.text = `ENEMIES ${opts.enemies}`;
+    // Enemies on the board, and what is coming. A player who cannot see the
+    // next wave has no way to spend a placement on preparing for it, which is
+    // most of what the mode is supposed to be about.
+    const forecast = opts.nextSpawn
+      ? `  ·  GATE ${opts.nextSpawn.gate + 1} IN ${opts.nextSpawn.inTurns}`
+      : opts.nextTideIn !== null
+        ? `  ·  TIDE ${opts.nextTideIn.toFixed(1)}s`
+        : '';
+    this.siegeEnemyText.text = `ENEMIES ${opts.enemies}${forecast}`;
     this.siegeEnemyText.style.fill = opts.enemies > 0 ? SIEGE.threat : THEME.textMuted;
     this.siegeEnemyText.visible = true;
 

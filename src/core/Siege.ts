@@ -20,9 +20,10 @@ import { GRID_SIZE, GridPos, Raider } from './types';
  * which is the decision the player is actually making when they build one.
  */
 
-/** Cost of entering a cell, by what is in it */
+/** Cost of entering open floor. The wall's cost is a config knob. */
 export const FLOOR_COST = 1;
-export const WALL_COST = 4;
+/** The default `wallCost`; the live value comes from SiegeConfig. */
+export const DEFAULT_WALL_COST = 4;
 
 /**
  * The order neighbours are considered in: up, down, left, right. Fixed, so a
@@ -42,6 +43,8 @@ export function keyOf(p: GridPos): string {
   return `${p.row},${p.col}`;
 }
 
+const EMPTY_SET: ReadonlySet<string> = new Set<string>();
+
 /**
  * What it costs to enter a cell, or null when nothing can.
  *
@@ -49,9 +52,11 @@ export function keyOf(p: GridPos): string {
  * floor costs — the Keep is the destination, and a gate the enemy came
  * through is not a wall behind it.
  */
-export function enterCost(board: Board, row: number, col: number): number | null {
+export function enterCost(
+  board: Board, row: number, col: number, wallCost: number = DEFAULT_WALL_COST,
+): number | null {
   if (board.terrain[row][col] === 'ruin') return null;
-  return board.grid[row][col] !== null ? WALL_COST : FLOOR_COST;
+  return board.grid[row][col] !== null ? wallCost : FLOOR_COST;
 }
 
 /**
@@ -61,8 +66,16 @@ export function enterCost(board: Board, row: number, col: number): number | null
  * route from (r, c) *to* the Keep. Costs attach to the cell being entered,
  * and the Keep itself is 0. An 81-cell grid with integer weights, so a plain
  * O(n²) scan is quicker than a heap and has no ordering ambiguity in it.
+ *
+ * **This is a cost, not a countdown.** A distance of 8 is not eight turns
+ * away: a wall on the route contributes `wallCost` to the number but takes
+ * the raider exactly one turn to break, so a route through two walls reads as
+ * 10 and arrives in 4. Anything the player is shown as "steps to the Keep"
+ * has to be counted in steps — see `stepsToKeep`.
  */
-export function distanceToKeep(board: Board, keep: GridPos): number[][] {
+export function distanceToKeep(
+  board: Board, keep: GridPos, wallCost: number = DEFAULT_WALL_COST,
+): number[][] {
   const dist: number[][] = Array.from({ length: GRID_SIZE }, () =>
     Array(GRID_SIZE).fill(UNREACHABLE),
   );
@@ -89,8 +102,8 @@ export function distanceToKeep(board: Board, keep: GridPos): number[][] {
       const nr = best.row + dr, nc = best.col + dc;
       if (!inBounds(nr, nc) || done[nr][nc]) continue;
       // The cost is the neighbour's own: stepping *out of* a cell is free,
-      // stepping *into* a wall is what costs four.
-      const cost = enterCost(board, nr, nc);
+      // stepping *into* a wall is what costs `wallCost`.
+      const cost = enterCost(board, nr, nc, wallCost);
       if (cost === null) continue;
       const next = bestDist + cost;
       if (next < dist[nr][nc]) dist[nr][nc] = next;
@@ -140,13 +153,14 @@ export function raiderTarget(
   dist: number[][],
   blocked: ReadonlySet<string>,
   rng: Rng,
+  wallCost: number = DEFAULT_WALL_COST,
 ): GridPos | null {
   let bestDist = UNREACHABLE;
   let best: GridPos[] = [];
   for (const [dr, dc] of DIRS) {
     const nr = raider.row + dr, nc = raider.col + dc;
     if (!inBounds(nr, nc)) continue;
-    if (enterCost(board, nr, nc) === null) continue;
+    if (enterCost(board, nr, nc, wallCost) === null) continue;
     if (blocked.has(`${nr},${nc}`)) continue;
     const d = dist[nr][nc];
     if (d > bestDist) continue;
@@ -159,39 +173,83 @@ export function raiderTarget(
 }
 
 /**
- * One enemy phase for the raiders: every raider takes a step, or breaks the
- * wall in its way and stays where it is.
+ * One enemy phase for the raiders.
  *
- * Raiders move in id order, oldest first, and the occupancy set is updated as
- * they go, so the one in front moves before the one behind it and the queue
- * does not deadlock on itself. The board is mutated only where a wall comes
- * down; the raider positions come back for the caller to apply, so the caller
- * still owns the entity list.
+ * Two passes, and the split is the whole point:
+ *
+ *  1. **Plan**, from one snapshot of the board. Every raider's intent is read
+ *     against the same walls and the same occupancy, in id order, so no
+ *     raider's plan depends on what an earlier one has already done. This is
+ *     the snapshot the intent preview showed the player, which is what makes
+ *     the preview a promise rather than a guess.
+ *  2. **Resolve**, in id order, against the live board. A raider whose target
+ *     turned out to be occupied by then waits where it is; one whose target
+ *     wall has already been knocked down by a neighbour walks into the gap if
+ *     it is free, and otherwise waits.
+ *
+ * Only the board's walls are mutated here. The positions come back for the
+ * caller to apply, so the caller still owns the entity list.
  */
 export function stepRaiders(
-  board: Board, raiders: Raider[], keep: GridPos, rng: Rng,
+  board: Board,
+  raiders: Raider[],
+  keep: GridPos,
+  rng: Rng,
+  wallCost: number = DEFAULT_WALL_COST,
 ): RaiderStep[] {
-  const dist = distanceToKeep(board, keep);
-  const held = new Set(raiders.map(keyOf));
+  const plans = planRaiders(board, raiders, keep, rng, wallCost);
+  return resolveRaiders(board, raiders, plans);
+}
+
+/** Pass one: every raider's intended target, read off a single snapshot. */
+export function planRaiders(
+  board: Board,
+  raiders: Raider[],
+  keep: GridPos,
+  rng: Rng,
+  wallCost: number = DEFAULT_WALL_COST,
+): Map<number, GridPos> {
+  const dist = distanceToKeep(board, keep, wallCost);
+  const occupied = new Set(raiders.map(keyOf));
+  const plans = new Map<number, GridPos>();
+  for (const raider of raiders) {
+    // Its own cell is not an obstacle to itself, but every other raider's is
+    occupied.delete(keyOf(raider));
+    const target = raiderTarget(board, raider, dist, occupied, rng, wallCost);
+    occupied.add(keyOf(raider));
+    if (target) plans.set(raider.id, target);
+  }
+  return plans;
+}
+
+/** Pass two: apply the plans in id order against the live board. */
+export function resolveRaiders(
+  board: Board, raiders: Raider[], plans: ReadonlyMap<number, GridPos>,
+): RaiderStep[] {
+  const positions = new Map(raiders.map(r => [r.id, { row: r.row, col: r.col }]));
+  const held = new Set([...positions.values()].map(keyOf));
   const steps: RaiderStep[] = [];
 
+  const stay = (r: Raider): RaiderStep =>
+    ({ id: r.id, to: { row: r.row, col: r.col }, brokeWall: null });
+
   for (const raider of raiders) {
-    held.delete(keyOf(raider));
-    const target = raiderTarget(board, raider, dist, held, rng);
-    if (!target) {
-      held.add(keyOf(raider));
-      steps.push({ id: raider.id, to: { row: raider.row, col: raider.col }, brokeWall: null });
-      continue;
-    }
+    const target = plans.get(raider.id);
+    if (!target) { steps.push(stay(raider)); continue; }
+
     if (board.grid[target.row][target.col] !== null) {
-      // A wall in the way is knocked down and the turn is spent doing it:
-      // the cost of a wall is a turn of the raider's, and that is the whole
-      // reason building one is worth a placement.
+      // A wall in the way is knocked down and the turn is spent doing it: the
+      // cost of a wall is a turn of the raider's, and that is the whole reason
+      // building one is worth a placement.
       board.grid[target.row][target.col] = null;
-      held.add(keyOf(raider));
       steps.push({ id: raider.id, to: { row: raider.row, col: raider.col }, brokeWall: target });
       continue;
     }
+
+    // Either the plan was a move, or the wall it aimed at has already come
+    // down this phase — in both cases it walks in, if the cell is free.
+    if (held.has(keyOf(target))) { steps.push(stay(raider)); continue; }
+    held.delete(keyOf(raider));
     held.add(keyOf(target));
     steps.push({ id: raider.id, to: target, brokeWall: null });
   }
@@ -211,29 +269,59 @@ export interface TideStep {
 /**
  * The cell the tide would take next.
  *
- * Every cell orthogonally touching the tide that the tide does not already
- * hold and a ruin does not block — player walls included, since eroding one
- * is how the tide gets through it — ranked by weighted distance to the Keep.
+ * Eligible: every cell orthogonally touching the front that the tide does not
+ * already hold and a ruin does not block — open ground, the gates, the Keep,
+ * and player walls, since eroding one is how the tide gets through it.
+ *
+ * Ranked by **what it costs the tide to be standing in that cell and then
+ * reach the Keep from it**: the distance from the candidate's cheapest
+ * neighbour, plus the candidate's own entry cost (1 for floor, `wallCost` for
+ * a wall). Written that way rather than as `dist[candidate]` — which is the
+ * same number — because the two terms are the thing being traded off, and a
+ * ranking that left the second one out would let the tide eat walls for free.
+ *
  * Scanned in reading order so the tie list is fixed before the seeded draw.
  */
 export function tideTarget(
-  board: Board, tide: ReadonlySet<string>, keep: GridPos, rng: Rng,
+  board: Board,
+  tide: ReadonlySet<string>,
+  keep: GridPos,
+  rng: Rng,
+  wallCost: number = DEFAULT_WALL_COST,
+  cooling: ReadonlySet<string> = EMPTY_SET,
 ): GridPos | null {
-  const dist = distanceToKeep(board, keep);
+  const dist = distanceToKeep(board, keep, wallCost);
   let bestDist = UNREACHABLE;
   let best: GridPos[] = [];
 
   for (let r = 0; r < GRID_SIZE; r++) {
     for (let c = 0; c < GRID_SIZE; c++) {
       if (tide.has(`${r},${c}`)) continue;
-      if (enterCost(board, r, c) === null) continue;
+      // Ground a claim just took is off limits for one tick: a room sealed
+      // and immediately re-flooded would read as the capture not having
+      // happened, which is the one thing the player must be able to see.
+      if (cooling.has(`${r},${c}`)) continue;
+      if (enterCost(board, r, c, wallCost) === null) continue;
       let touches = false;
       for (const [dr, dc] of DIRS) {
         const nr = r + dr, nc = c + dc;
         if (inBounds(nr, nc) && tide.has(`${nr},${nc}`)) { touches = true; break; }
       }
       if (!touches) continue;
-      const d = dist[r][c];
+      const entry = enterCost(board, r, c, wallCost);
+      if (entry === null) continue;
+      // The cheapest way onward from this candidate, plus what it costs to be
+      // in it. `neighbourDist` excludes the candidate's own cost by
+      // construction, so the two terms never double up.
+      let neighbourDist = UNREACHABLE;
+      for (const [dr, dc] of DIRS) {
+        const nr = r + dr, nc = c + dc;
+        if (!inBounds(nr, nc)) continue;
+        if (dist[nr][nc] < neighbourDist) neighbourDist = dist[nr][nc];
+      }
+      if (r === keep.row && c === keep.col) neighbourDist = 0;
+      if (neighbourDist === UNREACHABLE) continue;
+      const d = neighbourDist + entry;
       if (d > bestDist) continue;
       if (d < bestDist) { bestDist = d; best = []; }
       best.push({ row: r, col: c });
@@ -244,13 +332,23 @@ export function tideTarget(
 }
 
 /**
- * One tick of the tide. Mutates the board where a wall is eroded; the caller
- * applies the claimed cell to its own set.
+ * One tick of the tide: one cell taken, or one wall damaged, never both and
+ * never more than one of either.
+ *
+ * `tide` is a snapshot of the front — the cell taken here cannot itself grow
+ * until the next tick, because the caller adds it after this returns. Mutates
+ * the board where a wall is eroded; the caller applies the claimed cell to
+ * its own set.
  */
 export function stepTide(
-  board: Board, tide: ReadonlySet<string>, keep: GridPos, rng: Rng,
+  board: Board,
+  tide: ReadonlySet<string>,
+  keep: GridPos,
+  rng: Rng,
+  wallCost: number = DEFAULT_WALL_COST,
+  cooling: ReadonlySet<string> = EMPTY_SET,
 ): TideStep {
-  const target = tideTarget(board, tide, keep, rng);
+  const target = tideTarget(board, tide, keep, rng, wallCost, cooling);
   if (!target) return { claimed: null, erodedWall: null };
   if (board.grid[target.row][target.col] !== null) {
     board.grid[target.row][target.col] = null;
@@ -280,27 +378,31 @@ export interface SiegeIntent {
  * is exactly the feedback the arrows exist to give.
  */
 export function readIntent(
-  board: Board, raiders: Raider[], tide: ReadonlySet<string>, keep: GridPos, rng: Rng,
+  board: Board,
+  raiders: Raider[],
+  tide: ReadonlySet<string>,
+  keep: GridPos,
+  rng: Rng,
+  wallCost: number = DEFAULT_WALL_COST,
+  cooling: ReadonlySet<string> = EMPTY_SET,
 ): SiegeIntent {
-  const dist = distanceToKeep(board, keep);
-  const steps = new Map<number, GridPos>();
+  const dist = distanceToKeep(board, keep, wallCost);
+  // The same plan pass the phase itself runs, from the same snapshot and the
+  // same seeded draw — so the arrow the player is shown is the step that
+  // happens, not an approximation of it.
+  const steps = planRaiders(board, raiders, keep, rng, wallCost);
   const routeLengths = new Map<number, number>();
   const threatenedWalls: GridPos[] = [];
 
-  const held = new Set(raiders.map(keyOf));
   for (const raider of raiders) {
     routeLengths.set(raider.id, dist[raider.row][raider.col]);
-    held.delete(keyOf(raider));
-    const target = raiderTarget(board, raider, dist, held, rng);
-    held.add(keyOf(raider));
-    if (!target) continue;
-    steps.set(raider.id, target);
-    if (board.grid[target.row][target.col] !== null) threatenedWalls.push(target);
+    const target = steps.get(raider.id);
+    if (target && board.grid[target.row][target.col] !== null) threatenedWalls.push(target);
   }
 
   let nextTide: GridPos | null = null;
   if (tide.size > 0) {
-    nextTide = tideTarget(board, tide, keep, rng);
+    nextTide = tideTarget(board, tide, keep, rng, wallCost, cooling);
     if (nextTide && board.grid[nextTide.row][nextTide.col] !== null) {
       threatenedWalls.push(nextTide);
     }

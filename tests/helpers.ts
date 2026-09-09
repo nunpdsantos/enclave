@@ -189,6 +189,43 @@ function advance(gs: GameState, wait: number, frameSeconds?: number): boolean {
   return false;
 }
 
+/**
+ * The opposite of the greedy bot: a player who does not look at the board.
+ *
+ * It takes the first legal placement in scan order and drops the piece there,
+ * as fast as the rules allow, ignoring score entirely. What it is for is
+ * proving that a mode cannot be *skipped* — a siege whose eighteen pieces can
+ * be dumped in twenty seconds is a siege the player never had to fight.
+ */
+export function playFastDump(
+  gs: GameState, moves: number, step: number = MIN_DUMP_INTERVAL,
+): number {
+  let placed = 0;
+  for (let i = 0; i < moves && !gs.isGameOver; i++) {
+    if (gs.tick(step)) break;
+    if (gs.isGameOver || !gs.current) break;
+    let done = false;
+    for (let rot = 0; rot < 4 && !done; rot++) {
+      for (let row = 0; row < GRID_SIZE && !done; row++) {
+        for (let col = 0; col < GRID_SIZE && !done; col++) {
+          if (!gs.current || !gs.board.canPlace(gs.current.shape, row, col)) continue;
+          done = gs.tryPlace(row, col).length > 0;
+        }
+      }
+      if (!done) gs.rotate();
+    }
+    if (!done) break;
+    placed++;
+  }
+  return placed;
+}
+
+/**
+ * The floor the replay validator puts under a human's placement cadence. A
+ * dump has no reason to go faster than a person could.
+ */
+const MIN_DUMP_INTERVAL = 0.1;
+
 /** Play `moves` inputs of a real run and hand back the recorded replay. */
 export function playBotRun(
   mode: Difficulty, seed: number, moves: number, opts: BotOptions = {},

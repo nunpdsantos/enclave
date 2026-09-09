@@ -12,7 +12,7 @@ import { FXManager } from '../rendering/FXManager';
 import { DragController, DragState } from '../input/DragController';
 import { AudioManager } from '../audio/AudioManager';
 import { INNER_CELLS } from '../core/Board';
-import { stepsToKeep, tideIntervalAt } from '../core/Siege';
+import { SiegeIntent, stepsToKeep, tideIntervalAt } from '../core/Siege';
 import { FeedbackEvent, GRID_SIZE, GridPos, PieceInstance, Region, RunEndCause, RunSummary } from '../core/types';
 import { Difficulty, DIFFICULTY_LABELS, GameConfig } from '../core/Config';
 import { getProgressStatus } from '../core/Progression';
@@ -34,12 +34,25 @@ type Phase = 'tutorial' | 'countdown' | 'playing' | 'gameOver';
  * while the enemy moves, and charging them for watching would make the mode
  * about reading quickly rather than about placing well.
  */
-const ENEMY_PHASE_SECONDS = 0.25;
+const ENEMY_PHASE_SECONDS = 0.3;
+
+/**
+ * How long the claim animation holds the clock before the enemy phase starts.
+ *
+ * The clock stops for exactly two things — the claim resolving and the enemy
+ * answering — and for nothing else. Dragging, rotating and thinking all cost
+ * time, which is what makes it a command clock rather than a turn timer.
+ */
+const CLAIM_PHASE_SECONDS = 0.45;
 
 /** What the ghost's current drop would seal, and what it would pay */
 interface ClosePreview {
   regions: Region[];
   points: number;
+  /** Siege: enemies this drop would destroy */
+  captured?: GridPos[];
+  /** Siege: what the enemy does on the board this drop would leave */
+  intent?: SiegeIntent | null;
 }
 
 /** 0.75 → "0.75", 0.5 → "0.5": two decimals, no trailing zeros */
@@ -83,6 +96,11 @@ export class GameScene implements Scene {
   private enemyPhaseRemaining = 0;
   /** Last siege state this scene drew, so it only redraws when it moved */
   private siegeVersion = -1;
+  /**
+   * The drag in progress, if any. Kept so a tide that moves under a still
+   * finger can be asked the preview question again.
+   */
+  private lastDrag: DragState | null = null;
 
   private alertsFired = { ten: false, five: false, two: false };
   private lastTickSecond = -1;
@@ -331,28 +349,35 @@ export class GameScene implements Scene {
 
     this.animationManager.update(animDt);
 
-    // The enemy's turn. The clock is stopped, so `tick` is not called at all —
-    // which also means the tide cannot expand while the raiders are stepping,
-    // and the two enemies can never overlap.
+    // The enemy's turn. The *bank* stops — the player is not deciding
+    // anything — but game time does not: the tide runs on game time, and a
+    // flood that froze whenever the screen was busy would be a flood whose
+    // tempo depended on the frame rate. So the run is aged without draining.
     if (this.enemyPhaseRemaining > 0) {
       this.enemyPhaseRemaining = Math.max(0, this.enemyPhaseRemaining - dt);
+      if (this.pausesBankInEnemyPhase()) this.gameState.advanceClock(dt);
+      else if (this.gameState.tick(dt)) { this.finishRun(); return; }
+      const paused = this.gameState.drainEvents();
+      if (paused.length > 0) this.processFeedback(paused, null);
+      if (this.gameState.isGameOver) { this.finishRun(); return; }
       if (this.enemyPhaseRemaining === 0) this.endEnemyPhase();
       this.fxManager.update(dt, this.gameState.drainRate, this.gameState.gameElapsed);
       this.gridRenderer.updateGlow(dt, this.gameState.timeRemaining, this.gameState.board.occupiedCount() / 81);
       return;
     }
 
-    if (this.gameState.tick(dt)) {
-      // The tide can end the run from inside the clock, so its events have to
-      // be drained before the game-over sequence swallows the frame
-      this.processFeedback(this.gameState.drainEvents(), null);
-      this.startGameOverSequence();
-      return;
-    }
+    if (this.gameState.tick(dt)) { this.finishRun(); return; }
     // The tide expands on the clock rather than on a placement
     const clockEvents = this.gameState.drainEvents();
     if (clockEvents.length > 0) this.processFeedback(clockEvents, null);
-    if (this.gameState.config.siege) this.updateSiegeHud();
+    if (this.gameState.isGameOver) { this.finishRun(); return; }
+    if (this.gameState.config.siege) {
+      this.updateSiegeHud();
+      // A still pointer over a board the tide has moved under is being shown
+      // a stale answer, so the ghost is re-asked whenever the siege changes
+      if (this.gameState.siegeVersion !== this.siegeVersion) this.refreshSiege();
+      if (this.lastDrag) this.showGhost(this.lastDrag);
+    }
     this.syncEchoWalls();
     this.updatePaceReadout();
 
@@ -425,6 +450,12 @@ export class GameScene implements Scene {
       turn: gs.totalTurns,
       enemies: enemies.length,
       stepsToKeep: stepsToKeep(enemies, gs.keep),
+      nextSpawn: gs.nextSpawn(),
+      // The tide's tempo has no turn to count, so the HUD counts seconds
+      nextTideIn: siege.enemy === 'tide' && !gs.isGameOver
+        ? Math.max(0, gs.nextTideDueAt - gs.gameElapsed)
+        : null,
+      holdingOut: gs.isAwaitingSurvival,
     });
     // The ring is the only part of the HUD that moves between placements
     if (siege.enemy === 'tide') {
@@ -436,9 +467,11 @@ export class GameScene implements Scene {
    * Hold the frame while the enemy moves. The drag is detached for the whole
    * of it, so a piece cannot be dropped onto a cell a raider is walking into.
    */
-  private beginEnemyPhase(): void {
+  private beginEnemyPhase(claimed: boolean): void {
     if (this.phase !== 'playing' || this.gameState.isGameOver) return;
-    this.enemyPhaseRemaining = ENEMY_PHASE_SECONDS;
+    // A fixed window whatever the enemy count: eight raiders stepping must not
+    // cost the player eight times as much of a pause as one does.
+    this.enemyPhaseRemaining = ENEMY_PHASE_SECONDS + (claimed ? CLAIM_PHASE_SECONDS : 0);
     this.dragController.detach(this.canvas);
   }
 
@@ -446,6 +479,24 @@ export class GameScene implements Scene {
     if (this.phase !== 'playing' || this.paused || this.gameState.isGameOver) return;
     this.dragController.attach(this.canvas);
     this.refreshSiege();
+  }
+
+  /**
+   * Does the bank stop while the enemy answers? The default, and the reason
+   * the mode is called a command clock: time is spent deciding, not watching.
+   */
+  private pausesBankInEnemyPhase(): boolean {
+    return this.gameState.config.siege?.clockMode !== 'bank';
+  }
+
+  /**
+   * The one way a run finishes from the update loop, whatever ended it: drain
+   * whatever the clock raised on the way out, then play the sequence.
+   */
+  private finishRun(): void {
+    const events = this.gameState.drainEvents();
+    if (events.length > 0) this.processFeedback(events.filter(e => e.type !== 'gameOver'), null);
+    this.startGameOverSequence();
   }
 
   private beginPlay(): void {
@@ -819,22 +870,30 @@ export class GameScene implements Scene {
 
   private setupInput(): void {
     this.dragController.onDragStart = (state: DragState) => {
+      this.lastDrag = state;
       this.handRenderer.setCurrentHidden(true);
       this.handRenderer.beginDrag(state.piece, state.pointerX, state.pointerY);
       this.showGhost(state);
       this.haptic(6);
     };
     this.dragController.onDragMove = (state: DragState) => {
+      this.lastDrag = state;
       this.handRenderer.showDragPiece(state.piece, state.pointerX, state.pointerY);
       this.handRenderer.recordDragPosition(state.pointerX, state.pointerY);
       this.showGhost(state);
     };
     this.dragController.onDragEnd = (state: DragState) => {
+      this.lastDrag = null;
       this.handRenderer.hideDragPiece();
       this.handRenderer.setCurrentHidden(false);
-      this.ghostRenderer.hide();
-      if (state.gridPos && state.isValid) {
-        const events = this.gameState.tryPlace(state.gridPos.row, state.gridPos.col);
+      this.hideGhost();
+      // The board can move under a held finger — the tide grows on the clock —
+      // so a drop the engine refuses costs nothing: the piece goes back to the
+      // hand and no placement is spent.
+      const events = state.gridPos && state.isValid
+        ? this.gameState.tryPlace(state.gridPos.row, state.gridPos.col)
+        : [];
+      if (events.length > 0) {
         this.processFeedback(events, state.gridPos);
       } else if (!state.cancelled && state.gridPos) {
         this.handleInvalidPlacement(state.gridPos, state);
@@ -842,9 +901,10 @@ export class GameScene implements Scene {
       this.syncInput();
     };
     this.dragController.onDragCancel = () => {
+      this.lastDrag = null;
       this.handRenderer.hideDragPiece();
       this.handRenderer.setCurrentHidden(false);
-      this.ghostRenderer.hide();
+      this.hideGhost();
     };
     this.dragController.onRotate = () => this.rotate();
     this.dragController.onHold = () => this.holdPiece();
@@ -919,15 +979,28 @@ export class GameScene implements Scene {
   /** The ghost, plus the gold claim preview when the drop would seal a room */
   private showGhost(state: DragState): void {
     if (!state.gridPos) {
-      this.ghostRenderer.hide();
+      this.hideGhost();
       return;
     }
     this.ghostRenderer.show(state.piece.shape, state.gridPos.row, state.gridPos.col, state.piece.color, state.isValid);
     const preview = state.isValid
       ? this.closePreview(state.piece, state.gridPos.row, state.gridPos.col)
       : null;
-    if (preview) this.ghostRenderer.showClosePreview(preview.regions, preview.points);
-    else this.ghostRenderer.hidePreview();
+    if (preview && preview.regions.length > 0) {
+      this.ghostRenderer.showClosePreview(preview.regions, preview.points);
+    } else {
+      this.ghostRenderer.hidePreview();
+    }
+    // In the siege the ghost shows the whole answer: what it seals, what it
+    // catches, and what the enemy does about the board it leaves behind
+    if (this.gameState.config.siege) {
+      this.gridRenderer.setPreviewIntent(preview?.intent ?? null, preview?.captured ?? []);
+    }
+  }
+
+  private hideGhost(): void {
+    this.ghostRenderer.hide();
+    if (this.gameState.config.siege) this.gridRenderer.setPreviewIntent(null, []);
   }
 
   /**
@@ -937,10 +1010,24 @@ export class GameScene implements Scene {
    * a ghost wall stops being quoted the moment the ghost goes.
    */
   private closePreview(piece: PieceInstance, row: number, col: number): ClosePreview | null {
-    const key = `${piece.typeId}:${piece.rotation}:${row}:${col}:${this.boardVersion}`;
+    const key = `${piece.typeId}:${piece.rotation}:${row}:${col}:${this.boardVersion}:${this.siegeVersion}`;
     if (key === this.previewKey) return this.previewValue;
     this.previewKey = key;
     this.previewValue = null;
+
+    // The siege resolves the whole placement, enemy answer included
+    if (this.gameState.config.siege) {
+      const full = this.gameState.previewPlacement(piece, row, col);
+      if (full) {
+        this.previewValue = {
+          regions: full.regions,
+          points: full.points,
+          captured: full.captured,
+          intent: full.intent,
+        };
+      }
+      return this.previewValue;
+    }
 
     const probe = this.gameState.board.clone();
     if (probe.canPlace(piece.shape, row, col)) {
@@ -975,6 +1062,9 @@ export class GameScene implements Scene {
 
   private processFeedback(events: FeedbackEvent[], origin: GridPos | null): void {
     const layout = this.layoutManager.layout;
+    // The enemy phase follows the claim animation, so the freeze it asks for
+    // has to know whether there was one
+    const claimedThisPlacement = events.some(e => e.type === 'claim');
     const gridCenterX = layout.gridOriginX + layout.gridSize / 2;
     const gridCenterY = layout.gridOriginY + layout.gridSize / 2;
 
@@ -1139,7 +1229,7 @@ export class GameScene implements Scene {
             this.haptic(24);
             this.gridRenderer.popCells(broken, THEME.danger);
           }
-          this.beginEnemyPhase();
+          this.beginEnemyPhase(claimedThisPlacement);
           break;
         }
 

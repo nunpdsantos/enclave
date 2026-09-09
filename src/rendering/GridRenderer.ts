@@ -80,6 +80,9 @@ export class GridRenderer {
   private raiderCells: GridPos[] = [];
   private tideCells: GridPos[] = [];
   private intent: SiegeIntent | null = null;
+  /** What the enemy would do if the piece under the finger were dropped */
+  private previewIntent: SiegeIntent | null = null;
+  private previewCaptured: GridPos[] = [];
   /** 0–1 through the tide's current interval, for the countdown ring */
   private tideProgress = 0;
   private intentPhase = 0;
@@ -451,10 +454,26 @@ export class GridRenderer {
     this.drawIntent();
   }
 
+  /**
+   * Swap the intent layer for the one a candidate placement would produce.
+   *
+   * `captured` are enemies the drop would destroy: they get a cross rather
+   * than an arrow, because what they do next is nothing. Passing null puts
+   * the live intent back.
+   */
+  setPreviewIntent(intent: SiegeIntent | null, captured: GridPos[]): void {
+    this.previewIntent = intent;
+    this.previewCaptured = captured;
+    this.drawIntent();
+  }
+
   private drawIntent(): void {
     const g = this.intentGraphics;
     g.clear();
-    if (!this.layout || !this.intent) return;
+    // While a piece is being dragged the layer shows the future that drop
+    // would make, not the one the board is currently heading for
+    const intent = this.previewIntent ?? this.intent;
+    if (!this.layout || !intent) return;
     const { gridOriginX, gridOriginY, cellSize } = this.layout;
     const centre = (cell: GridPos): [number, number] => [
       gridOriginX + cell.col * cellSize + cellSize / 2,
@@ -463,7 +482,7 @@ export class GridRenderer {
     // One shared breath, so every mark on the layer pulses together
     const pulse = 0.7 + Math.sin(this.intentPhase) * 0.3;
 
-    for (const [, target] of this.intent.steps) {
+    for (const [, target] of intent.steps) {
       const [cx, cy] = centre(target);
       const r = cellSize * 0.22;
       g.circle(cx, cy, r);
@@ -474,7 +493,7 @@ export class GridRenderer {
 
     // A wall about to come down is outlined, not filled: the player still has
     // it, and the outline is a warning rather than a loss.
-    for (const wall of this.intent.threatenedWalls) {
+    for (const wall of intent.threatenedWalls) {
       const x = gridOriginX + wall.col * cellSize + CELL_GAP;
       const y = gridOriginY + wall.row * cellSize + CELL_GAP;
       const s = cellSize - CELL_GAP * 2;
@@ -484,7 +503,19 @@ export class GridRenderer {
 
     // The tide has no turn to count down to, so it counts down in seconds:
     // the ring closes as its next expansion comes due.
-    const next = this.intent.tideTarget;
+    // Enemies the drop would destroy: struck out, because their next move is
+    // not going to happen
+    for (const cell of this.previewCaptured) {
+      const [cx, cy] = centre(cell);
+      const r = cellSize * 0.26;
+      g.moveTo(cx - r, cy - r);
+      g.lineTo(cx + r, cy + r);
+      g.moveTo(cx + r, cy - r);
+      g.lineTo(cx - r, cy + r);
+      g.stroke({ color: THEME.gold, alpha: 0.95, width: 3 });
+    }
+
+    const next = intent.tideTarget;
     if (next) {
       const [cx, cy] = centre(next);
       const r = cellSize * 0.32;
@@ -657,7 +688,7 @@ export class GridRenderer {
     }
 
     // The intent layer breathes, so an arrow reads as live rather than painted
-    if (this.intent) {
+    if (this.intent || this.previewIntent) {
       this.intentPhase += dt * 3;
       this.drawIntent();
     }
