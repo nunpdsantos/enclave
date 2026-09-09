@@ -228,6 +228,76 @@ describe('finding 3 — one Play is one run', () => {
   });
 });
 
+describe('review 5, finding 1 — a board is selected now and read later', () => {
+  it('changes board synchronously, and the read lands afterwards', async () => {
+    deferredFetch();
+    const board = new Leaderboard('classic');
+    only('GET', 'difficulty=classic').resolve([row('Classic player', 9000)]);
+    await board.waitForRemote();
+    expect(board.getEntries().map(e => e.name)).toEqual(['Classic player']);
+
+    // Nothing is awaited: the board id and the rows are the new board's
+    // before the next statement runs. That is what lets a screen draw itself
+    // straight away, with no round trip between the run ending and the
+    // buttons appearing.
+    const read = board.showBoard('blitz');
+    expect(board.getBoardId()).toBe('blitz');
+    // Blitz's own cache, which is empty here — never Classic's ten
+    expect(board.getEntries()).toEqual([]);
+
+    let landed = false;
+    void read.then(() => { landed = true; });
+    await settle();
+    // The read is still in the air. `GameOverScene.init` used to await
+    // exactly this before `build()` ran, so a stalled database left the
+    // player with no score and no way off the screen.
+    expect(landed).toBe(false);
+
+    only('GET', 'difficulty=blitz').resolve([row('Blitz player', 4000)]);
+    await read;
+    expect(landed).toBe(true);
+    expect(board.getEntries().map(e => e.name)).toEqual(['Blitz player']);
+  });
+
+  it('settles even when the read fails, so a redraw is never orphaned', async () => {
+    deferredFetch();
+    const board = new Leaderboard('classic');
+    only('GET', 'difficulty=classic').resolve([]);
+    await board.waitForRemote();
+
+    const read = board.showBoard('daily', '2026-09-09');
+    expect(board.getBoardId()).toBe('daily-2026-09-09');
+    only('GET', 'difficulty=daily-2026-09-09').reject();
+    // An offline device resolves this promise rather than rejecting it: the
+    // screen redraws with the cached rows it already had, and the caller
+    // needs no catch to avoid an unhandled rejection.
+    await expect(read).resolves.toBeUndefined();
+    expect(board.getEntries()).toEqual([]);
+  });
+
+  it('posts to the board a synchronous switch selected, read or no read', async () => {
+    deferredFetch();
+    const board = new Leaderboard('classic');
+    only('GET', 'difficulty=classic').resolve([]);
+    await board.waitForRemote();
+
+    // What the game-over screen does on the way in, for a Blitz run
+    void board.showBoard('blitz');
+    expect(board.getBoardId()).toBe('blitz');
+
+    // The player names the score before the Blitz read has answered, which
+    // it never does here. The submission goes out regardless.
+    const posted = board.submit(900, 'Ann', emptyReplay('blitz'), 'signed-token');
+    await settle();
+    const post = only('POST');
+    expect(post.url).toContain('difficulty=blitz');
+
+    post.resolve({ rank: 1, entries: [row('Ann', 900)] });
+    expect(await posted).toEqual({ rank: 1, verified: true });
+    expect(board.getEntries().map(e => e.name)).toEqual(['Ann']);
+  });
+});
+
 describe('review 4, finding 1 — a score goes to the board its run was played in', () => {
   /** A ticket the server would have signed, so its payload reads as one. */
   async function ticketFor(mode: Difficulty, seed: number = 7): Promise<RunTicket> {

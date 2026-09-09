@@ -116,7 +116,7 @@ export class GameOverScene implements Scene {
     this.init();
   }
 
-  private async init(): Promise<void> {
+  private init(): void {
     // The board this run belongs to, for every mode and not only the Daily.
     // A run's mode is fixed when Play is pressed and the menu goes on taking
     // taps while the ticket is in the air (see `RunStarter`), so a mode
@@ -125,12 +125,16 @@ export class GameOverScene implements Scene {
     // score posted to Blitz. A daily adds the date on top: a run that
     // crossed UTC midnight belongs to the day it was dealt from.
     //
-    // `switchDifficulty` is a no-op when the board is already the right one,
-    // which is the ordinary case, so nothing is read twice for it.
-    await this.leaderboard.switchDifficulty(this.difficulty, this.dailyDate);
+    // Selected synchronously, and the screen is drawn from it immediately.
+    // This used to await the corrective read before `build()` ran, so a
+    // database that answered slowly — or never — left the player looking at
+    // nothing: no score, no PLAY AGAIN, no MENU, and no way out but a reload.
+    // The entries are the only thing here the network is needed for, and they
+    // arrive into a screen that is already standing. A no-op when the board
+    // is already the right one, which is the ordinary case.
+    const read = this.leaderboard.showBoard(this.difficulty, this.dailyDate);
     this.build();
-    await this.leaderboard.waitForRemote();
-    this.refreshLeaderboard();
+    void read.then(() => this.refreshLeaderboard());
   }
 
   /** 'DAILY #9' or the plain mode name */

@@ -272,16 +272,49 @@ export class Leaderboard {
   }
 
   /**
-   * Switch boards. The daily takes a date as well, because a run that started
-   * before UTC midnight still belongs to the day it was dealt from.
+   * Point the client at a board, without reading it.
+   *
+   * Synchronous, and that is the whole point of it: `getBoardId()` and
+   * `getEntries()` answer for the new board before this returns, so a screen
+   * can be drawn from it at once and be right. The rows are whatever was last
+   * cached for that board; `refresh` is what replaces them with the server's.
+   *
+   * The daily takes a date as well, because a run that started before UTC
+   * midnight still belongs to the day it was dealt from.
+   *
+   * True when the board actually changed, so a caller can tell a read it has
+   * to start from one that is already in flight.
    */
-  async switchDifficulty(difficulty: Difficulty, dailyDate: string = dailyKey()): Promise<void> {
-    if (boardId(difficulty, dailyDate) === this.getBoardId()) return;
+  selectBoard(difficulty: Difficulty, dailyDate: string = dailyKey()): boolean {
+    if (boardId(difficulty, dailyDate) === this.getBoardId()) return false;
     this.difficulty = difficulty;
     this.dailyDate = dailyDate;
     this.loadLocal();
+    return true;
+  }
+
+  /** Read the selected board. Resolves when the answer lands, or fails to. */
+  refresh(): Promise<void> {
     this.fetchPromise = this.fetchRemote();
-    await this.fetchPromise;
+    return this.fetchPromise;
+  }
+
+  /**
+   * Select a board now and read it in the background.
+   *
+   * The half a screen needs is done before this returns; the promise only
+   * says when there is something newer to draw. Awaiting it *before* drawing
+   * is what left the game-over screen blank on a stalled read — no score, no
+   * buttons — which is why the two halves are separable at all.
+   */
+  showBoard(difficulty: Difficulty, dailyDate: string = dailyKey()): Promise<void> {
+    return this.selectBoard(difficulty, dailyDate) ? this.refresh() : this.waitForRemote();
+  }
+
+  /** Switch boards and wait for the entries. `selectBoard` plus `refresh`. */
+  async switchDifficulty(difficulty: Difficulty, dailyDate: string = dailyKey()): Promise<void> {
+    if (!this.selectBoard(difficulty, dailyDate)) return;
+    await this.refresh();
   }
 
   getEntries(): LeaderboardEntry[] {
@@ -341,8 +374,9 @@ export class Leaderboard {
     const board = boardId(replay.mode, dailyDate);
     // Point the shared client at it too, so the panel under the name entry is
     // the board the score is going to. A no-op when it is already there,
-    // which is the ordinary case.
-    await this.switchDifficulty(replay.mode, dailyDate);
+    // which is the ordinary case — and never waited on: a read that stalls
+    // must not hold up the score it has nothing to do with.
+    void this.showBoard(replay.mode, dailyDate);
 
     if (!token) {
       return {
