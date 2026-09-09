@@ -1,5 +1,6 @@
 import { Difficulty } from './Config';
 import { dailyKey } from './Daily';
+import { Replay } from './types';
 
 const NAME_KEY = 'enclave_lastname';
 const PLAYER_ID_KEY = 'enclave_playerid';
@@ -16,6 +17,19 @@ function boardId(difficulty: Difficulty, dailyDate: string): string {
 
 function storageKey(board: string): string {
   return `enclave_${board}_top10`;
+}
+
+/**
+ * The `reason` field of a 400, when the body has one. A refusal with no
+ * readable body is still a refusal — the caller only loses the detail.
+ */
+async function refusalReason(res: Response): Promise<string | undefined> {
+  try {
+    const data = await res.json();
+    return typeof data?.reason === 'string' ? data.reason : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -37,6 +51,21 @@ export interface LeaderboardEntry {
   name: string;
   score: number;
   date: string;
+}
+
+/**
+ * What became of a submission.
+ *
+ * `verified` is the only honest signal the screen has: the server re-played
+ * the run and the score stood. Anything else — a refusal, a blocked request,
+ * a device offline — leaves the score in the local board only, and the screen
+ * says so rather than implying it went out to the world.
+ */
+export interface SubmitResult {
+  rank: number | null;
+  verified: boolean;
+  /** The server's reason, when it gave one. 'rules' means this build is stale. */
+  reason?: string;
 }
 
 export class Leaderboard {
@@ -108,8 +137,15 @@ export class Leaderboard {
     }
   }
 
-  async submit(score: number, name: string): Promise<number | null> {
-    if (score <= 0) return null;
+  /**
+   * Post a score with the replay that proves it.
+   *
+   * The replay is not optional: a score with no log behind it is exactly what
+   * the server now refuses, and sending one anyway would only earn an
+   * 'Update required'.
+   */
+  async submit(score: number, name: string, replay: Replay): Promise<SubmitResult> {
+    if (score <= 0) return { rank: null, verified: false };
     const cleanName = name.trim() || 'Player';
     this.saveLastName(cleanName);
 
@@ -121,9 +157,19 @@ export class Leaderboard {
           id: this.getPlayerId(),
           name: cleanName,
           score,
+          replay,
         }),
       });
 
+      // A refusal is an answer, not a failure: the score stays in the local
+      // board, and the reason is what the screen tells the player.
+      if (res.status === 400) {
+        return {
+          rank: this.submitLocal(score, cleanName),
+          verified: false,
+          reason: await refusalReason(res),
+        };
+      }
       if (!res.ok) throw new Error('API error');
       const contentType = res.headers.get('content-type') || '';
       if (!contentType.includes('application/json')) throw new Error('Not JSON');
@@ -138,9 +184,9 @@ export class Leaderboard {
         }));
         this.saveLocal();
       }
-      return data.rank || null;
+      return { rank: data.rank || null, verified: true };
     } catch {
-      return this.submitLocal(score, cleanName);
+      return { rank: this.submitLocal(score, cleanName), verified: false };
     }
   }
 

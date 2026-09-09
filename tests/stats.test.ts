@@ -11,6 +11,7 @@ import {
 } from '../src/core/Stats';
 import { Board } from '../src/core/Board';
 import { RunSummary } from '../src/core/types';
+import { emptyReplay } from './helpers';
 
 /**
  * Lifetime stats: the fold and the storage round trip.
@@ -64,6 +65,7 @@ function summary(over: Partial<RunSummary> = {}): RunSummary {
     scoreTimeline: [],
     previousBest: 0,
     isNewBest: true,
+    replay: emptyReplay(),
     ...over,
   };
 }

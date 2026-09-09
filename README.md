@@ -131,6 +131,8 @@ npm run build
 
 - `src/core/Board.ts`: the 9×9 grid, the flood-fill enclosure detection, and the lit-floor map
 - `src/core/Pieces.ts`: piece shapes, rotation, the seeded shuffled-bag dealer, and the per-tier bag table
+- `src/core/Rules.ts`: `RULES_VERSION` — bump it whenever dealing or scoring changes
+- `src/core/Replay.ts`: re-playing a run from its seed and its inputs, and the reconstructed clock
 - `src/core/Random.ts`: mulberry32, FNV-1a, and the per-run seed
 - `src/core/Daily.ts`: which day it is, what it deals, and what this browser has done with it
 - `src/core/GameState.ts`: the run loop: hand, queue, hold, claims, scoring, streaks, echo walls, territory, clock, piece budget, score timeline
@@ -163,7 +165,7 @@ npm run build
 
 ### Server
 
-- `api/leaderboard.ts`: the permanent and daily boards
+- `api/leaderboard.ts`: the permanent and daily boards, and the replay check every score has to pass
 - `api/runs.ts`: anonymous run telemetry, aggregates on read
 - `public/how-to-play.html`: the interactive Playbook, served at `/how-to-play`
 - `public/sw.js`, `public/manifest.json`: the service worker and the PWA manifest
@@ -174,6 +176,20 @@ An empty cell is "outside" if it can reach the board edge by walking through emp
 
 The fill takes an optional set of extra walls — the echo cells — which hold it back exactly as blocks do. They are reported separately from the fence, because there is no block there for a claim to remove, and their presence is what earns the claim its ECHO multiplier.
 
+## How a score gets on the board
+
+Every run records its inputs: `{ t: 'p', row, col, rot, at }` for a placement, `{ t: 'h', at }` for a hold, where `at` is the second of the run the input landed on. That log, plus the seed and the mode, is the **replay**, and it travels with the score.
+
+The server does not take the score. It re-plays the log — same `GameState`, same seeded bag, same echo window, same territory map — and the score only lands on the board if the run comes out at exactly that number. Everything a score depends on is reproduced: the bag tightens with the score, echo walls fade on `at`, claims light the floor. Colours come from the same RNG draw whatever palette is set, and no rule reads them.
+
+The clock is the one thing the server cannot reproduce exactly, because a browser drains it a frame at a time. Instead it reconstructs the bank analytically — the drain rate integrated between moves, closed form — and allows a second of slack. The client's frame-wise drain uses the rate at the *end* of each frame and the rate never falls, so a browser always drains at least as much as the integral: an honest run cannot fail this check, and a run that sat out its clock cannot pass it.
+
+`RULES_VERSION` in `src/core/Rules.ts` guards the whole arrangement. Bump it whenever dealing or scoring changes: old replays will no longer re-play to their scores, and the server answers those clients with `Update required` rather than calling them cheats.
+
 ## Known limitations
 
-- The leaderboard trusts the client. Preventing fabricated scores needs server-side validation of a replay log, which is future work.
+- **Verification proves the run, not the player.** A bot that scripts legal moves through the real rules produces a replay that verifies, because it did play the run. What is closed is the fabricated score, not the automated one.
+- **The clock check has a second of slack**, so a run that overran its bank by less than that is still accepted. Widening the check would start refusing honest runs; the slack is where that trade sits.
+- **Move times are recorded to the millisecond**, and the echo window is the one rule that reads them. A claim decided within a millisecond of a ghost wall's expiry can in principle re-play differently, and such a run would be marked `NOT VERIFIED · SCORE KEPT LOCALLY` rather than shared.
+- **A run past 600 recorded inputs is playable but unprovable.** The log stops at the cap, is marked `truncated`, and the server refuses it. Six hundred placements is far past what any bank can fund.
+- **A score kept locally is not a shared score.** When the server refuses one, the game says so under the board instead of implying it went out.

@@ -52,6 +52,13 @@ export class GameOverScene implements Scene {
   private isPracticeRun: boolean;
   private nameSubmitted = false;
   private rank: number | null = null;
+  /**
+   * What the server made of the submission, or null before there was one.
+   * A score the server could not re-play is kept locally and said to be
+   * kept locally: the board is a shared claim, and this run has not earned
+   * a place on it.
+   */
+  private submitNotice: string | null = null;
   private leaderboardContainer: Container | null = null;
   private shareLabel: Text | null = null;
   /** The share card, rendered at most once per game-over screen */
@@ -449,7 +456,13 @@ export class GameOverScene implements Scene {
 
     const name = this.htmlInput?.value || '';
     this.removeNameInputGroup();
-    this.rank = await this.leaderboard.submit(this.summary.score, name);
+    const result = await this.leaderboard.submit(this.summary.score, name, this.summary.replay);
+    this.rank = result.rank;
+    // 'rules' is the one refusal that is the game's fault rather than the
+    // run's: this build records replays the server no longer understands.
+    this.submitNotice = result.verified
+      ? null
+      : result.reason === 'rules' ? 'UPDATE THE GAME' : 'NOT VERIFIED · SCORE KEPT LOCALLY';
     // One submission per daily, and this was it. The flag is only a local
     // convenience — the server is what actually enforces first-submission-wins
     // — so it is set whether or not the request reached the network.
@@ -568,6 +581,17 @@ export class GameOverScene implements Scene {
     const cx = this.width / 2;
     const startY = this.leaderboardTop;
     lbContainer.addChild(createSectionLabel(`LEADERBOARD — ${this.boardLabel}`, cx, startY));
+
+    // Under the board, in the gap the layout already keeps clear above the
+    // buttons, so it lands under the rows however many of them there are.
+    if (this.submitNotice) {
+      const notice = createBodyText(this.submitNotice, cx, this.buttonsTop - 18, {
+        fontSize: 10,
+        color: THEME.textMuted,
+      });
+      notice.style.letterSpacing = 1.5;
+      lbContainer.addChild(notice);
+    }
 
     if (entries.length === 0) {
       lbContainer.addChild(createBodyText('No scores yet.', cx, startY + 36, { fontSize: 12, color: THEME.textMuted }));

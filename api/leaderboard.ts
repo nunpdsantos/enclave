@@ -1,4 +1,8 @@
 import { Redis } from '@upstash/redis';
+import { SimFailure, verifyScore } from '../src/core/Replay';
+import { RULES_VERSION } from '../src/core/Rules';
+import { GRID_SIZE, MAX_REPLAY_MOVES } from '../src/core/types';
+import type { Replay } from '../src/core/types';
 
 export const config = { runtime: 'edge' };
 
@@ -10,10 +14,29 @@ export const config = { runtime: 'edge' };
  * board per UTC date: it expires, it only accepts scores while the day is
  * still fresh, and the FIRST submission is the one that counts — otherwise
  * the daily would just measure who replayed it most.
+ *
+ * No score is taken on the client's word. Every submission carries a replay
+ * — the seed it was dealt from and every input that followed — and the score
+ * only lands if re-playing that log with the game's own rules (`simulateRun`,
+ * which drives the same GameState the browser drives) arrives at exactly the
+ * number being claimed. The modules it pulls in are DOM-free: they reach
+ * localStorage for personal bests, but every access there is wrapped and a
+ * server simply reads zero.
  */
 
 const VALID_DIFFICULTIES = ['classic', 'blitz'];
 const MAX_ENTRIES = 10;
+
+/**
+ * A six-hundred-move replay serialises to about 27 KB, so 64 KB leaves room
+ * for the name and the id and still refuses anything that is not a run.
+ */
+const MAX_BODY_BYTES = 64 * 1024;
+/** The modes a replay may name — the daily included, unlike the board ids */
+const VALID_REPLAY_MODES = ['classic', 'blitz', 'daily'];
+/** No piece has more than four distinct rotations */
+const MAX_ROTATIONS = 4;
+const U32_MAX = 0xffffffff;
 
 /** 'daily-YYYY-MM-DD'. Anything else beginning with 'daily' is a 400. */
 const DAILY_KEY_RE = /^daily-(\d{4}-\d{2}-\d{2})$/;
@@ -97,6 +120,59 @@ function parseBoard(url: string): Board | null {
   return { id: 'classic', dailyDate: null };
 }
 
+// ── Replay validation ──
+
+/** A board coordinate: 0–8 on a 9×9 grid */
+function isIndex(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < GRID_SIZE;
+}
+
+/**
+ * Everything about the replay that can be judged without playing it.
+ *
+ * Strict on purpose: the simulation is the expensive step, and it should
+ * never be handed a log whose shape could make it do something surprising.
+ * Returns the reason it failed, or null when the log is worth simulating.
+ */
+function checkReplayShape(raw: unknown, board: Board): SimFailure | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 'shape';
+  const r = raw as Record<string, unknown>;
+
+  // Version first: a stale client is a different answer from a bad one
+  if (r.rules !== RULES_VERSION) return 'rules';
+  if (typeof r.mode !== 'string' || !VALID_REPLAY_MODES.includes(r.mode)) return 'shape';
+  if (typeof r.seed !== 'number' || !Number.isInteger(r.seed) || r.seed < 0 || r.seed > U32_MAX) {
+    return 'shape';
+  }
+  // A truncated log stops short of the score, so it can never prove one
+  if (r.truncated !== undefined && r.truncated !== false) return 'shape';
+
+  // The board a score is posted to and the run that was played must be the
+  // same thing, or a Blitz run could be posted to the Classic ladder.
+  if (board.dailyDate !== null) {
+    if (r.mode !== 'daily' || r.dailyKey !== board.dailyDate) return 'shape';
+  } else if (r.mode !== board.id) {
+    return 'shape';
+  }
+
+  if (!Array.isArray(r.moves) || r.moves.length > MAX_REPLAY_MOVES) return 'shape';
+  let previousAt = 0;
+  for (const entry of r.moves) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return 'shape';
+    const move = entry as Record<string, unknown>;
+    const at = move.at;
+    // Time runs one way, and it starts at the start of the run
+    if (typeof at !== 'number' || !Number.isFinite(at) || at < 0 || at < previousAt) return 'shape';
+    previousAt = at;
+    if (move.t === 'h') continue;
+    if (move.t !== 'p') return 'shape';
+    if (!isIndex(move.row) || !isIndex(move.col)) return 'shape';
+    if (typeof move.rot !== 'number' || !Number.isInteger(move.rot)
+      || move.rot < 0 || move.rot >= MAX_ROTATIONS) return 'shape';
+  }
+  return null;
+}
+
 export default async function handler(request: Request): Promise<Response> {
   const headers = {
     'Content-Type': 'application/json',
@@ -127,9 +203,19 @@ export default async function handler(request: Request): Promise<Response> {
       }
     }
 
-    let body: { id?: string; name?: string; score?: number };
+    let text: string;
     try {
-      body = await request.json();
+      text = await request.text();
+    } catch {
+      return new Response(JSON.stringify({ error: 'Unreadable body' }), { status: 400, headers });
+    }
+    if (new TextEncoder().encode(text).length > MAX_BODY_BYTES) {
+      return new Response(JSON.stringify({ error: 'Body too large' }), { status: 400, headers });
+    }
+
+    let body: { id?: string; name?: string; score?: number; replay?: unknown };
+    try {
+      body = JSON.parse(text);
     } catch {
       return new Response(JSON.stringify({ error: 'Invalid JSON' }), { status: 400, headers });
     }
@@ -138,6 +224,24 @@ export default async function handler(request: Request): Promise<Response> {
     if (!id || !name || typeof score !== 'number' || score <= 0) {
       return new Response(JSON.stringify({ error: 'Invalid data' }), { status: 400, headers });
     }
+
+    // A submission with no replay is a client from before validation existed.
+    // It is not a cheat and should not be told it is: the service worker
+    // picks the new build up on the next load.
+    if (body.replay === undefined || body.replay === null) {
+      return new Response(JSON.stringify({ error: 'Update required' }), { status: 400, headers });
+    }
+
+    const unverified = (reason: SimFailure): Response => new Response(
+      JSON.stringify({ error: 'Score could not be verified', reason }), { status: 400, headers },
+    );
+
+    const shapeFailure = checkReplayShape(body.replay, board);
+    if (shapeFailure) return unverified(shapeFailure);
+
+    // The one check that matters: re-play the run and see if it scores this.
+    const verdict = verifyScore(body.replay as Replay, score);
+    if (!verdict.valid) return unverified(verdict.reason ?? 'move');
 
     const entries = await getEntries(board);
 

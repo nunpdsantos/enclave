@@ -3,6 +3,7 @@ import { MAX_INSIGHTS, insightsFor } from '../src/core/Insights';
 import { DIFFICULTY_CONFIGS } from '../src/core/Config';
 import { Board } from '../src/core/Board';
 import { RunSummary } from '../src/core/types';
+import { emptyReplay } from './helpers';
 
 /**
  * The recap lines. Every rule is checked twice — once on a run that should
@@ -42,6 +43,7 @@ function summary(over: Partial<RunSummary> = {}): RunSummary {
     scoreTimeline: [],
     previousBest: 0,
     isNewBest: false,
+    replay: emptyReplay(),
     ...over,
   };
 }

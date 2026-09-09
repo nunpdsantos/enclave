@@ -4,6 +4,7 @@ import { DIFFICULTY_CONFIGS } from '../src/core/Config';
 import { getProgressStatus } from '../src/core/Progression';
 import { Board } from '../src/core/Board';
 import { RunSummary } from '../src/core/types';
+import { emptyReplay } from './helpers';
 
 /**
  * The share card's arithmetic, with no canvas in sight.
@@ -39,6 +40,7 @@ function summary(over: Partial<RunSummary> = {}): RunSummary {
     scoreTimeline: [],
     previousBest: 9000,
     isNewBest: true,
+    replay: emptyReplay(),
     ...over,
   };
 }

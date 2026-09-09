@@ -4,10 +4,11 @@ import { Difficulty, GameConfig, TerritoryConfig, DEFAULT_CONFIG } from './Confi
 import { dailyKey, dailySeed } from './Daily';
 import { getProgressStatus } from './Progression';
 import { mulberry32, randomSeed } from './Random';
+import { RULES_VERSION } from './Rules';
 import { getPersonalBest, recordPbTimeline, recordPersonalBest } from './Settings';
 import {
   PieceInstance, FeedbackEvent, ClaimResult, ClaimPoints, ScoreBreakdown, Region,
-  RunEndCause, RunSummary, GridPos, CellColor, EchoWall,
+  RunEndCause, RunSummary, GridPos, CellColor, EchoWall, Move, Replay, MAX_REPLAY_MOVES,
 } from './types';
 
 /** A cell the echo window is holding, and when it stops holding it */
@@ -40,6 +41,15 @@ const TIMELINE_CAP = 900;
 function territoryFactorOf(t: TerritoryConfig, fresh: number, area: number): number {
   if (!t.enabled || area <= 0) return 1;
   return t.relitFloorFactor + (1 - t.relitFloorFactor) * (fresh / area);
+}
+
+/**
+ * A recorded move time, in seconds. Milliseconds is all the precision the
+ * echo window — the only rule that reads a time — can act on, and it keeps a
+ * six-hundred-move log to about 27 KB.
+ */
+function round3(seconds: number): number {
+  return Math.round(seconds * 1000) / 1000;
 }
 
 /**
@@ -131,6 +141,14 @@ export class GameState {
   seed = 0;
   /** 'YYYY-MM-DD' of the daily being played, or null outside the daily */
   dailyDate: string | null = null;
+
+  /**
+   * Every input of the run, in order, so the server can re-play it from the
+   * seed and arrive at the same score instead of taking the client's word.
+   */
+  moves: Move[] = [];
+  /** The run outran the cap: the log is short, so the score cannot be proved */
+  private movesTruncated = false;
 
   private bag = new PieceBag();
   readonly config: GameConfig;
@@ -255,6 +273,16 @@ export class GameState {
     this.echoVersion++;
   }
 
+  /**
+   * Log one input. Past the cap the run goes on exactly as before and only
+   * the log stops: a player who somehow gets there is still playing, they
+   * just cannot prove the score afterwards.
+   */
+  private record(move: Move): void {
+    if (this.moves.length < MAX_REPLAY_MOVES) this.moves.push(move);
+    else this.movesTruncated = true;
+  }
+
   get streakSafeMoves(): number {
     if (this.streakCount <= 0) return 0;
     return Math.max(0, this.config.scoring.streakWindow - this.movesSinceLastClaim);
@@ -269,11 +297,12 @@ export class GameState {
     this.board.reset();
     // The daily's seed is its date, so every player deals the same 30 pieces;
     // anything else takes the config's seed if it has one and a throwaway if
-    // it does not.
+    // it does not. An explicit seed wins even for the daily, which is how the
+    // replay simulation re-deals a run from *its* day rather than from today
+    // — the shipped daily config carries no seed, so live play is unchanged.
     this.dailyDate = this.difficulty === 'daily' ? dailyKey() : null;
-    this.seed = this.dailyDate !== null
-      ? dailySeed(this.dailyDate)
-      : this.config.seed ?? randomSeed();
+    this.seed = this.config.seed
+      ?? (this.dailyDate !== null ? dailySeed(this.dailyDate) : randomSeed());
     this.bag = new PieceBag(mulberry32(this.seed), this.config.pieceBudget);
     this.score = 0;
     this.streakCount = 0;
@@ -301,6 +330,8 @@ export class GameState {
     this.echoes = [];
     this.spentFloor = [];
     this.echoVersion++;
+    this.moves = [];
+    this.movesTruncated = false;
     this.highScore = getPersonalBest(this.difficulty, this.dailyDate ?? undefined);
 
     // Deal the hand plus up to previewCount upcoming pieces. Under a budget
@@ -316,15 +347,30 @@ export class GameState {
     return { type: 'newHand' };
   }
 
-  /** Tick the clock. Returns true if time ran out. */
-  tick(dt: number): boolean {
-    if (this.isGameOver) return false;
+  /**
+   * Age the run by `dt` without draining anything: the clocks, the echo
+   * walls and the score timeline, and nothing that can end the run.
+   *
+   * `tick` is this plus the drain, so live play has one code path. The
+   * replay simulation calls it directly, because the server cannot reproduce
+   * a client's per-frame drain and reconstructs the bank analytically
+   * instead (see Replay.ts) — but it must reproduce the echo window exactly,
+   * since that is what decides whether a claim pays the ECHO multiplier.
+   */
+  advanceClock(dt: number): void {
+    if (this.isGameOver) return;
     this.pieceElapsed += dt;
     this.gameElapsed += dt;
     this.sampleTimeline();
     // Echo walls run on the game clock, not on placements, so this is the one
     // place they can fade out.
     this.filterEchoes(c => c.expiresAt > this.gameElapsed);
+  }
+
+  /** Tick the clock. Returns true if time ran out. */
+  tick(dt: number): boolean {
+    if (this.isGameOver) return false;
+    this.advanceClock(dt);
     // No clock: the run still ages (telemetry wants a duration) but nothing
     // drains and nothing can time out.
     if (!this.config.clock.enabled) return false;
@@ -386,6 +432,7 @@ export class GameState {
     this.held = outgoing;
     this.holdUsed = true;
     this.holds++;
+    this.record({ t: 'h', at: round3(this.gameElapsed) });
     events.push({ type: 'hold' });
     events.push({ type: 'newHand' });
     if (this.checkGameOver()) {
@@ -468,6 +515,9 @@ export class GameState {
     if (!this.board.canPlace(piece.shape, row, col)) return events;
 
     this.totalTurns++;
+    // Recorded before anything is scored: what the log has to carry is the
+    // input, and the rules turn that into a score on both sides.
+    this.record({ t: 'p', row, col, rot: piece.rotation, at: round3(this.gameElapsed) });
     const placedCells = this.board.place(piece.shape, row, col, piece.color);
     // An echo wall is empty ground: a piece may land on one, and then it is a
     // real block again rather than a block and a ghost in the same cell.
@@ -641,6 +691,20 @@ export class GameState {
     if (isBest && this.difficulty !== 'daily') recordPbTimeline(this.difficulty, this.scoreTimeline);
   }
 
+  /** The run as a log the server can re-play: the deal, and every input. */
+  buildReplay(): Replay {
+    return {
+      rules: RULES_VERSION,
+      mode: this.difficulty,
+      seed: this.seed,
+      ...(this.dailyDate !== null ? { dailyKey: this.dailyDate } : {}),
+      // Entries are never mutated after recording, so a copy of the array is
+      // all the isolation a caller needs.
+      moves: [...this.moves],
+      ...(this.movesTruncated ? { truncated: true as const } : {}),
+    };
+  }
+
   buildRunSummary(endCauseOverride?: RunEndCause): RunSummary {
     if (endCauseOverride === 'quit') this.finalizeBest();
     return {
@@ -669,6 +733,7 @@ export class GameState {
       scoreTimeline: [...this.scoreTimeline],
       previousBest: this.highScore,
       isNewBest: this.score > this.highScore,
+      replay: this.buildReplay(),
     };
   }
 }

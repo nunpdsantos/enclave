@@ -111,6 +111,50 @@ export interface ScoreBreakdown extends ClaimPoints {
  */
 export type RunEndCause = 'timeout' | 'board_lock' | 'quit' | 'complete';
 
+// ── Replay: everything the server needs to re-play a run ──
+
+/**
+ * One recorded input.
+ *
+ * Rotations are not recorded on their own: a placement carries the rotation
+ * index the piece was actually placed at, which is all a simulation needs to
+ * turn the dealt piece to match, and it makes a spun-in-place fidget cost
+ * nothing. `at` is `gameElapsed` in seconds, rounded to milliseconds — the
+ * echo window is the one rule that reads it, and it is measured in seconds.
+ */
+export type Move =
+  | { t: 'p'; row: number; col: number; rot: number; at: number }
+  | { t: 'h'; at: number };
+
+/**
+ * A run as a log: the deal it was dealt from, and every input that followed.
+ * Score is deliberately absent — the whole point is that the server derives
+ * it rather than being told it.
+ */
+export interface Replay {
+  /** RULES_VERSION at recording time */
+  rules: number;
+  mode: Difficulty;
+  seed: number;
+  /** 'YYYY-MM-DD' of the daily this was dealt from; absent for free play */
+  dailyKey?: string;
+  moves: Move[];
+  /**
+   * The run outran MAX_REPLAY_MOVES, so the log stops short of the score and
+   * can never be verified. Set rather than dropped, so the failure is a
+   * stated fact rather than a replay that mysteriously ends early.
+   */
+  truncated?: boolean;
+}
+
+/**
+ * The longest replay anyone records or the server accepts. Six hundred
+ * placements is far past any real run — a 90-second Classic bank cannot fund
+ * one — so the cap only ever bites a tab left running or a forged log, and it
+ * is what stops a submission from becoming an unbounded upload.
+ */
+export const MAX_REPLAY_MOVES = 600;
+
 export interface RunSummary {
   score: number;
   /** Which mode the run was played in — needed to read the score's tier */
@@ -157,6 +201,8 @@ export interface RunSummary {
   scoreTimeline: number[];
   previousBest: number;
   isNewBest: boolean;
+  /** The run as the server can re-play it, which is what a score is worth */
+  replay: Replay;
 }
 
 // ── Feedback event: the contract between core → rendering ──
