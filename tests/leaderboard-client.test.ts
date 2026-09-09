@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { Difficulty } from '../src/core/Config';
 import { Leaderboard, RunStarter, RunTicket } from '../src/core/Leaderboard';
 import { signTicket, TICKET_VERSION } from '../src/core/Ticket';
+import { emptyReplay } from './helpers';
 
 /**
  * The client half of the leaderboard: the board it reads and the run it
@@ -17,8 +18,12 @@ import { signTicket, TICKET_VERSION } from '../src/core/Ticket';
 
 interface Pending {
   url: string;
-  /** Answer this request with a board */
-  resolve: (entries: unknown) => void;
+  /** 'GET' for a board read, 'POST' for a submission */
+  method: string;
+  /** Answered already, so `only` stops offering it */
+  settled: boolean;
+  /** Answer this request with a board, or with whatever body a test wants */
+  resolve: (body: unknown) => void;
   /** Answer it with a failure, as an offline device would */
   reject: () => void;
 }
@@ -28,15 +33,38 @@ let pending: Pending[] = [];
 
 function deferredFetch(): void {
   pending = [];
-  globalThis.fetch = ((input: RequestInfo | URL) => new Promise((resolve, reject) => {
-    pending.push({
+  globalThis.fetch = ((
+    input: RequestInfo | URL, init?: RequestInit,
+  ) => new Promise((resolve, reject) => {
+    const request: Pending = {
       url: String(input),
-      resolve: (entries) => resolve(new Response(JSON.stringify(entries), {
-        status: 200, headers: { 'Content-Type': 'application/json' },
-      })),
-      reject: () => reject(new Error('offline')),
-    });
+      method: (init?.method ?? 'GET').toUpperCase(),
+      settled: false,
+      resolve: (body) => {
+        request.settled = true;
+        resolve(new Response(JSON.stringify(body), {
+          status: 200, headers: { 'Content-Type': 'application/json' },
+        }));
+      },
+      reject: () => {
+        request.settled = true;
+        reject(new Error('offline'));
+      },
+    };
+    pending.push(request);
   })) as typeof fetch;
+}
+
+/**
+ * The one unanswered request of that kind, and there must be exactly one —
+ * a test that picks the wrong request of two proves nothing about either.
+ */
+function only(method: string, url?: string): Pending {
+  const matches = pending.filter(
+    p => !p.settled && p.method === method && (!url || p.url.includes(url)),
+  );
+  expect(matches).toHaveLength(1);
+  return matches[0];
 }
 
 /** Let every microtask the resolved promises queued actually run. */
@@ -197,5 +225,85 @@ describe('finding 3 — one Play is one run', () => {
     await starter.start('daily', true);
     await starter.start('daily', false);
     expect(asked).toEqual([true, false]);
+  });
+});
+
+describe('review 4, finding 1 — a score goes to the board its run was played in', () => {
+  /** A ticket the server would have signed, so its payload reads as one. */
+  async function ticketFor(mode: Difficulty, seed: number = 7): Promise<RunTicket> {
+    const token = await signTicket('secret', {
+      v: TICKET_VERSION, id: 'p1', mode, seed, issuedAt: Date.now(),
+    });
+    return { seed, token, mode };
+  }
+
+  it('posts a Classic run to Classic after the menu was switched to Blitz', async () => {
+    deferredFetch();
+    // The menu is on Classic. Play is pressed: the run's mode is captured
+    // here and nothing after this can change it.
+    const board = new Leaderboard('classic');
+    only('GET', 'difficulty=classic').resolve([]);
+    await board.waitForRemote();
+    let release: (() => void) | null = null;
+    const held = new Promise<void>(r => { release = r; });
+    const starter = new RunStarter(async (mode) => {
+      await held;
+      return ticketFor(mode);
+    });
+    const starting = starter.start('classic');
+    await settle();
+
+    // The player switches the menu to Blitz while the ticket is still in the
+    // air, which is all `MenuScene`'s callback does.
+    const switched = board.switchDifficulty('blitz');
+    await settle();
+    only('GET', 'difficulty=blitz').resolve([row('Blitz player', 4000)]);
+    await switched;
+    expect(board.getBoardId()).toBe('blitz');
+
+    release!();
+    const started = await starting;
+    // The run kept the mode Play was pressed on; the shared client followed
+    // the menu. This is the state the game-over screen inherits.
+    expect(started?.mode).toBe('classic');
+    expect(board.getBoardId()).toBe('blitz');
+
+    // The run ends and the player enters a name. Nothing here re-states the
+    // mode: the replay is the run's own account of what was played, and the
+    // submission goes where it says.
+    const posted = board.submit(1200, 'Ann', emptyReplay('classic'), started!.ticket!.token);
+    await settle();
+    only('GET', 'difficulty=classic').resolve([row('Classic player', 9000)]);
+    await settle();
+
+    // The POST used to carry this Classic replay to `?difficulty=blitz`,
+    // where the server refuses it as `shape`: a run played and proved, lost
+    // to a menu tap. The board on screen follows it back to Classic.
+    const post = only('POST');
+    expect(post.url).toContain('difficulty=classic');
+    expect(board.getBoardId()).toBe('classic');
+    post.resolve({ rank: 1, entries: [row('Ann', 1200)] });
+    expect(await posted).toEqual({ rank: 1, verified: true });
+    expect(board.getEntries().map(e => e.name)).toEqual(['Ann']);
+  });
+
+  it('keeps a daily on the day it was dealt from', async () => {
+    deferredFetch();
+    const board = new Leaderboard('classic');
+    only('GET', 'difficulty=classic').resolve([]);
+    await board.waitForRemote();
+
+    // A run that crossed UTC midnight: the replay carries the date it was
+    // dealt from, and that is the board it belongs to whatever day it is now.
+    const replay = { ...emptyReplay('daily'), dailyKey: '2026-09-08' };
+    const posted = board.submit(700, 'Ann', replay, 'signed-token');
+    await settle();
+    only('GET', 'difficulty=daily-2026-09-08').resolve([]);
+    await settle();
+
+    const post = only('POST');
+    expect(post.url).toContain('difficulty=daily-2026-09-08');
+    post.resolve({ rank: 1, entries: [row('Ann', 700)] });
+    await posted;
   });
 });

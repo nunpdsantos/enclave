@@ -319,6 +319,21 @@ export class Leaderboard {
     if (score <= 0) return { rank: null, verified: false };
     const cleanName = name.trim() || 'Player';
     this.saveLastName(cleanName);
+
+    // The board a score is posted to is the board its run was played in, not
+    // whichever one this shared client is currently showing. The two come
+    // apart whenever the menu is switched while a ticket is in the air: the
+    // run keeps the mode Play was pressed on, the client follows the menu,
+    // and a Classic replay went to `?difficulty=blitz` to be refused as
+    // `shape`. The replay names its own mode and daily date, and it is that
+    // same pair the server checks the query against — so reading the board
+    // out of the replay is the one way the two cannot disagree. Already the
+    // loaded board in the ordinary case, where this costs nothing.
+    await this.switchDifficulty(
+      replay.mode,
+      replay.mode === 'daily' ? replay.dailyKey ?? this.dailyDate : this.dailyDate,
+    );
+
     if (!token) {
       return { rank: this.submitLocal(score, cleanName), verified: false, reason: 'unticketed' };
     }

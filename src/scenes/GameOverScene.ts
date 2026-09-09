@@ -117,11 +117,17 @@ export class GameOverScene implements Scene {
   }
 
   private async init(): Promise<void> {
-    // A run that crossed UTC midnight belongs to the day it was dealt from,
-    // not to whichever board the menu happened to have loaded
-    if (this.difficulty === 'daily' && this.leaderboard.getBoardId() !== `daily-${this.dailyDate}`) {
-      await this.leaderboard.switchDifficulty('daily', this.dailyDate);
-    }
+    // The board this run belongs to, for every mode and not only the Daily.
+    // A run's mode is fixed when Play is pressed and the menu goes on taking
+    // taps while the ticket is in the air (see `RunStarter`), so a mode
+    // switched during that round trip left the shared client on a board the
+    // run was never played in — Classic played, Blitz displayed, and the
+    // score posted to Blitz. A daily adds the date on top: a run that
+    // crossed UTC midnight belongs to the day it was dealt from.
+    //
+    // `switchDifficulty` is a no-op when the board is already the right one,
+    // which is the ordinary case, so nothing is read twice for it.
+    await this.leaderboard.switchDifficulty(this.difficulty, this.dailyDate);
     this.build();
     await this.leaderboard.waitForRemote();
     this.refreshLeaderboard();
