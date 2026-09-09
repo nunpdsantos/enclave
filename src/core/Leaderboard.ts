@@ -251,6 +251,17 @@ export class Leaderboard {
   private fetchPromise: Promise<void> | null = null;
   /** Which read is the newest: an older one's answer is never applied. */
   private sequence = 0;
+  /**
+   * How many submissions have been filed on each board.
+   *
+   * `sequence` orders reads against each other and knows nothing about a
+   * POST, so a read that went out before a score was submitted still landed
+   * last and won: the new row gone from the screen and out of the cache,
+   * replaced by rows fetched from a moment when it did not exist. A read
+   * carries the count its board was on when it left, and is thrown away if
+   * the count has moved on since.
+   */
+  private submissions = new Map<string, number>();
   private difficulty: Difficulty;
   /** Which day's daily board this is. Ignored outside the daily. */
   private dailyDate: string;
@@ -412,7 +423,7 @@ export class Leaderboard {
       if (data.entries && Array.isArray(data.entries)) {
         // The board this answer belongs to, which is not necessarily the one
         // on screen by now — see the capture above.
-        this.writeLocal(board, data.entries.map(toEntry));
+        this.writeSubmitted(board, data.entries.map(toEntry));
       }
       return { rank: data.rank || null, verified: true };
     } catch {
@@ -455,6 +466,7 @@ export class Leaderboard {
   private async fetchRemote(): Promise<void> {
     const board = this.getBoardId();
     const seq = ++this.sequence;
+    const filed = this.submissions.get(board) ?? 0;
     let fetched: LeaderboardEntry[] | null = null;
     try {
       // The id goes out so the server can mark the player's own row, and it
@@ -475,7 +487,11 @@ export class Leaderboard {
     }
     // Superseded, or answering for a board that is no longer loaded
     if (seq !== this.sequence || this.getBoardId() !== board) return;
-    if (fetched) this.writeLocal(board, fetched);
+    // Older than a score this board has taken since: these rows were read
+    // from a moment before that score existed, and applying them would take
+    // it off the screen and out of the cache.
+    const stale = (this.submissions.get(board) ?? 0) !== filed;
+    if (fetched && !stale) this.writeLocal(board, fetched);
     this.fetchPromise = null;
   }
 
@@ -490,8 +506,22 @@ export class Leaderboard {
 
     entries.splice(rank, 0, entry);
     if (entries.length > MAX_ENTRIES) entries.length = MAX_ENTRIES;
-    this.writeLocal(board, entries);
+    this.writeSubmitted(board, entries);
     return rank + 1;
+  }
+
+  /**
+   * Keep rows that came out of a submission, and retire the reads that
+   * predate them.
+   *
+   * Every one of these — the server's answer to a POST, and the local board
+   * a refused or unsent score falls back to — is newer than any read already
+   * in the air for that board, whatever order the two happen to resolve in.
+   * Counting them per board is what lets `fetchRemote` tell the difference.
+   */
+  private writeSubmitted(board: string, entries: LeaderboardEntry[]): void {
+    this.submissions.set(board, (this.submissions.get(board) ?? 0) + 1);
+    this.writeLocal(board, entries);
   }
 
   private loadLocal(): void {

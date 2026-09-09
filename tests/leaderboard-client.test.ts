@@ -527,6 +527,92 @@ describe('review 4, finding 1 — a score goes to the board its run was played i
   });
 });
 
+describe('review 6, finding 1 — a board never goes backwards from a submission', () => {
+  it('drops a read that went out before the score was posted', async () => {
+    deferredFetch();
+    // The menu was left on Blitz; the run that just ended was played in
+    // Classic. The game-over screen points the shared client at Classic on
+    // the way in, which is a read — and it is that read the screen is drawn
+    // without waiting for.
+    const board = new Leaderboard('blitz');
+    only('GET', 'difficulty=blitz').resolve([]);
+    await board.waitForRemote();
+
+    void board.showBoard('classic');
+    await settle();
+    const pendingRead = only('GET', 'difficulty=classic');
+
+    // The player types a name and submits while that read is still in the
+    // air. The POST answers with the board as it stands *including* the new
+    // score, which is the newest account of Classic anything here has.
+    const posted = board.submit(1200, 'Ann', emptyReplay('classic'), 'signed-token');
+    await settle();
+    const post = only('POST');
+    expect(post.url).toContain('difficulty=classic');
+    post.resolve({ rank: 1, entries: [row('Ann', 1200), row('Old timer', 500)] });
+    expect(await posted).toEqual({ rank: 1, verified: true });
+    expect(board.getEntries().map(e => e.name)).toEqual(['Ann', 'Old timer']);
+
+    // And now the older read lands, carrying Classic as it was a moment
+    // before Ann's score existed. It used to be applied — `sequence` orders
+    // reads against each other and knows nothing about a POST — and the
+    // score the player had just watched appear vanished from the screen and
+    // out of the cache, with nothing left to bring it back.
+    pendingRead.resolve([row('Old timer', 500)]);
+    await settle();
+
+    expect(board.getEntries().map(e => e.name)).toEqual(['Ann', 'Old timer']);
+    expect(cached('classic')).toEqual(['Ann', 'Old timer']);
+  });
+
+  it('drops a read that went out before an unticketed score was kept locally', async () => {
+    deferredFetch();
+    const board = new Leaderboard('blitz');
+    only('GET', 'difficulty=blitz').resolve([]);
+    await board.waitForRemote();
+
+    void board.showBoard('classic');
+    await settle();
+    const pendingRead = only('GET', 'difficulty=classic');
+
+    // A run that never got a ticket is never sent: the score goes straight
+    // to the local board, and the screen says it stayed there. There is no
+    // POST here at all, so nothing about the ordering of two requests can
+    // save it — only the client knowing that its own board has moved on.
+    const posted = await board.submit(1200, 'Ann', emptyReplay('classic'), null);
+    expect(posted).toEqual({ rank: 1, verified: false, reason: 'unticketed' });
+    expect(board.getEntries().map(e => e.name)).toEqual(['Ann']);
+
+    pendingRead.resolve([row('Old timer', 500)]);
+    await settle();
+
+    expect(board.getEntries().map(e => e.name)).toEqual(['Ann']);
+    expect(cached('classic')).toEqual(['Ann']);
+  });
+
+  it('still takes a read that started after the submission', async () => {
+    deferredFetch();
+    const board = new Leaderboard('classic');
+    only('GET', 'difficulty=classic').resolve([]);
+    await board.waitForRemote();
+
+    const posted = board.submit(1200, 'Ann', emptyReplay('classic'), 'signed-token');
+    await settle();
+    only('POST').resolve({ rank: 1, entries: [row('Ann', 1200)] });
+    await posted;
+    expect(board.getEntries().map(e => e.name)).toEqual(['Ann']);
+
+    // Retiring the reads that predate a submission must not retire the ones
+    // that follow it: the server is still the authority on this board, and a
+    // board that could never be read again would freeze on the local copy.
+    const read = board.refresh();
+    only('GET', 'difficulty=classic').resolve([row('Bea', 9000), row('Ann', 1200)]);
+    await read;
+    expect(board.getEntries().map(e => e.name)).toEqual(['Bea', 'Ann']);
+    expect(cached('classic')).toEqual(['Bea', 'Ann']);
+  });
+});
+
 describe('with no storage at all — a private window, an embedded webview', () => {
   it('reads, submits and switches with every cache operation throwing', async () => {
     // Deliberately without the memory storage every other test installs, so
