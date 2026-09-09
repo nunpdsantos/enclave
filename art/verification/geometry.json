@@ -7,7 +7,7 @@
     "atlas regions match source PNG bytes",
     "no projected mesh clipping",
     "translucent tide interior",
-    "all hues within 2/255 of four luma bands",
+    "authored base palette hues within 2/255 of four luma bands",
     "9x9 preview scene shape"
   ],
   "luma": {

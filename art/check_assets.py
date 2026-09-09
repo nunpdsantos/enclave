@@ -5,6 +5,7 @@ Scene constants are read from the preview itself to avoid a second sample map.
 """
 import argparse
 import ast
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -71,6 +72,11 @@ def main():
     assert data["enclave"]["projection"] == projection.name
     assert projection.pixel((0,0,0)) == (tile/2,tile/2)
     if square:
+        baseline=json.loads((ROOT/"verification/square-v1.json").read_text())
+        assert hashlib.sha256((atlas_path/"atlas-square-v1.png").read_bytes()).hexdigest()==baseline["png_sha256"]
+        bw,bh,_=read_png(atlas_path/"atlas-square-v1.png"); assert (bw,bh)==(aw,ah)
+        old=json.loads((atlas_path/"atlas-square-v1.json").read_text())
+        assert old["frames"]==data["frames"] and old["meta"]["image"]=="atlas-square-v1.png"
         origin=projection.pixel((0,0,0))
         for vertex,expected in (((1,0,0),(128,0)),((0,-1,0),(0,128))):
             actual=projection.pixel(vertex)
@@ -99,6 +105,21 @@ def main():
         for horizontal in (True,False):
             occupied=[i for i in range(tile) if floor_pixels[((tile//2*tile+i) if horizontal else (i*tile+tile//2))*4+3]>=128]
             assert occupied==list(range(32,160)), ("square cell raster is not 128px at 2x",horizontal)
+        # The large Keep is a separate two-cell study, not a 32nd uniform frame.
+        from keep_study import keep_study
+        from geometry import Projection
+        large=Projection("square",60,0,2,256)
+        lw,lh,lp=read_png(ROOT/"renders-square/keep-2x2.png")
+        assert (lw,lh)==(256,256)
+        for mesh in keep_study(square=True):
+            for vertex in mesh.vertices:
+                assert all(0<=v<256 for v in large.pixel(vertex)), (mesh.name,"large Keep clipped")
+        for path in (ROOT/"hero/keep-hero.png",ROOT/"hero/keep-hero-ground.png"):
+            hw,hh,hp=read_png(path); assert (hw,hh)==(1024,1024)
+            assert any(a==0 for a in hp[3::4]) and any(a==255 for a in hp[3::4])
+            # Nothing may hit the image border, including the forecourt or flag.
+            assert not any(hp[3:hw*4:4]) and not any(hp[-hw*4+3::4])
+            assert not any(hp[3::hw*4]) and not any(hp[hw*4-1::hw*4])
     tide_alpha=sprites["enemy-tide"][3::4]
     assert any(145<a<180 for a in tide_alpha),"Tide lost its translucent interior"
     preview=(ROOT.parent/"public/art-preview.html").read_text()
@@ -134,11 +155,18 @@ def main():
         for r,c in targets: draw("enemy-target",r,c)
         write_png(ROOT/"verification"/filename.replace(".png",f"{projection.suffix}.png"),width,height,canvas)
         if scale==.5:
+            if square:
+                # A 288px board (9 * 32), centred inside a 360px phone viewport.
+                phone=bytearray([27,32,38,255])*(360*360)
+                for y in range(height):
+                    dest=((y+20)*360+28)*4
+                    phone[dest:dest+width*4]=canvas[y*width*4:(y+1)*width*4]
+                write_png(ROOT/"verification/board-phone-v2.png",360,360,phone)
             grey=bytearray(canvas)
             for i in range(0,len(grey),4):
                 y=round(.299*grey[i]+.587*grey[i+1]+.114*grey[i+2]); grey[i:i+3]=bytes([y]*3)
             write_png(ROOT/"verification"/f"board-phone-greyscale{projection.suffix}.png",width,height,grey)
-    report={"projection":projection.name,"checks":["ground centre anchor and cell basis", "all 16 join extents","16 distinct wall images","atlas regions match source PNG bytes","no projected mesh clipping","translucent tide interior","all hues within 2/255 of four luma bands","9x9 preview scene shape"]+(["Blender floor raster is exactly 128x128 at 2x"] if square else []),"luma":luma,"projected_bounds":bounds,"images":"CPU atlas composites, not browser screenshots"}
+    report={"projection":projection.name,"checks":["ground centre anchor and cell basis", "all 16 join extents","16 distinct wall images","atlas regions match source PNG bytes","no projected mesh clipping","translucent tide interior","authored base palette hues within 2/255 of four luma bands","9x9 preview scene shape"]+(["Blender floor raster is exactly 128x128 at 2x","preserved v1 atlas checksum and frame contract","256px two-cell Keep geometry fits frame","both 1024px hero renders have transparency and empty borders","360px phone viewport with 32px cells"] if square else []),"luma":luma,"projected_bounds":bounds,"images":"CPU atlas composites, not browser screenshots"}
     (ROOT/"verification"/f"geometry{projection.suffix}.json").write_text(json.dumps(report,indent=2)+"\n")
     print("Geometry, PNG regions, transparency, four value bands and atlas composites verified.")
 

@@ -27,7 +27,7 @@ def main():
     if report.get("projection","diamond")!=projection.name: raise ValueError("Wrong render projection")
     if report["asset_size"] != [projection.frame_size]*2: raise ValueError("Wrong render frame dimensions")
     if report["frames"]!=ASSETS: raise ValueError("Render manifest does not match geometry asset contract")
-    found={p.stem for p in source.glob("*.png") if p.stem!="sample-board"}
+    found={p.stem for p in source.glob("*.png") if p.stem not in ("sample-board","keep-2x2")}
     if found!=set(ASSETS): raise ValueError(f"Stale/missing PNGs: {found ^ set(ASSETS)}")
     tile=projection.frame_size; pad=2; gutter=2; step=tile+pad*2+gutter; columns=8
     width=columns*step; height=math.ceil(len(ASSETS)/columns)*step
@@ -54,6 +54,8 @@ def main():
                      "columnStep":[64,0] if projection.name=="square" else [32,32*math.sin(math.pi/3)],
                      "rowStep":[0,64] if projection.name=="square" else [-32,32*math.sin(math.pi/3)],
                      "joinBits":{"up":1,"down":2,"left":4,"right":8},"enemyArt":"provisional"}}
+    if projection.name=="square":
+        data["enclave"]["materials"]={"version":2,"courses":"logical UV ashlar","courseContrast":report["course_contrast"],"ambientOcclusion":True,"contactShadow":"feathered slate alpha"}
     write_png(dest/f"{atlas_name}.png",width,height,atlas)
     (dest/f"{atlas_name}.json").write_text(json.dumps(data,indent=2)+"\n")
     size=(dest/f"{atlas_name}.png").stat().st_size

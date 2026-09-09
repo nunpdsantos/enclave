@@ -1,0 +1,50 @@
+{
+  "blender_version": "5.2.1 LTS",
+  "renders": {
+    "square": {
+      "seconds": 0.6,
+      "path": "renders-square/keep-2x2.png",
+      "size": [
+        256,
+        256
+      ],
+      "engine": "BLENDER_EEVEE",
+      "elevation": 60,
+      "azimuth": 0,
+      "ortho_scale": 2.0,
+      "footprint": [
+        2,
+        2
+      ],
+      "cell_pixels_2x": 128,
+      "anchor": [
+        0.5,
+        0.5
+      ]
+    },
+    "hero": {
+      "seconds": 4.262,
+      "path": "hero/keep-hero.png",
+      "size": [
+        1024,
+        1024
+      ],
+      "engine": "CYCLES",
+      "elevation": 60,
+      "azimuth": -45,
+      "ortho_scale": 5.900000095367432
+    },
+    "ground": {
+      "seconds": 5.206,
+      "path": "hero/keep-hero-ground.png",
+      "size": [
+        1024,
+        1024
+      ],
+      "engine": "CYCLES",
+      "elevation": 60,
+      "azimuth": -45,
+      "ortho_scale": 5.900000095367432
+    }
+  }
+}

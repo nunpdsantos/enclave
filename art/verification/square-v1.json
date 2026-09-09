@@ -1,0 +1,9 @@
+{
+  "source_commit": "28df70146a5c63a2bbe6fcd0dbd4ea41a4b66ba2",
+  "png_sha256": "4b70289ff434793dcffc7a689e5052d002d1402a83d0f14d0009e06b78e98037",
+  "bytes": 158600,
+  "checks": [
+    "PNG byte-identical to preceding square atlas",
+    "JSON unchanged except meta.image"
+  ]
+}

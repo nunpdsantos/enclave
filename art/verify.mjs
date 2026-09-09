@@ -12,14 +12,14 @@ import * as PIXI from 'pixi.js';
 const root=fileURLToPath(new URL('../',import.meta.url));
 const python=process.env.ART_PYTHON||'/Applications/Blender.app/Contents/Resources/5.2/python/bin/python3.13';
 const sheets={},pngs={};
-for (const projection of ['diamond','square']) {
-  const geometry=spawnSync(python,[`${root}art/check_assets.py`,'--projection',projection],{encoding:'utf8'});
+for (const projection of ['diamond','square','square-v1']) {
+  const geometry=projection==='square-v1'?{status:0,stdout:'Preserved v1 atlas checked below.\n'}:spawnSync(python,[`${root}art/check_assets.py`,'--projection',projection],{encoding:'utf8'});
   assert.equal(geometry.status,0,geometry.stderr||geometry.stdout);
   process.stdout.write(`${projection}: ${geometry.stdout}`);
-  const suffix=projection==='square'?'-square':'';
+  const suffix=projection==='diamond'?'':`-${projection}`;
   const data=JSON.parse(readFileSync(`${root}public/assets/siege/atlas${suffix}.json`));
   const png=readFileSync(`${root}public/assets/siege/atlas${suffix}.png`);
-  assert.equal(data.enclave.projection,projection);
+  assert.equal(data.enclave.projection,projection.startsWith('square')?'square':projection);
   assert.equal(data.meta.image,`atlas${suffix}.png`);
   assert.equal(data.meta.scale,'2');
   assert(png.byteLength<2_000_000);
@@ -27,7 +27,7 @@ for (const projection of ['diamond','square']) {
   const sheet=new PIXI.Spritesheet({texture:new PIXI.Texture({source}),data});
   await sheet.parse();
   for(const [name,texture] of Object.entries(sheet.textures)) {
-    const size=projection==='square'?96:64;
+    const size=projection!=='diamond'?96:64;
     assert.equal(texture.width,size,name); assert.equal(texture.height,size,name);
     assert.equal(texture.defaultAnchor.x,.5,name); assert.equal(texture.defaultAnchor.y,.5,name);
   }
@@ -58,19 +58,20 @@ const classes=new Set();
 const document={getElementById:id=>ids[id],createElement:tag=>new Element(tag),body:{classList:{toggle:(name,on)=>on?classes.add(name):classes.delete(name)}}};
 const browser={PIXI:true,addEventListener:()=>{}};
 const errors=[];
-const context={window:browser,document,PIXI:{...PIXI,Application:HeadlessApplication,Assets:{load:async path=>sheets[path.includes("square")?"square":"diamond"]}},
-  fetch:async path=>({ok:true,arrayBuffer:async()=>pngs[path.includes("square")?"square":"diamond"]}),console:{error:error=>errors.push(error.message)}};
+const context={window:browser,document,PIXI:{...PIXI,Application:HeadlessApplication,Assets:{load:async path=>sheets[path.includes("square-v1")?"square-v1":path.includes("square")?"square":"diamond"]}},
+  fetch:async path=>({ok:true,arrayBuffer:async()=>pngs[path.includes("square-v1")?"square-v1":path.includes("square")?"square":"diamond"]}),console:{error:error=>errors.push(error.message)}};
 await vm.runInNewContext(script,context,{timeout:3000,filename:'public/art-preview.html'});
 assert.deepEqual(errors,[]);
 assert.equal(browser.__ENCLAVE_ART_QA__?.ready,true);
+assert.equal(browser.__ENCLAVE_ART_QA__.projection,'square','Square v2 is the board default');
 assert.equal(applications.length,3);
-for(const projection of ['diamond','square','diamond','square']) {
-  const square=projection==='square',sheet=sheets[projection],png=pngs[projection];
-  for(const name of ['diamond','square']) ids[`projection-${name}`].checked=name===projection;
+for(const projection of ['square','square-v1','diamond','square-v1','square']) {
+  const square=projection!=='diamond',sheet=sheets[projection],png=pngs[projection];
+  for(const name of ['diamond','square','square-v1']) ids[`projection-${name}`].checked=name===projection;
   ids[`projection-${projection}`].events.change();
   assert.equal(browser.__ENCLAVE_ART_QA__.projection,projection);
   assert.equal(ids.catalog.children.length,31,'catalog must be replaced on switch');
-  assert.match(ids.catalog.children[0].children[0].style.backgroundImage,new RegExp(square?'atlas-square.png':'atlas.png'));
+  assert.match(ids.catalog.children[0].children[0].style.backgroundImage,new RegExp(projection==='diamond'?'atlas.png':`atlas-${projection}.png`));
   for(const app of applications) {
     const board=app.stage.children[0],scale=board.scale.x;
     assert.equal(app.options.height,square?624*scale:scale===.5?282:560*scale);
@@ -102,7 +103,7 @@ for(const projection of ['diamond','square','diamond','square']) {
   const report={projection,pixiVersion:PIXI.VERSION,frameCount:Object.keys(sheet.textures).length,atlasBytes:png.byteLength,
     checks:['preview script syntax','exact preview/atlas name match','Pixi spritesheet parse','projection frame sizes with center anchors','three actual Pixi scene graphs','projection switching and resize','catalog replacement and atlas swap','raider/tide toggles','intent visibility','grid control','greyscale CSS class','all 81 cell centres and boundary inspection at all scales'],
     browserVerified:false,limitation:'DOM and GPU Application are adapters. Browser connection unavailable in this session; actual CDN, GPU rendering, responsive CSS and physical touch require a separate check.'};
-  writeFileSync(`${root}art/verification/preview${square?'-square':''}.json`,`${JSON.stringify(report,null,2)}\n`);
+  writeFileSync(`${root}art/verification/preview${projection==='diamond'?'':`-${projection}`}.json`,`${JSON.stringify(report,null,2)}\n`);
 }
 assert.deepEqual(errors,[]);
-console.log(`Pixi ${PIXI.VERSION}: both 31-frame atlases, all three scales and repeated projection switching passed. Browser output remains unverified.`);
+console.log(`Pixi ${PIXI.VERSION}: all three 31-frame atlases, all three scales and repeated projection switching passed. Browser output remains unverified.`);

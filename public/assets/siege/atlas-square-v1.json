@@ -748,7 +748,7 @@
   "meta": {
     "app": "ENCLAVE procedural siege kit",
     "version": "1.0",
-    "image": "atlas-square.png",
+    "image": "atlas-square-v1.png",
     "format": "RGBA8888",
     "size": {
       "w": 1584,
@@ -784,13 +784,6 @@
       "left": 4,
       "right": 8
     },
-    "enemyArt": "provisional",
-    "materials": {
-      "version": 2,
-      "courses": "logical UV ashlar",
-      "courseContrast": 0.1,
-      "ambientOcclusion": true,
-      "contactShadow": "feathered slate alpha"
-    }
+    "enemyArt": "provisional"
   }
 }

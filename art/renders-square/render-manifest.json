@@ -7,7 +7,9 @@
   "azimuth": 0.0,
   "ortho_scale": 1.5,
   "ground_depth_compensation": 1.1547005383792517,
-  "render_seconds": 10.647,
+  "materials": "sandstone-v2",
+  "course_contrast": 0.1,
+  "render_seconds": 17.688,
   "frame_count": 31,
   "asset_size": [
     192,

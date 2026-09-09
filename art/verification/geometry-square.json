@@ -7,9 +7,13 @@
     "atlas regions match source PNG bytes",
     "no projected mesh clipping",
     "translucent tide interior",
-    "all hues within 2/255 of four luma bands",
+    "authored base palette hues within 2/255 of four luma bands",
     "9x9 preview scene shape",
-    "Blender floor raster is exactly 128x128 at 2x"
+    "Blender floor raster is exactly 128x128 at 2x",
+    "preserved v1 atlas checksum and frame contract",
+    "256px two-cell Keep geometry fits frame",
+    "both 1024px hero renders have transparency and empty borders",
+    "360px phone viewport with 32px cells"
   ],
   "luma": {
     "stone": [

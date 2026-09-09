@@ -109,7 +109,7 @@
     <div class="status" role="status" aria-live="polite"><span id="status-message">Loading the siege kit…</span><span id="atlas-stats"></span><span id="camera-stats"></span></div>
     <div id="error" class="error" hidden></div>
     <div class="controls" aria-label="Art inspection controls">
-      <fieldset><legend>Projection</legend><label><input id="projection-diamond" name="projection" type="radio" value="diamond" checked>Diamond</label><label><input id="projection-square" name="projection" type="radio" value="square">Square</label></fieldset>
+      <fieldset><legend>Projection</legend><label><input id="projection-diamond" name="projection" type="radio" value="diamond">Diamond</label><label><input id="projection-square" name="projection" type="radio" value="square" checked>Square v2</label><label><input id="projection-square-v1" name="projection" type="radio" value="square-v1">Square v1</label></fieldset>
       <fieldset><legend>Enemy studies</legend><label><input id="raiders" type="checkbox" checked>Raiders</label><label><input id="tide" type="checkbox" checked>Tide</label></fieldset>
       <label class="separate"><input id="mono" type="checkbox">Greyscale</label>
       <label><input id="grid" type="checkbox">Cell outlines</label>
@@ -127,7 +127,7 @@
     </section>
     <section class="catalog-section" id="kit"><h2>A kit that holds together.</h2><p>Every wall orientation is rendered under the same light. The four bits are U=1, D=2, L=4, R=8. No finished wall sprite is rotated. Gate letters name the entry edge.</p><div id="catalog" class="catalog"></div></section>
     <section class="notes">
-      <div><h3>Stone with weight.</h3><p>Short parapets and broad merlons keep the wall thickness visible. Four value steps replace texture, gloss and tiny masonry.</p></div>
+      <div><h3>Stone with weight.</h3><p>Short parapets and broad merlons keep the wall thickness visible. Four value steps anchor subtle sandstone courses, cool recesses and soft contact shade. Square v1 keeps the original flat treatment for comparison.</p></div>
       <div><h3>A room worth holding.</h3><p>Cobalt inlays and a square courtyard pattern mark settled ground. Torchlight belongs to safety; pale corner brackets announce danger.</p></div>
       <div><h3>The enemy is provisional.</h3><p>The figure and spreading tide are separate studies. Toggle either one while the enemy rules are playtested. This page is an art inspection, not a playable mission.</p></div>
     </section>
@@ -156,7 +156,8 @@
       diamond: {atlas:'atlas',frameSize:64,column:[STEP_X,STEP_Y],row:[-STEP_X,STEP_Y],height:560,origin:[304,48],bannerRaise:5.66,camera:'60° elevation · 315° diamond view'},
       square: {atlas:'atlas-square',frameSize:96,column:[64,0],row:[0,64],height:624,origin:[48,64],bannerRaise:8,camera:'60° elevation · 0° square oblique'}
     };
-    let projection='diamond';
+    PROJECTIONS['square-v1']={...PROJECTIONS.square,atlas:'atlas-square-v1',camera:'60° elevation · 0° square oblique · original materials'};
+    let projection='square';
     const layout=()=>PROJECTIONS[projection];
     function position(r,c) {
       const {column,row}=layout();
@@ -179,7 +180,7 @@
         const actual=Object.keys(sheet.textures).sort();
         if (JSON.stringify(actual)!==JSON.stringify([...FRAME_NAMES].sort())) throw new Error(`${name}: atlas frame names do not match the preview contract.`);
         if (FRAME_NAMES.some(frame=>sheet.textures[frame].width!==config.frameSize||sheet.textures[frame].height!==config.frameSize)) throw new Error(`${name}: unexpected logical frame size.`);
-        if (sheet.data.enclave.projection!==name) throw new Error(`${name}: incorrect projection metadata.`);
+        if (sheet.data.enclave.projection!==(name==='square-v1'?'square':name)) throw new Error(`${name}: incorrect projection metadata.`);
         if (sheet.data.enclave.cellPixels!==CELL_WIDTH||JSON.stringify(sheet.data.enclave.columnStep)!==JSON.stringify(config.column)||JSON.stringify(sheet.data.enclave.rowStep)!==JSON.stringify(config.row)) throw new Error(`${name}: atlas and board cell steps disagree.`);
         sheet.textureSource.scaleMode='linear';
         const response=await fetch(`/assets/siege/${config.atlas}.png`);
@@ -222,7 +223,7 @@
           board.position.set(config.origin[0]*view.scale,config.origin[1]*view.scale);
           for (const child of board.removeChildren()) child.destroy({children:true});
           const slab=new PIXI.Graphics();
-          const rim=projection==='square'?[-36,-36,548,-36,548,548,-36,548]:[0,-STEP_Y-4,STEP_X*9+5,STEP_Y*8,0,STEP_Y*17+7,-STEP_X*9-5,STEP_Y*8];
+          const rim=projection!=='diamond'?[-36,-36,548,-36,548,548,-36,548]:[0,-STEP_Y-4,STEP_X*9+5,STEP_Y*8,0,STEP_Y*17+7,-STEP_X*9-5,STEP_Y*8];
           slab.poly(rim).fill(0x0f141c).stroke({color:0x766952,width:1}); board.addChild(slab);
           for(let r=0;r<9;r++) for(let c=0;c<9;c++) {
             const lit=ROWS[r][c]==='c'||ROWS[r][c]==='k';
@@ -233,7 +234,7 @@
             const lines=new PIXI.Graphics();
             for(let r=0;r<9;r++) for(let c=0;c<9;c++) {
               const [x,y]=position(r,c);
-              const outline=projection==='square'?[x-32,y-32,x+32,y-32,x+32,y+32,x-32,y+32]:[x,y-STEP_Y,x+STEP_X,y,x,y+STEP_Y,x-STEP_X,y];
+              const outline=projection!=='diamond'?[x-32,y-32,x+32,y-32,x+32,y+32,x-32,y+32]:[x,y-STEP_Y,x+STEP_X,y,x,y+STEP_Y,x-STEP_X,y];
               lines.poly(outline).stroke({color:0xe6d5af,alpha:.35,width:.7});
             }
             board.addChild(lines);
@@ -247,7 +248,7 @@
           for(const [r,c,d] of GATES) objects.push([r,c,`gate-${d}`,0]);
           if(byId('raiders').checked) for(const [r,c] of RAIDERS) objects.push([r,c,'enemy-raider',0]);
           for(const [r,c,owner] of BANNERS) objects.push([r,c,`banner-${owner}`,wallAt(r,c)?layout().bannerRaise:0]);
-          objects.sort((a,b)=>projection==='square'?a[0]-b[0]||a[1]-b[1]||a[3]-b[3]:(a[0]+a[1])-(b[0]+b[1])||a[1]-b[1]||a[3]-b[3]);
+          objects.sort((a,b)=>projection!=='diamond'?a[0]-b[0]||a[1]-b[1]||a[3]-b[3]:(a[0]+a[1])-(b[0]+b[1])||a[1]-b[1]||a[3]-b[3]);
           for(const [r,c,name,raise] of objects) sprite(board,name,r,c,raise);
           if(byId('raiders').checked||byId('tide').checked) for(const [r,c] of TARGETS) sprite(board,'enemy-target',r,c);
           app.render();
@@ -282,7 +283,7 @@
         window.__ENCLAVE_ART_QA__={ready:true,projection:name,pixiVersion:PIXI.VERSION,frameCount:FRAME_NAMES.length,logicalTextureSize:layout().frameSize,cellPixels:64,engine,atlasBytes:sizes[name],views:views.map(v=>({id:v.id,width:v.w,height:v.h,scale:v.scale}))};
       }
       for(const name of Object.keys(PROJECTIONS)) byId(`projection-${name}`).addEventListener('change',()=>{if(byId(`projection-${name}`).checked) setProjection(name);});
-      setProjection('diamond');
+      setProjection('square');
       window.addEventListener('pagehide',()=>apps.forEach(({app})=>app.destroy(true,{children:true,texture:false,textureSource:false})),{once:true});
     }
     start().catch(error=>{ console.error(error); byId('status-message').textContent='The art preview could not load.'; byId('error').hidden=false; byId('error').textContent=error.message; });

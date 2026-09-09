@@ -1,0 +1,7 @@
+{
+  "test": "Blender EEVEE Keep with AO 0.22 vs AO disabled, same geometry and courses",
+  "opaque_pixels": 9386,
+  "changed_pixels": 4160,
+  "mean_rgb_darkening": 1.0437,
+  "maximum_rgb_darkening": 8.6667
+}

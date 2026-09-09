@@ -1,0 +1,24 @@
+{
+  "blender_version": "5.2.1 LTS",
+  "transport": "blender MCP only",
+  "square_kit": {
+    "tool_seconds": 21.517,
+    "scene_seconds": 17.688,
+    "frames": 31,
+    "sample": true
+  },
+  "keep_studies": {
+    "tool_seconds": 14.662,
+    "square_seconds": 0.6,
+    "hero_seconds": 4.262,
+    "ground_seconds": 5.206
+  },
+  "ao_diagnostic": {
+    "tool_seconds": 5.097
+  },
+  "preliminary_look_renders": {
+    "single_cell_keep_tool_seconds": 6.646,
+    "large_keep_tool_seconds": 3.792,
+    "hero_tool_seconds": 8.14
+  }
+}
