@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import { createServer, Server } from 'node:http';
+import { Redis } from '@upstash/redis';
 import { Difficulty, DIFFICULTY_CONFIGS } from '../src/core/Config';
 import { dailyNumber, dailySeed } from '../src/core/Daily';
 import { drainIntegral, simulateRun } from '../src/core/Replay';
@@ -232,8 +233,13 @@ function execute(cmd: unknown[]): unknown {
       const fields = readHash(key);
       return cmd.slice(2).map(f => fields.get(String(f)) ?? null);
     }
-    case 'eval':
-      return evalSubmit(cmd);
+    case 'eval': {
+      // Two scripts run against this stub. Dispatch on what the script says
+      // about itself rather than on the shape of its arguments, so a third
+      // one cannot quietly be answered by the wrong transcription.
+      const script = String(cmd[1]);
+      return script.includes('enclave:claim-ticket') ? evalClaimTicket(cmd) : evalSubmit(cmd);
+    }
     case 'sadd': {
       const members = setAt(key);
       let added = 0;
@@ -310,6 +316,24 @@ function evalSubmit(cmd: unknown[]): unknown[] {
   execute(['hset', spentKey, tokenId, `${status}|${identity}`]);
   execute(['expire', spentKey, tokenTtl]);
   return [status, changed];
+}
+
+/**
+ * `CLAIM_TICKET_SCRIPT`, in TypeScript.
+ *
+ * Same discipline as `evalSubmit`: every step goes back through `execute`, so
+ * the script and the plain commands share one implementation of GET and SET.
+ */
+function evalClaimTicket(cmd: unknown[]): string {
+  const keyCount = Number(cmd[2]);
+  const [key] = cmd.slice(3, 3 + keyCount).map(String);
+  const [read, replacement, ttl] = cmd.slice(3 + keyCount).map(String);
+  const current = execute(['get', key]);
+  if (current === null || current === read) {
+    execute(['set', key, replacement, 'ex', ttl]);
+    return replacement;
+  }
+  return String(current);
 }
 
 beforeAll(async () => {
@@ -1865,5 +1889,69 @@ describe('review 4, finding 3 — a client that cannot be built is still a 503',
     expect(res.status).toBe(200);
     expect(readTicketPayload((await res.json()).token)?.practice).toBeUndefined();
     expect(store.size).toBe(0);
+  });
+});
+
+describe('review 4, finding 4 — replacing an unusable daily ticket is still one attempt', () => {
+  it('writes one replacement and hands both callers the same ticket', async () => {
+    const start = await runStartHandler();
+    const today = daysAgo(0);
+    const ticketKey = `${dailyKeyFor(today)}:ticket:p1`;
+    // A stored value this secret never signed: nobody can spend it, so it is
+    // replaced rather than charged to the player as their attempt.
+    store.set(ticketKey, { kind: 'string', value: 'not-a-ticket' });
+
+    // Two tabs, or a client and its own retry, reading that value at once.
+    const [one, two] = await Promise.all([
+      start(startRun({ id: 'p1', mode: 'daily' })).then(r => r.json()),
+      start(startRun({ id: 'p1', mode: 'daily' })).then(r => r.json()),
+    ]);
+
+    // The replacement used to be unconditional, so both wrote — two live
+    // tickets for one id on one date, only the later of them stored, and a
+    // reload handing back a ticket neither caller had been playing.
+    expect(one).toEqual(two);
+    expect(storedString(ticketKey)).toBe(one.token);
+    expect(expiresFor(ticketKey)).toEqual([DAILY_TTL]);
+    // And it is a real attempt for both of them, not a practice run
+    expect(readTicketPayload(one.token)?.practice).toBeUndefined();
+    expect(readTicketPayload(one.token)?.dailyKey).toBe(today);
+  });
+
+  it('answers a losing replacement with the value that beat it', async () => {
+    // The race above is only as sharp as its timing: both requests minted in
+    // the same millisecond there, so their tickets were byte-identical and
+    // only the double write gave the bug away. This pins the branch that
+    // decides it, with two callers that cannot be confused for each other.
+    const { CLAIM_TICKET_SCRIPT } = await import('../api/run-start');
+    const redis = new Redis({ url: base, token: SECRET });
+    const key = 'leaderboard:enclave:test:claim';
+    await redis.set(key, 'not-a-ticket');
+
+    // The winner replaces the value both callers read...
+    expect(await redis.eval(CLAIM_TICKET_SCRIPT, [key], ['not-a-ticket', 'winner', '60']))
+      .toBe('winner');
+    // ...and the loser, still holding what it read, is handed the winner's
+    // ticket rather than overwriting it with its own.
+    expect(await redis.eval(CLAIM_TICKET_SCRIPT, [key], ['not-a-ticket', 'loser', '60']))
+      .toBe('winner');
+    expect(storedString(key)).toBe('winner');
+    // A key that has since vanished is claimed rather than left empty
+    store.delete(key);
+    expect(await redis.eval(CLAIM_TICKET_SCRIPT, [key], ['not-a-ticket', 'fresh', '60']))
+      .toBe('fresh');
+  });
+
+  it('leaves a valid stored ticket alone', async () => {
+    const start = await runStartHandler();
+    const ticketKey = `${dailyKeyFor(daysAgo(0))}:ticket:p1`;
+
+    // The ordinary second ask: the stored ticket verifies, so the
+    // compare-and-set is never reached and nothing is written at all.
+    const first = await (await start(startRun({ id: 'p1', mode: 'daily' }))).json();
+    const again = await (await start(startRun({ id: 'p1', mode: 'daily' }))).json();
+    expect(again).toEqual(first);
+    expect(storedString(ticketKey)).toBe(first.token);
+    expect(expiresFor(ticketKey)).toEqual([DAILY_TTL]);
   });
 });

@@ -110,6 +110,36 @@ function dailyTicketKey(date: string, id: string): string {
   return `leaderboard:enclave:v${RULES_VERSION}:daily:${date}:ticket:${id}`;
 }
 
+/**
+ * Replace a stored daily ticket, but only if it is still the one we read.
+ *
+ * A stored value this secret did not sign — or one naming another id or
+ * another date — is not a ticket anybody can spend, so it is replaced rather
+ * than charged to the player as their attempt. That replacement used to be an
+ * unconditional `SET`: two requests reading the same unusable value both
+ * wrote their own ticket and both answered with it, so one id held two live
+ * tickets for one date and only the later of them was stored. A reload then
+ * handed back a ticket neither tab had been playing, and the issuance was no
+ * longer idempotent — which is the whole point of storing it.
+ *
+ * The compare-and-set makes exactly one of them the attempt. The loser reads
+ * back the value that beat it, which was minted for this same id and this
+ * same date — the key names both — so it is as much this player's ticket as
+ * its own would have been, and both callers are answered with it.
+ *
+ * KEYS: 1 the ticket key. ARGV: 1 the value read, 2 the replacement, 3 TTL.
+ * Returns whatever is stored when it finishes.
+ */
+export const CLAIM_TICKET_SCRIPT = `
+-- enclave:claim-ticket
+local current = redis.call('GET', KEYS[1])
+if current == false or current == ARGV[1] then
+  redis.call('SET', KEYS[1], ARGV[2], 'EX', ARGV[3])
+  return ARGV[2]
+end
+return current
+`;
+
 /** 'YYYY-MM-DD' in UTC — the puzzle everybody is on right now */
 function todayKey(): string {
   return new Date().toISOString().slice(0, 10);
@@ -236,10 +266,20 @@ export default async function handler(request: Request): Promise<Response> {
     const stored = await verifyTicket(key, held);
     // A stored value this secret did not sign, or one for another id or
     // another date, is not a ticket anybody can spend. Replace it rather than
-    // charging the player an attempt for it.
+    // charging the player an attempt for it — conditionally, so two requests
+    // that read the same unusable value cannot both replace it. See
+    // `CLAIM_TICKET_SCRIPT`.
     if (!held || !stored || stored.id !== id || stored.dailyKey !== dailyKey) {
-      await redis.set(ticketKey, candidate.token, { ex: DAILY_TTL_SECONDS });
-      return answer(candidate);
+      const winner = await redis.eval<string[], string>(
+        CLAIM_TICKET_SCRIPT, [ticketKey], [held ?? '', candidate.token, String(DAILY_TTL_SECONDS)],
+      );
+      if (typeof winner !== 'string' || winner === candidate.token) return answer(candidate);
+      // Somebody else's replacement got there first. It is verified like any
+      // other stored value — this is still a value read out of the database —
+      // and answered with, so both callers hold the one ticket.
+      const claimed = await verifyTicket(key, winner);
+      if (!claimed || claimed.id !== id || claimed.dailyKey !== dailyKey) return answer(candidate);
+      return answer({ seed: claimed.seed, token: winner, issuedAt: claimed.issuedAt });
     }
 
     // The attempt is already spent, so a *new* run on today's deal is
