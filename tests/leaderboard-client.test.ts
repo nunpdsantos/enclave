@@ -89,7 +89,7 @@ describe('finding 7 — a board read answers for the board it asked about', () =
     expect(pending[0].url).toContain('difficulty=classic');
 
     // Switch while Classic's read is still in the air
-    const switched = board.switchDifficulty('daily', '2026-09-09');
+    const switched = board.showBoard('daily', '2026-09-09');
     await settle();
     expect(pending).toHaveLength(2);
     expect(pending[1].url).toContain('difficulty=daily-2026-09-09');
@@ -111,8 +111,8 @@ describe('finding 7 — a board read answers for the board it asked about', () =
   it('keeps the newest answer when the player switches away and back', async () => {
     deferredFetch();
     const board = new Leaderboard('daily', '2026-09-09');
-    void board.switchDifficulty('classic');
-    const back = board.switchDifficulty('daily', '2026-09-09');
+    void board.showBoard('classic');
+    const back = board.showBoard('daily', '2026-09-09');
     await settle();
     expect(pending).toHaveLength(3);
 
@@ -364,7 +364,7 @@ describe('review 4, finding 1 — a score goes to the board its run was played i
 
     // The player switches the menu to Blitz while the ticket is still in the
     // air, which is all `MenuScene`'s callback does.
-    const switched = board.switchDifficulty('blitz');
+    const switched = board.showBoard('blitz');
     await settle();
     only('GET', 'difficulty=blitz').resolve([row('Blitz player', 4000)]);
     await switched;
@@ -413,7 +413,7 @@ describe('review 4, finding 1 — a score goes to the board its run was played i
     // on screen behind the name entry taking taps while it is in the air.
     const corrective = only('GET', 'difficulty=classic');
 
-    const switched = board.switchDifficulty('daily', '2026-09-09');
+    const switched = board.showBoard('daily', '2026-09-09');
     await settle();
     only('GET', 'difficulty=daily-2026-09-09').resolve([row('Daily player', 500)]);
     await switched;

@@ -300,21 +300,17 @@ export class Leaderboard {
   }
 
   /**
-   * Select a board now and read it in the background.
+   * Select a board now and read it in the background — the ordinary way to
+   * change boards, and the only one.
    *
    * The half a screen needs is done before this returns; the promise only
    * says when there is something newer to draw. Awaiting it *before* drawing
    * is what left the game-over screen blank on a stalled read — no score, no
-   * buttons — which is why the two halves are separable at all.
+   * buttons — so there is deliberately no method here that does the waiting
+   * on a caller's behalf.
    */
   showBoard(difficulty: Difficulty, dailyDate: string = dailyKey()): Promise<void> {
     return this.selectBoard(difficulty, dailyDate) ? this.refresh() : this.waitForRemote();
-  }
-
-  /** Switch boards and wait for the entries. `selectBoard` plus `refresh`. */
-  async switchDifficulty(difficulty: Difficulty, dailyDate: string = dailyKey()): Promise<void> {
-    if (!this.selectBoard(difficulty, dailyDate)) return;
-    await this.refresh();
   }
 
   getEntries(): LeaderboardEntry[] {
