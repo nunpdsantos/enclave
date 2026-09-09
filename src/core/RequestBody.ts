@@ -51,7 +51,15 @@ export async function readBody(request: Request, limit: number): Promise<BodyRea
       if (chunk.done) break;
       bytes += chunk.value.byteLength;
       if (bytes > limit) {
-        await reader.cancel();
+        // Stop pulling, but never wait on the stopping and never let it
+        // change the answer. `cancel()` is the sender's code as much as the
+        // runtime's: one that never settles used to hold this call open for
+        // as long as the request lived, and one that rejects turned a body
+        // that was merely too large into an unreadable one. The size has
+        // already been decided by the bytes that arrived.
+        try {
+          void reader.cancel().catch(() => { /* nothing left to read anyway */ });
+        } catch { /* cancel refused outright: the body is being refused too */ }
         return { ok: false, reason: 'too-large' };
       }
       parts.push(decoder.decode(chunk.value, { stream: true }));

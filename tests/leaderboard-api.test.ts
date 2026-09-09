@@ -3,6 +3,7 @@ import { createServer, Server } from 'node:http';
 import { Difficulty, DIFFICULTY_CONFIGS } from '../src/core/Config';
 import { dailyNumber, dailySeed } from '../src/core/Daily';
 import { drainIntegral, simulateRun } from '../src/core/Replay';
+import { readBody } from '../src/core/RequestBody';
 import { RULES_VERSION } from '../src/core/Rules';
 import { dailySeedFor, readTicketPayload, replayFingerprint, signTicket, TICKET_VERSION } from '../src/core/Ticket';
 import { GRID_SIZE, Move, PlacedPiece, Replay } from '../src/core/types';
@@ -1780,4 +1781,41 @@ describe('review 2, finding 10 — a long run is a run, not a forgery', () => {
     expect(res.status).toBe(200);
     expect(storedBoard(CLASSIC_KEY)).toEqual([['p1', long.score]]);
   }, 30_000);
+});
+
+describe('review 4, finding 5 — refusing a body does not wait on the sender', () => {
+  /**
+   * `readBody` takes a `Request`, but the only thing it touches on one is
+   * `body` — and what is under test here is what the *stream* does when it is
+   * cancelled, which a real `Request` gives a test no way to choose. So the
+   * request is that one field, and the stream is the subject.
+   */
+  function oversized(cancel: () => Promise<void>): Request {
+    const chunk = new TextEncoder().encode('x'.repeat(64 * 1024));
+    return {
+      body: new ReadableStream<Uint8Array>({
+        pull(controller) { controller.enqueue(chunk); },
+        cancel,
+      }),
+    } as unknown as Request;
+  }
+
+  it('answers too-large when the cancellation never settles', async () => {
+    // The size is known the moment the chunk that crosses the cap arrives.
+    // Awaiting the cancel made the answer wait on the sender's own code, and
+    // a `cancel()` that never resolves held the refusal open with it.
+    const answered = await Promise.race([
+      readBody(oversized(() => new Promise<void>(() => { /* never settles */ })), 128 * 1024),
+      new Promise(resolve => setTimeout(() => resolve({ ok: false, reason: 'hung' }), 1000)),
+    ]);
+    expect(answered).toEqual({ ok: false, reason: 'too-large' });
+  });
+
+  it('answers too-large when the cancellation rejects', async () => {
+    // A refused cancellation says nothing about the body, which was over the
+    // cap before the cancel was attempted. It used to come back 'unreadable'
+    // — a 400 for a sender who has earned a 413.
+    const read = await readBody(oversized(() => Promise.reject(new Error('refused'))), 128 * 1024);
+    expect(read).toEqual({ ok: false, reason: 'too-large' });
+  });
 });
