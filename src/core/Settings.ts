@@ -69,6 +69,10 @@ function gamesKey(difficulty: Difficulty): string {
   return `enclave_${difficulty}_games_played`;
 }
 
+function pbTimelineKey(difficulty: Difficulty): string {
+  return `enclave_${difficulty}_pb_timeline`;
+}
+
 let cached: GameSettings | null = null;
 
 /** Stored volumes go straight into a gain node, so a bad one must not survive */
@@ -136,6 +140,47 @@ export function recordPersonalBest(
     localStorage.setItem(bestKey(difficulty), String(Math.floor(score)));
   } catch { /* storage unavailable */ }
   return true;
+}
+
+// ── Pace: the personal best's score curve ──
+
+/**
+ * The score the personal-best run held at each whole second, index i being
+ * second i. Empty when nothing is stored, which is what a first run looks
+ * like and is why the HUD's pace line can simply stay hidden.
+ *
+ * Only the timed modes have one: the daily has no clock to race against.
+ */
+export function getPbTimeline(difficulty: Difficulty): number[] {
+  try {
+    const raw = localStorage.getItem(pbTimelineKey(difficulty));
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    // A hand-edited or half-written blob must not put NaN on the HUD
+    return parsed.filter((n): n is number => typeof n === 'number' && Number.isFinite(n));
+  } catch {
+    return [];
+  }
+}
+
+/** Store the score curve of a run that just became the personal best. */
+export function recordPbTimeline(difficulty: Difficulty, timeline: number[]): void {
+  try {
+    localStorage.setItem(pbTimelineKey(difficulty), JSON.stringify(timeline));
+  } catch { /* storage unavailable */ }
+}
+
+/**
+ * What the stored run had at that second. Past the end of the curve it holds
+ * the last value: the best run finished, and a longer run is ahead of it by
+ * definition rather than racing a pace that suddenly drops to nothing.
+ * Null when there is no curve at all.
+ */
+export function pbPaceAt(timeline: number[], second: number): number | null {
+  if (timeline.length === 0) return null;
+  const i = Math.max(0, Math.min(Math.floor(second), timeline.length - 1));
+  return timeline[i];
 }
 
 export function getGamesPlayed(difficulty: Difficulty): number {

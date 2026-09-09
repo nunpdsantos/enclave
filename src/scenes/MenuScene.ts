@@ -606,6 +606,8 @@ export class MenuScene implements Scene {
       'Completely fence in empty space with blocks and you CLAIM it: the room and its walls vanish and you score the room\'s area squared. A 2×2 room is 160 points, a 3×3 is 810, a 4×4 is 2,560.',
       'Close two rooms with one piece for a multiplier. Claim on consecutive placements to build a STREAK.',
       'The clock drains constantly. Every placement adds time, and claims add more. Gold cells show where one block would close a room.',
+      'Claimed floor stays lit and pays half if you claim it again. Light all 49 inner cells for a SURVEY: 5,000 in Classic, and the map resets.',
+      'A claim\'s fence lingers as a fading ghost that still counts as a wall, 2 s in Classic. Close the room next door against it for ×1.25.',
       'The game ends when the clock hits zero or your piece cannot fit anywhere, even after a hold.',
     ];
     const guideBtnH = 34;

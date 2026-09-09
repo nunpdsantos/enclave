@@ -61,6 +61,7 @@ function summary(over: Partial<RunSummary> = {}): RunSummary {
     closingAtEnd: 0,
     piecesLeft: 0,
     gameElapsed: 42.5,
+    scoreTimeline: [],
     previousBest: 0,
     isNewBest: true,
     ...over,

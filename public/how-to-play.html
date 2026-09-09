@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#171d4a" />
-  <meta name="description" content="How to play Enclave: the enclosure rule, area-squared scoring, double closes, streaks, shared walls and the clock, with playable mini-boards." />
+  <meta name="description" content="How to play Enclave: the enclosure rule, area-squared scoring, territory and the survey, double closes, streaks, echo walls, the clock and the Rationed Daily, with playable mini-boards." />
   <link rel="icon" href="/icons/icon-192.png" />
   <title>Enclave Playbook</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -82,10 +82,11 @@
   .btn.secondary:hover { background: #4a507a; }
   .btn.small { padding: 9px 13px; font-size: 12px; border-radius: 8px; }
   .btn:disabled { opacity: .45; cursor: default; }
-  .modes { display: flex; gap: 10px; font-family: var(--mono); font-size: 14px; color: var(--text-2); }
+  .modes { display: flex; flex-wrap: wrap; gap: 10px; font-family: var(--mono); font-size: 14px; color: var(--text-2); }
   .modes span { padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; }
   .modes .c { color: var(--accent-glow); border-color: rgba(107,154,255,.45); }
   .modes .b { color: var(--blitz); border-color: rgba(249,115,22,.45); }
+  .modes .d { color: var(--gold); border-color: rgba(251,191,36,.45); }
 
   /* ── Sections ───────────────────────────────────────────── */
   section { padding: 34px 0 10px; border-top: 1px solid var(--line); }
@@ -146,6 +147,11 @@
   .cell.dissolve { filter: brightness(2.2); opacity: 0; }
   .cell.cursor { box-shadow: inset 0 0 0 2px var(--text); }
   .cell.open-mark { box-shadow: inset 0 0 0 2px var(--danger); background: rgba(239,68,68,.16); }
+  /* Claimed floor, still lit: the board's memory of where you have been */
+  .cell.lit { background: rgba(251,191,36,.2); box-shadow: inset 0 0 0 1px rgba(251,191,36,.5); }
+  /* A fence a claim removed, still counting as a wall while it fades. Its
+     opacity is written per frame, so no transition may chase it. */
+  .cell.echo { background: var(--pc, var(--p-blue)); box-shadow: inset 0 0 0 2px rgba(255,255,255,.45); transition: none; }
   @keyframes pulse { 0%,100% { box-shadow: inset 0 0 0 2px var(--gold), 0 0 6px rgba(251,191,36,.35); } 50% { box-shadow: inset 0 0 0 2px var(--gold-glow), 0 0 16px rgba(253,224,71,.85); } }
 
   .popup {
@@ -196,6 +202,9 @@
   .roomviz .c.f { background: var(--p-blue); box-shadow: inset 0 2px 0 rgba(255,255,255,.34), inset 0 -3px 0 rgba(0,0,0,.36); }
   .roomviz .c.r { background: var(--gold); box-shadow: inset 0 0 0 2px var(--gold-glow); }
   .roomviz .c.x { background: transparent; box-shadow: none; }
+  .litmap { display: grid; grid-template-columns: repeat(7, 26px); gap: 3px; background: var(--grid); padding: 8px; border-radius: 12px; border: 2px solid var(--well-border); width: max-content; }
+  .litmap .lc { width: 26px; height: 26px; border-radius: 5px; background: var(--well); box-shadow: inset 0 0 0 1px var(--well-border); }
+  .litmap .lc.on { background: rgba(251,191,36,.28); box-shadow: inset 0 0 0 1px rgba(251,191,36,.6); }
   table { border-collapse: collapse; width: 100%; font-size: 15px; }
   .tablewrap { overflow-x: auto; margin: 12px 0 18px; }
   th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
@@ -251,10 +260,10 @@
   <div class="wrap">
     <div class="eyebrow">Enclave · how to play</div>
     <h1>Fence it in.<br><span class="gold">Claim the room.</span><br>Beat the clock.</h1>
-    <p class="lede prose">Enclave is a one-rule puzzle played on a 9×9 board against a draining clock. Every board below is live: click a cell to drop the piece and watch the rule work.</p>
+    <p class="lede prose">Enclave is a one-rule puzzle played on a 9×9 board — against a draining clock in Classic and Blitz, against a ration of thirty pieces in the Daily. Every board below is live: click a cell to drop the piece and watch the rule work.</p>
     <div class="hero-actions">
       <a class="btn" href="/">Play Enclave ↗</a>
-      <div class="modes"><span class="c">CLASSIC · 60 s</span><span class="b">BLITZ · 35 s</span></div>
+      <div class="modes"><span class="c">CLASSIC · 60 s</span><span class="b">BLITZ · 35 s</span><span class="d">DAILY · 30 PIECES</span></div>
     </div>
   </div>
 </header>
@@ -280,7 +289,7 @@
       </div>
     </div>
 
-    <p class="prose">Three things happened. The four empty cells scored <code>4² × 10 = 160</code>. The eight fence blocks were removed, which is how you keep the board from filling up. And the clock gained time: <code>1.8 s</code> for placing plus <code>2.0 + 0.8 × 4 = 5.2 s</code> for the claim, so <code>7.0 s</code> if you moved fast (more on speed in step 7).</p>
+    <p class="prose">Three things happened. The four empty cells scored <code>4² × 10 = 160</code>. The eight fence blocks were removed, which is how you keep the board from filling up. And the clock gained time: <code>1.8 s</code> for placing plus <code>2.0 + 0.8 × 4 = 5.2 s</code> for the claim, so <code>7.0 s</code> if you moved fast (more on speed in step 8).</p>
     <p class="note prose">Walls only need to touch the room on its four sides. The diagonal corners are not part of the fence, they stay on the board, and you never need to build them.</p>
   </section>
 
@@ -344,8 +353,43 @@
   </section>
 
   <!-- 4 ─────────────────────────────────────────────────── -->
+  <section id="territory">
+    <div class="step"><span class="n">04</span><h2>Territory and the Survey</h2></div>
+    <p class="prose">The board remembers. Every cell you claim stays <strong>lit</strong> for the rest of the run, and a room built on lit floor pays less than the same room on new ground. A claim is scaled by how much of its floor is fresh:</p>
+    <p class="prose"><code>factor = 0.5 + 0.5 × fresh ÷ area</code></p>
+    <p class="prose">All-new ground gives 1.0 and pays the full <code>area² × 10</code>. Floor that has all been claimed before gives 0.5. A mix lands in between, pro rata.</p>
+
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>A 2×2 room, four cells</th><th class="num">Fresh</th><th class="num">Factor</th><th class="num">Pays</th></tr></thead>
+        <tbody>
+          <tr><td>All four cells new</td><td class="num">4</td><td class="num">1.00</td><td class="num">160</td></tr>
+          <tr><td>Two new, two relit</td><td class="num">2</td><td class="num">0.75</td><td class="num">120</td></tr>
+          <tr class="hl"><td>Rebuilt entirely on lit floor</td><td class="num">0</td><td class="num">0.50</td><td class="num">80</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note prose">So claiming the same corner over and over gets steadily less profitable, and the run pushes you outward. When a claim pays less than full price the board says so: <span class="k">RELIT ×0.5</span> next to the score popup. The streak demo in step 6 lights its floor as you claim and reports the factor on every claim.</p>
+
+    <h3>The Survey</h3>
+    <p class="prose">Only the inner 7×7 can ever be floor. The board edge is never a wall, so an edge cell can never be inside a room, which leaves <strong>49</strong> cells that can be lit. Light all of them and you complete a <strong>Survey</strong>: a flat bonus paid on top of the claim and multiplied by nothing — not by the streak, not by a double close. The map then goes dark and the next survey starts from an empty one, which is what gives a long run an arc instead of the same claim repeated.</p>
+
+    <div class="demo">
+      <div class="board-wrap"><div class="litmap" data-litmap role="img" aria-label="The inner seven by seven, twenty-three of its forty-nine cells lit"></div></div>
+      <div class="console">
+        <div class="hud">
+          <div class="stat"><div class="l">Floor lit</div><div class="v gold">23/49</div></div>
+          <div class="stat"><div class="l">To go</div><div class="v">26</div></div>
+        </div>
+        <div class="readout">Twenty-three of the forty-nine inner cells are lit. The bonus lands on the claim that lights the last one, and it depends on the mode:<span class="formula">CLASSIC 5,000 · BLITZ 2,500 · DAILY 2,000</span>Blitz pays less because a survey takes far longer than a 35-second run; the Daily pays less because thirty pieces is a short run and a survey inside one should not dwarf everything else.</div>
+      </div>
+    </div>
+    <p class="note prose">The HUD carries a <span class="k">SURVEY 23/49</span> readout under the tier chip, gold from 40 lit onward. The share card at the end of a run draws the map you finished on.</p>
+  </section>
+
+  <!-- 5 ─────────────────────────────────────────────────── -->
   <section id="multi">
-    <div class="step"><span class="n">04</span><h2>Two rooms, one piece</h2></div>
+    <div class="step"><span class="n">05</span><h2>Two rooms, one piece</h2></div>
     <p class="prose">When a single placement closes several rooms at once, the whole claim is multiplied by <code>1 + 0.5 × (rooms − 1)</code>: ×1.5 for two rooms, ×2 for three. Here two 2×2 rooms each have a gap, and the gaps sit side by side. Both are gold. Lay the DOMINO across both.</p>
 
     <div class="demo" id="demo-multi">
@@ -363,9 +407,9 @@
     </div>
   </section>
 
-  <!-- 5 ─────────────────────────────────────────────────── -->
+  <!-- 6 ─────────────────────────────────────────────────── -->
   <section id="streak">
-    <div class="step"><span class="n">05</span><h2>Streaks</h2></div>
+    <div class="step"><span class="n">06</span><h2>Streaks</h2></div>
     <p class="prose">Claims on consecutive placements build a streak, and each claim is multiplied by <code>1 + 0.25 × streak</code>, capped at ×3. The streak counts the claims <em>before</em> this one, so the first claim is ×1, the second ×1.25, the third ×1.5, and the cap arrives on the ninth. In Classic the streak survives two non-claiming placements and dies on the third; in Blitz it dies on the second. The green pips count down to that reset.</p>
 
     <div class="demo" id="demo-streak">
@@ -375,6 +419,7 @@
           <div class="stat"><div class="l">Score</div><div class="v" data-score>0</div></div>
           <div class="stat"><div class="l">Streak</div><div class="v" data-streak>0<span class="pips" data-pips></span></div></div>
           <div class="stat"><div class="l">Multiplier</div><div class="v gold" data-mult>×1.00</div></div>
+          <div class="stat"><div class="l">Floor lit</div><div class="v small" data-lit>0/49</div></div>
         </div>
         <div class="readout" data-readout>Three rooms, three gold cells, an endless supply of DOTs. Close them one after another and watch the multiplier climb. Drop a DOT anywhere else to see the pips burn down.</div>
         <div class="hand"><span class="l">In hand</span><div class="mini" data-hand></div><div class="controls"><button class="btn small secondary" data-reset>Reset</button></div></div>
@@ -382,30 +427,34 @@
     </div>
   </section>
 
-  <!-- 6 ─────────────────────────────────────────────────── -->
-  <section id="shared">
-    <div class="step"><span class="n">06</span><h2>Shared walls</h2></div>
-    <p class="prose">Claiming a room removes <em>every</em> block in its fence, including a wall it shares with the room next door. Close the left room here and the right one loses its wall and falls open again. Closing order matters: with shared walls, aim to line the gaps up and close both with one piece, as in step 4.</p>
+  <!-- 7 ─────────────────────────────────────────────────── -->
+  <section id="echo">
+    <div class="step"><span class="n">07</span><h2>Echo walls</h2></div>
+    <p class="prose">Claiming a room removes <em>every</em> block in its fence, including a wall it shares with the room next door — which on its own would make neighbours a punishment. So the wall does not go all at once. For <strong>2.0 seconds in Classic</strong>, 1.5 in Blitz, every block a claim removed stays on the board as a fading ghost that <em>still counts as a wall</em>, and a room closed against one pays <strong>×1.25</strong> with an <span class="k">ECHO</span> label.</p>
+    <p class="prose">That turns the shared wall from a pitfall into the game's signature combo: claim the left room, then close the right one before its borrowed wall fades. Miss the window and the ghost is gone, and the survivor needs the wall rebuilt.</p>
 
     <div class="demo" id="demo-shared">
-      <div class="board-wrap"><div class="board" role="grid" aria-label="Shared wall demo" tabindex="0"></div><div class="popup"></div></div>
+      <div class="board-wrap"><div class="board" role="grid" aria-label="Echo wall demo" tabindex="0"></div><div class="popup"></div></div>
       <div class="console">
         <div class="hud">
           <div class="stat"><div class="l">Score</div><div class="v" data-score>0</div></div>
           <div class="stat"><div class="l">Last claim</div><div class="v gold" data-turn>—</div></div>
           <div class="stat"><div class="l">Closable now</div><div class="v" data-open>—</div></div>
         </div>
-        <div class="readout" data-readout>Two 2×2 rooms share the middle column. Each has one gap on its outer side. Close either one and look at the other.</div>
+        <div class="readout" data-readout>Two 2×2 rooms share the middle column. Each has one gap on its outer side. Close the left one, then close the right one within two seconds while the middle column is still fading.</div>
         <div class="hand"><span class="l">In hand</span><div class="mini" data-hand></div><div class="controls"><button class="btn small secondary" data-reset>Reset</button></div></div>
-        <div class="hintline">After the first claim, the survivor needs two new blocks before a gold hint can appear again.</div>
+        <div class="hintline">While the ghosts stand they count as walls, so the board lights up with cells that would close something off them. Every one of those goes out when the echo fades.</div>
       </div>
     </div>
+
+    <p class="prose">The floor the claim just took is held solid for the same window, and it is never drawn. That is the one thing echoes must not allow: a room re-closing itself off its own ghosts. The ghost walls you can see fading; the floor under them you cannot, so nothing invisible can pay you.</p>
+    <p class="note prose">No echoes in the Daily. The window is measured in seconds and the Daily has no clock, so it would only reward whoever happened to play fast — the one thing that mode is not about.</p>
   </section>
 
-  <!-- 7 ─────────────────────────────────────────────────── -->
+  <!-- 8 ─────────────────────────────────────────────────── -->
   <section id="clock">
-    <div class="step"><span class="n">07</span><h2>The clock</h2></div>
-    <p class="prose">The time bank drains continuously and only placements refill it. Every placement adds time, every claim adds more (bigger rooms add more, up to a cap), and the whole bonus is scaled by how fast you moved: <strong>1.0× immediately after your last placement, sliding down to 0.45× over 8 seconds in Classic</strong>. Hesitating is expensive. The drain itself also speeds up the longer you survive.</p>
+    <div class="step"><span class="n">08</span><h2>The clock</h2></div>
+    <p class="prose">Classic and Blitz are timed; the Daily is not (step 9). The time bank drains continuously and only placements refill it. Every placement adds time, every claim adds more (bigger rooms add more, up to a cap), and the whole bonus is scaled by how fast you moved: <strong>1.0× immediately after your last placement, sliding down to 0.45× over 8 seconds in Classic</strong>. Hesitating is expensive. The drain itself also speeds up the longer you survive.</p>
 
     <div class="demo stack" id="clocksim">
       <div class="clock">
@@ -436,16 +485,32 @@
           <tr><td>Speed window</td><td class="num">8 s</td><td class="num">5 s</td></tr>
           <tr><td>Slowest bonus fraction</td><td class="num">0.45×</td><td class="num">0.30×</td></tr>
           <tr><td>Drain acceleration</td><td class="num">+0.16× per minute, max 1.7×</td><td class="num">+0.30× per minute, max 2.0×</td></tr>
-          <tr><td>Streak survives</td><td class="num">2 misses</td><td class="num">1 miss</td></tr>
+          <tr><td>Streak survives<br><span style="color:var(--muted);font-size:13.5px">The Daily shares Classic's 3-placement window: 2 misses</span></td><td class="num">2 misses</td><td class="num">1 miss</td></tr>
         </tbody>
       </table>
     </div>
     <p class="note prose">Two ways to lose. <strong>TIME'S UP</strong> when the bank hits zero. <strong>NO ROOM LEFT</strong> when the piece in hand fits nowhere in any rotation and swapping with the hold slot cannot rescue you. Claiming rooms clears space, so a player who keeps closing rooms rarely sees the second one.</p>
   </section>
 
-  <!-- 8 ─────────────────────────────────────────────────── -->
+  <!-- 9 ─────────────────────────────────────────────────── -->
+  <section id="daily">
+    <div class="step"><span class="n">09</span><h2>The Rationed Daily</h2></div>
+    <p class="prose">One puzzle a day, the same one for everyone: <strong>30 pieces, no clock</strong>. The seed is the UTC date, so two players anywhere in the world are dealt the same shapes, in the same rotations, in the same colours. Scarcity replaces time as the pressure and the whole game becomes planning.</p>
+    <ul class="prose">
+      <li><strong>Thirty placements, and that is the run.</strong> The HUD counts them down in the clock's place — <span class="k">PIECES 17/30</span> — and turns gold with five left. Place the last one and the run ends as a completion rather than a death: <strong>RATION SPENT</strong>, and the score counts in full.</li>
+      <li><strong>No clock at all.</strong> Nothing drains, placements add nothing, and there is no speed bonus, so there is no reward for hurrying and no penalty for thinking.</li>
+      <li><strong>HOLD works as it always does</strong>, once per piece. The one refusal is parking the last piece of the ration with an empty hold slot, which would leave your hand with nothing to place.</li>
+      <li><strong>First submission counts.</strong> Play it again as often as you like; later runs are labelled <span class="k">PRACTICE RUN · NOT SUBMITTED</span>. The board keeps the score you posted first, higher or not, so it measures the puzzle and not how many attempts you had.</li>
+      <li><strong>No echo walls and no tier bag.</strong> An echo window is measured in seconds and there is no clock to measure them against; and a bag that tightens with the score would deal two players different pieces on the same puzzle.</li>
+      <li><strong>The day rolls over at UTC midnight</strong>, not yours, so everyone is on the same puzzle at the same instant. The menu shows <span class="k">RESETS IN</span> hh:mm, and the personal best is per day — a lifetime daily best would only say you once had a good seed.</li>
+      <li><strong>A survey pays 2,000</strong>, and the streak survives two placements without a claim, as in Classic.</li>
+    </ul>
+    <p class="note prose">The Daily has its own tier ladder, lower than Classic's, in the table in step 11.</p>
+  </section>
+
+  <!-- 10 ────────────────────────────────────────────────── -->
   <section id="controls">
-    <div class="step"><span class="n">08</span><h2>Controls and signals</h2></div>
+    <div class="step"><span class="n">10</span><h2>Controls and signals</h2></div>
     <div class="grid2">
       <div>
         <h3>Controls</h3>
@@ -464,16 +529,37 @@
         <div class="signal"><div class="sw" style="background:var(--warning)"></div><div><b>Amber border</b><span>Under 20 seconds left.</span></div></div>
         <div class="signal"><div class="sw" style="background:var(--danger)"></div><div><b>Red border</b><span>Under 10 seconds. The music muffles, ticks get urgent, and the phone pulses under five.</span></div></div>
         <div class="signal"><div class="sw" style="background:var(--blitz);opacity:.8"></div><div><b>Orange tint</b><span>The board is more than 60% full. Close something.</span></div></div>
+        <div class="signal"><div class="sw" style="background:var(--p-sky);opacity:.45;box-shadow:inset 0 0 0 2px rgba(255,255,255,.45)"></div><div><b>Fading block</b><span>An echo wall. It still counts as a wall for another second or two, and closing against it pays ×1.25.</span></div></div>
+        <div class="signal"><div class="sw" style="background:rgba(251,191,36,.25);box-shadow:inset 0 0 0 1px rgba(251,191,36,.6)"></div><div><b>Tinted floor</b><span>Claimed ground, still lit. Building here again pays half.</span></div></div>
+        <div class="signal"><div class="sw" style="background:var(--success)"></div><div><b>PB PACE</b><span>What your best run had banked at this second. Green means you are ahead of it. Classic and Blitz, once a best exists.</span></div></div>
       </div>
     </div>
     <h3>Pieces</h3>
     <p class="prose">Pieces are dealt from a shuffled bag so straight lines and corners, the fence material, always come back around. Per bag: DOT ×1, DOMINO ×3, BAR 3 ×3, CORNER ×3, BAR 4 ×2, L ×2, J ×2, and one each of T, S, Z, SQUARE, BAR 5, BIG L and U.</p>
     <div class="hand" data-pieceshelf style="gap:18px;margin-bottom:10px"></div>
+
+    <h3>The bag by tier</h3>
+    <p class="prose">From ARCHITECT upward the bag gets stingier with fence material. Difficulty here is the mix, not the pace: every bag still holds 23 or 24 pieces, so the deal keeps its rhythm and only the material changes. The new mix lands at the next refill, never mid-bag, and the tier card says <span class="k">TOUGHER BAG</span> when it is coming.</p>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th>Tier</th><th>Change from the tier below</th><th class="num">Bag</th></tr></thead>
+        <tbody>
+          <tr><td>SETTLER · BUILDER</td><td>The base bag. The ramp starts once you have proved you can close rooms at all.</td><td class="num">23</td></tr>
+          <tr><td>ARCHITECT</td><td>BAR 3 ×3 → ×2, BAR 4 ×2 → ×1, S ×1 → ×2, Z ×1 → ×2. The cheapest fence material gets scarce first: a BAR 4 closes a wall no other piece can.</td><td class="num">23</td></tr>
+          <tr><td>WARDEN</td><td>CORNER ×3 → ×2, T ×1 → ×2, U ×1 → ×2. Corners follow the bars, and the two shapes that waste space double.</td><td class="num">24</td></tr>
+          <tr class="hl"><td>SOVEREIGN · LEGEND</td><td>DOMINO ×3 → ×2, SQUARE ×1 → ×2, BAR 5 ×1 → gone. The end of easy patching: the piece that plugs a one-cell gap is halved, the one that plugs nothing doubles.</td><td class="num">23</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note prose">Not in the Daily. A bag that tightens with the score would deal two players different pieces on the same puzzle, so the Daily stays on the base bag whatever you are scoring.</p>
+
+    <h3>Options</h3>
+    <p class="prose">Three pills on the menu turn SOUND, MUSIC and HAPTIC on and off, and OPTIONS holds the rest. <strong>SFX</strong> and <strong>MUSIC</strong> sliders start below full, so the mix the game shipped with is the one you start from and there is somewhere to go louder. <strong>MOTION</strong> is SYSTEM, REDUCED or FULL: SYSTEM follows your device's reduced-motion setting, and REDUCED drops screen shake, flashes, zoom pulses and slow-motion and keeps a quarter of the particles — claim outlines, dissolves and score popups stay, because they say what just happened. <strong>COLOURS</strong> switches the pieces to a colour-blind-safe palette that survives deuteranopia, protanopia and tritanopia. <strong>LAYOUT</strong> mirrors HOLD and NEXT for left-thumb play, from the next run. Every row applies on the spot and is remembered.</p>
   </section>
 
-  <!-- 9 ─────────────────────────────────────────────────── -->
+  <!-- 11 ────────────────────────────────────────────────── -->
   <section id="tips">
-    <div class="step"><span class="n">09</span><h2>How to score more</h2></div>
+    <div class="step"><span class="n">11</span><h2>How to score more</h2></div>
     <ol class="prose">
       <li><strong>Build one big room, not many small ones.</strong> Area squared means a 3×3 (810) beats twenty 1×1s (200) and costs fewer blocks.</li>
       <li><strong>Skip the corners.</strong> Only the cells directly beside the room are the fence. Corner stones are wasted blocks.</li>
@@ -483,26 +569,32 @@
       <li><strong>Move fast.</strong> The same placement earns 1.8 s now and 0.8 s after eight seconds of thinking. Decide while the piece is still in the queue.</li>
       <li><strong>Hold the closer.</strong> If the perfect piece arrives early, park it in HOLD and finish the fence first.</li>
       <li><strong>Close before you flood.</strong> Every claim removes its fence. If the board tints orange, cash in a room to make space.</li>
+      <li><strong>Chase the echo.</strong> After a claim you have about two seconds where its fence is still a wall. The room next door, closed inside that window, pays ×1.25 — and it is the cheapest multiplier in the game because the wall is already built.</li>
+      <li><strong>Move onto new ground.</strong> Relit floor pays half, so the same corner gets worse every time. Spreading out is also the only way to a survey, which is worth more than any single room.</li>
     </ol>
     <h3>Tiers</h3>
     <div class="tablewrap">
       <table>
-        <thead><tr><th>Tier</th><th class="num">Classic</th><th class="num">Blitz</th></tr></thead>
+        <thead><tr><th>Tier</th><th class="num">Classic</th><th class="num">Blitz</th><th class="num">Daily</th></tr></thead>
         <tbody>
-          <tr><td><span class="tier" style="background:#3b82f6;color:#fff">SETTLER</span></td><td class="num">0</td><td class="num">0</td></tr>
-          <tr><td><span class="tier" style="background:#10b981">BUILDER</span></td><td class="num">1,500</td><td class="num">800</td></tr>
-          <tr><td><span class="tier" style="background:#fbbf24">ARCHITECT</span></td><td class="num">4,000</td><td class="num">2,200</td></tr>
-          <tr><td><span class="tier" style="background:#f59e0b">WARDEN</span></td><td class="num">9,000</td><td class="num">5,000</td></tr>
-          <tr><td><span class="tier" style="background:#ef4444;color:#fff">SOVEREIGN</span></td><td class="num">18,000</td><td class="num">10,000</td></tr>
-          <tr><td><span class="tier" style="background:#d946ef;color:#fff">LEGEND</span></td><td class="num">35,000</td><td class="num">20,000</td></tr>
+          <tr><td><span class="tier" style="background:#3b82f6;color:#fff">SETTLER</span></td><td class="num">0</td><td class="num">0</td><td class="num">0</td></tr>
+          <tr><td><span class="tier" style="background:#10b981">BUILDER</span></td><td class="num">1,500</td><td class="num">800</td><td class="num">600</td></tr>
+          <tr><td><span class="tier" style="background:#fbbf24">ARCHITECT</span></td><td class="num">4,000</td><td class="num">2,200</td><td class="num">1,600</td></tr>
+          <tr><td><span class="tier" style="background:#f59e0b">WARDEN</span></td><td class="num">9,000</td><td class="num">5,000</td><td class="num">3,500</td></tr>
+          <tr><td><span class="tier" style="background:#ef4444;color:#fff">SOVEREIGN</span></td><td class="num">18,000</td><td class="num">10,000</td><td class="num">7,000</td></tr>
+          <tr><td><span class="tier" style="background:#d946ef;color:#fff">LEGEND</span></td><td class="num">35,000</td><td class="num">20,000</td><td class="num">14,000</td></tr>
         </tbody>
       </table>
     </div>
+
+    <h3>After the run</h3>
+    <p class="prose">The game-over screen carries <strong>insights</strong>: at most three lines about the run you just played, ordered most useful first, so points you could have had and know how to get next time come before a description of what happened, and praise comes last. Under the leaderboard on the menu, <strong>stats</strong> keeps the lifetime totals for each mode — runs, best, biggest room, rooms sealed, surveys, the room size you actually build most often, time played, last played. Every run folds in exactly once, quits included.</p>
+    <p class="prose"><strong>SHARE</strong> builds a 1080×1350 card with the score, the mode, your rooms, biggest room, streak, tier and surveys, and the territory map the run finished on. It goes out as an image where the browser will take one, as text where it will not, and to the clipboard where it will do neither.</p>
   </section>
 
-  <!-- 10 ────────────────────────────────────────────────── -->
+  <!-- 12 ────────────────────────────────────────────────── -->
   <section id="demo">
-    <div class="step"><span class="n">10</span><h2>The 60-second demo</h2></div>
+    <div class="step"><span class="n">12</span><h2>The 60-second demo</h2></div>
     <p class="prose">Showing the game to someone? This order teaches the rule, the payoff and the pressure in a minute.</p>
     <ol class="script prose">
       <li><b>Menu.</b> Point at the logo assembling itself around a gold room. Pick Classic, press PLAY, dismiss the three-step tutorial.</li>
@@ -510,6 +602,7 @@
       <li><b>First claim.</b> Build a small ring with two corners and two bars, leaving one gap. Point at the gold cell. Drop the closer: a 2×2 room, "+160", sparkles, a shockwave, and time landing on the clock.</li>
       <li><b>Big room.</b> Build a 12-block ring for a 3×3 room: "+810", the BIG ROOM label, a harder shake and a flash.</li>
       <li><b>Double close.</b> Set up two small rooms with their gaps on the same row and close both with one bar: "2 ROOMS ×1.5".</li>
+      <li><b>Echo.</b> Build two rooms sharing a wall, close one, and close the other while the shared wall is still fading: "ECHO ×1.25". This is the trick the game is actually about.</li>
       <li><b>Pressure.</b> Let the clock fall under 10 seconds: red glow, muffled music, urgent ticks. Then the game-over screen with stats, the leaderboard name entry and SHARE.</li>
     </ol>
   </section>
@@ -517,7 +610,7 @@
 
 <footer>
   <div class="wrap">
-    Rules and numbers taken from the Enclave source, build <span class="mono">v0.1.0</span>. Play at <a href="https://enclave-lovat.vercel.app">enclave-lovat.vercel.app</a> · source on <a href="https://github.com/nunpdsantos/enclave">GitHub</a>.
+    Rules and numbers taken from the Enclave source, build <span class="mono">v0.2.0</span>. Play at <a href="https://enclave-lovat.vercel.app">enclave-lovat.vercel.app</a> · source on <a href="https://github.com/nunpdsantos/enclave">GitHub</a>.
   </div>
 </footer>
 
@@ -533,6 +626,11 @@
   };
   var NAMES = { dot: 'DOT', domino: 'DOMINO', bar3: 'BAR 3', corner: 'CORNER', bar4: 'BAR 4', l: 'L', j: 'J', t: 'T', s: 'S', z: 'Z', square: 'SQUARE', bar5: 'BAR 5', bigl: 'BIG L', u: 'U' };
   var SCORING = { perBlock: 1, perAreaSq: 10, multiClose: 0.5, streakInc: 0.25, streakCap: 3, streakWindow: 3 };
+  // Territory: claimed floor stays lit, and relit floor pays relitFloor of full.
+  var TERRITORY = { relitFloor: 0.5, inner: 49 };
+  // Echo: how long a removed fence goes on counting as a wall, and what a room
+  // closed against one pays. Classic's window; Blitz runs 1.5 s.
+  var ECHO = { window: 2.0, multiplier: 1.25 };
   var TIMER = {
     classic: { start: 60, max: 90, place: 1.8, claimBase: 2.0, claimPerCell: 0.8, claimCap: 16, speedWindow: 8, minSpeed: 0.45, drainAccel: 0.16, drainCap: 1.7 },
     blitz: { start: 35, max: 50, place: 1.2, claimBase: 1.5, claimPerCell: 0.6, claimCap: 10, speedWindow: 5, minSpeed: 0.30, drainAccel: 0.30, drainCap: 2.0 }
@@ -551,47 +649,77 @@
   }
   function inb(r, c) { return r >= 0 && r < N && c >= 0 && c < N; }
 
-  // Enclosure detection: flood from every empty border cell; unreached empties are rooms.
-  function findRooms(grid) {
+  // Enclosure detection: flood from every empty border cell; unreached empties
+  // are rooms. `walls` is the extra wall set — echo ghosts and the floor a
+  // claim just took — which holds the flood back exactly as a block does but
+  // is reported separately, because there is no block there to knock down.
+  function findRooms(grid, walls) {
+    walls = walls || {};
+    function solid(r, c) { return !!grid[r][c] || walls[r + ',' + c] === true; }
     var outside = [], visited = [], r, c;
     for (r = 0; r < N; r++) { outside.push([]); visited.push([]); for (c = 0; c < N; c++) { outside[r].push(false); visited[r].push(false); } }
     var q = [];
     for (r = 0; r < N; r++) for (c = 0; c < N; c++) {
-      if ((r === 0 || c === 0 || r === N - 1 || c === N - 1) && !grid[r][c]) { outside[r][c] = true; q.push([r, c]); }
+      if ((r === 0 || c === 0 || r === N - 1 || c === N - 1) && !solid(r, c)) { outside[r][c] = true; q.push([r, c]); }
     }
     var D = [[1, 0], [-1, 0], [0, 1], [0, -1]];
     while (q.length) {
       var p = q.shift();
       for (var i = 0; i < 4; i++) {
         var nr = p[0] + D[i][0], nc = p[1] + D[i][1];
-        if (inb(nr, nc) && !grid[nr][nc] && !outside[nr][nc]) { outside[nr][nc] = true; q.push([nr, nc]); }
+        if (inb(nr, nc) && !solid(nr, nc) && !outside[nr][nc]) { outside[nr][nc] = true; q.push([nr, nc]); }
       }
     }
     var rooms = [];
     for (r = 0; r < N; r++) for (c = 0; c < N; c++) {
-      if (grid[r][c] || outside[r][c] || visited[r][c]) continue;
-      var cells = [], fence = {}, fenceList = [], stack = [[r, c]];
+      if (solid(r, c) || outside[r][c] || visited[r][c]) continue;
+      var cells = [], fence = {}, fenceList = [], echoes = {}, echoList = [], stack = [[r, c]];
       visited[r][c] = true;
       while (stack.length) {
         var cur = stack.pop(); cells.push(cur);
         for (var j = 0; j < 4; j++) {
           var ar = cur[0] + D[j][0], ac = cur[1] + D[j][1];
           if (!inb(ar, ac)) continue;
-          if (grid[ar][ac]) { var key = ar + ',' + ac; if (!fence[key]) { fence[key] = 1; fenceList.push([ar, ac]); } }
+          var key = ar + ',' + ac;
+          if (grid[ar][ac]) { if (!fence[key]) { fence[key] = 1; fenceList.push([ar, ac]); } }
+          else if (walls[key]) { if (!echoes[key]) { echoes[key] = 1; echoList.push([ar, ac]); } }
           else if (!visited[ar][ac]) { visited[ar][ac] = true; stack.push([ar, ac]); }
         }
       }
-      rooms.push({ cells: cells, fence: fenceList, area: cells.length });
+      rooms.push({ cells: cells, fence: fenceList, echoCells: echoList, area: cells.length });
     }
     return rooms;
   }
-  function closingCells(grid) {
-    var out = [], base = findRooms(grid).length;
+  // What the board would actually pay for right now. Two shapes are refused,
+  // and neither can exist outside an echo window: a room held up by ghosts
+  // alone, with no block in its fence to knock down, and a room closing
+  // against the floor a claim just took, which is invisible.
+  function claimable(grid, walls, spent) {
+    var rooms = findRooms(grid, walls), out = [], i, j;
+    for (i = 0; i < rooms.length; i++) {
+      if (rooms[i].fence.length === 0) continue;
+      var blocked = false;
+      for (j = 0; j < rooms[i].echoCells.length; j++) {
+        if (spent && spent[rooms[i].echoCells[j][0] + ',' + rooms[i].echoCells[j][1]]) { blocked = true; break; }
+      }
+      if (!blocked) out.push(rooms[i]);
+    }
+    return out;
+  }
+  function closingCells(grid, walls, spent) {
+    var out = [], base = claimable(grid, walls, spent).length;
     for (var r = 0; r < N; r++) for (var c = 0; c < N; c++) {
       if (grid[r][c]) continue;
+      // A block landing on a ghost replaces it, so probe the board that drop
+      // would actually make rather than the one with the ghost still on it.
+      var key = r + ',' + c, hadWall = !!(walls && walls[key]), hadSpent = !!(spent && spent[key]);
       grid[r][c] = '#fff';
-      var n = findRooms(grid).length;
+      if (hadWall) delete walls[key];
+      if (hadSpent) delete spent[key];
+      var n = claimable(grid, walls, spent).length;
       grid[r][c] = null;
+      if (hadWall) walls[key] = true;
+      if (hadSpent) spent[key] = true;
       if (n > base) out.push([r, c]);
     }
     return out;
@@ -625,14 +753,72 @@
     this.handColor = COLORS[o.handColor != null ? o.handColor : 6];
     this.score = 0; this.streak = 0; this.movesSince = 0; this.busy = false; this.done = false;
     this.cursor = o.cursor ? o.cursor.slice() : [4, 4]; this.hover = null;
-    this.hints = closingCells(this.grid);
+    // Echo ghosts, the floor a claim just took, and the lit map. All three are
+    // empty on a board nobody has claimed on yet.
+    if (this.echoRaf) { cancelAnimationFrame(this.echoRaf); this.echoRaf = 0; }
+    this.echo = {}; this.spent = {}; this.lit = {};
+    this.echoWindow = o.echo ? ECHO.window : 0;
+    this.hints = closingCells(this.grid, {}, {});
     this.setReadout(o.intro);
     this.setStat('score', '0'); this.setStat('turn', '—'); this.setStat('time', '—'); this.setStat('rooms', '—'); this.setStat('open', '—');
-    this.setStat('streak', '0'); this.setStat('mult', '×1.00');
+    this.setStat('streak', '0'); this.setStat('mult', '×1.00'); this.setStat('lit', '0/' + TERRITORY.inner);
     this.render(); this.renderHand(); this.updateOpenCount();
     if (o.afterReset) o.afterReset(this);
   };
   Demo.prototype.shape = function () { return this.rots[this.rot % this.rots.length]; };
+  /** Everything the flood must treat as a wall but no claim can knock down */
+  Demo.prototype.wallSet = function () {
+    var w = {}, k;
+    for (k in this.echo) w[k] = true;
+    for (k in this.spent) w[k] = true;
+    return w;
+  };
+  Demo.prototype.litCount = function () { var n = 0, k; for (k in this.lit) n++; return n; };
+  /**
+   * The echo bookkeeping for one claim, in the engine's order: the ghosts this
+   * claim spent are consumed first, so the fence it is about to echo does not
+   * get swept straight back out by its own rooms' echo cells.
+   */
+  Demo.prototype.settleEcho = function (rooms, fenceCells, fenceColors) {
+    var i, j, k, cell;
+    for (i = 0; i < rooms.length; i++) for (j = 0; j < rooms[i].echoCells.length; j++) {
+      k = rooms[i].echoCells[j][0] + ',' + rooms[i].echoCells[j][1];
+      delete this.echo[k]; delete this.spent[k];
+    }
+    if (this.opts.territory) {
+      for (i = 0; i < rooms.length; i++) for (j = 0; j < rooms[i].cells.length; j++) {
+        cell = rooms[i].cells[j];
+        // Only the inner 7×7 can ever be floor, so only it can ever be lit
+        if (cell[0] > 0 && cell[0] < N - 1 && cell[1] > 0 && cell[1] < N - 1) this.lit[cell[0] + ',' + cell[1]] = true;
+      }
+    }
+    if (this.echoWindow <= 0) return;
+    // The window opens when the fence actually leaves the board, which is the
+    // moment this demo lets you act again.
+    var until = Date.now() + this.echoWindow * 1000;
+    for (i = 0; i < fenceCells.length; i++) this.echo[fenceCells[i][0] + ',' + fenceCells[i][1]] = { color: fenceColors[i], until: until };
+    for (i = 0; i < rooms.length; i++) for (j = 0; j < rooms[i].cells.length; j++) this.spent[rooms[i].cells[j][0] + ',' + rooms[i].cells[j][1]] = until;
+    this.tickEcho();
+  };
+  /** Fade the ghosts, and recompute the hints the moment the set moves */
+  Demo.prototype.tickEcho = function () {
+    if (this.echoRaf) return;
+    var self = this;
+    function step() {
+      self.echoRaf = 0;
+      var now = Date.now(), changed = false, alive = false, k;
+      for (k in self.echo) { if (self.echo[k].until <= now) { delete self.echo[k]; changed = true; } else alive = true; }
+      for (k in self.spent) { if (self.spent[k] <= now) { delete self.spent[k]; changed = true; } else alive = true; }
+      if (changed && !self.busy) {
+        self.hints = self.done ? [] : closingCells(self.grid, self.wallSet(), self.spent);
+        self.updateOpenCount();
+      }
+      self.render();
+      if (alive) self.echoRaf = requestAnimationFrame(step);
+      else if (self.opts.onEchoEnd) self.opts.onEchoEnd(self);
+    }
+    this.echoRaf = requestAnimationFrame(step);
+  };
   Demo.prototype.setStat = function (k, v) { var el = this.root.querySelector('[data-' + k + ']'); if (el) { if (k === 'streak') { el.firstChild.nodeValue = v; } else el.textContent = v; } };
   Demo.prototype.setReadout = function (html) { if (this.readoutEl && html != null) this.readoutEl.innerHTML = html; };
   Demo.prototype.footprint = function (r, c) {
@@ -651,11 +837,26 @@
       for (var g = 0; g < fp.length; g++) ghost[fp[g][0] + ',' + fp[g][1]] = true;
     }
     var hintSet = {}; for (var h = 0; h < this.hints.length; h++) hintSet[this.hints[h][0] + ',' + this.hints[h][1]] = true;
+    var now = Date.now();
     for (var r = 0; r < N; r++) for (var c = 0; c < N; c++) {
       var el = this.cells[r * N + c], v = this.grid[r][c], key = r + ',' + c;
       el.className = 'cell';
       el.classList.remove('room', 'dissolve');
-      if (v) { el.classList.add('block'); el.style.setProperty('--pc', v); } else { el.style.removeProperty('--pc'); }
+      if (v) {
+        el.classList.add('block'); el.style.setProperty('--pc', v); el.style.removeProperty('opacity');
+      } else {
+        var fading = this.echo[key];
+        if (fading) {
+          // Never a full block: a ghost that looked solid would read as one
+          var life = Math.max(0, Math.min(1, (fading.until - now) / (this.echoWindow * 1000)));
+          el.classList.add('echo');
+          el.style.setProperty('--pc', fading.color);
+          el.style.opacity = String(reduced ? 0.4 : 0.15 + 0.4 * life);
+        } else {
+          el.style.removeProperty('--pc'); el.style.removeProperty('opacity');
+          if (this.lit[key]) el.classList.add('lit');
+        }
+      }
       if (!v && hintSet[key] && !this.opts.noHints) el.classList.add('hint');
       if (ghost[key]) { if (v) el.classList.add('ghost-bad'); else el.classList.add(ghostOk ? 'ghost-ok' : 'ghost-bad'); }
       if (this.opts.openMarks && !v && this.opts.openMarks[key]) el.classList.add('open-mark');
@@ -705,42 +906,70 @@
     var fp = this.footprint(r, c);
     if (!this.canPlace(fp)) { this.setReadout('That drop is <strong style="color:var(--danger)">invalid</strong>: every block of the piece must land on an empty cell inside the board. In the game the piece hops back to your hand with a buzz.'); return; }
     var self = this, o = this.opts;
-    for (var i = 0; i < fp.length; i++) this.grid[fp[i][0]][fp[i][1]] = this.handColor;
+    for (var i = 0; i < fp.length; i++) {
+      this.grid[fp[i][0]][fp[i][1]] = this.handColor;
+      // Ghost ground is empty ground: a piece may land on it, and then it is
+      // a real block again rather than a block and a ghost in one cell.
+      var pk = fp[i][0] + ',' + fp[i][1];
+      delete this.echo[pk]; delete this.spent[pk];
+    }
     this.score += fp.length * SCORING.perBlock;
-    var rooms = findRooms(this.grid);
+    var rooms = claimable(this.grid, this.wallSet(), this.spent);
     var claimed = rooms.length > 0;
     // Streak bookkeeping before scoring, as in the engine.
     var lost = false;
     if (claimed) { this.movesSince = 0; }
     else { this.movesSince++; if (this.movesSince >= SCORING.streakWindow && this.streak > 0) { lost = this.streak >= 3; this.streak = 0; } }
-    var summary = { placed: fp.length, claimed: claimed, rooms: rooms, lost: lost, base: 0, multi: 1, sm: 1, turn: 0, time: 0 };
+    var summary = { placed: fp.length, claimed: claimed, rooms: rooms, lost: lost, base: 0, multi: 1, sm: 1, turn: 0, time: 0, factor: 1, echo: 1 };
     if (claimed) {
-      var base = 0, totalArea = 0;
-      for (var k = 0; k < rooms.length; k++) { base += rooms[k].area * rooms[k].area * SCORING.perAreaSq; totalArea += rooms[k].area; }
+      var base = 0, totalArea = 0, totalFresh = 0, em = 1;
+      for (var k = 0; k < rooms.length; k++) {
+        var area = rooms[k].area, fresh = area, f;
+        if (o.territory) {
+          fresh = 0;
+          for (f = 0; f < area; f++) if (!this.lit[rooms[k].cells[f][0] + ',' + rooms[k].cells[f][1]]) fresh++;
+          // area² × 10 × factor, with the division by area cancelled off, so
+          // the number is exact rather than a hair under it
+          base += area * SCORING.perAreaSq * (TERRITORY.relitFloor * area + (1 - TERRITORY.relitFloor) * fresh);
+        } else {
+          base += area * area * SCORING.perAreaSq;
+        }
+        if (rooms[k].echoCells.length > 0) em = ECHO.multiplier;
+        totalArea += area; totalFresh += fresh;
+      }
       var multi = 1 + SCORING.multiClose * (rooms.length - 1);
       var sm = Math.min(1 + this.streak * SCORING.streakInc, SCORING.streakCap);
-      var turn = Math.floor(base * multi * sm);
+      var turn = Math.floor(base * multi * sm * em);
       this.score += turn; this.streak++;
       summary.base = base; summary.multi = multi; summary.sm = sm; summary.turn = turn; summary.totalArea = totalArea;
+      summary.echo = em;
+      summary.factor = o.territory && totalArea > 0
+        ? TERRITORY.relitFloor + (1 - TERRITORY.relitFloor) * (totalFresh / totalArea) : 1;
       var t = TIMER.classic; summary.time = Math.round((t.place + Math.min(t.claimCap, t.claimBase + t.claimPerCell * totalArea)) * 10) / 10;
     } else { summary.time = TIMER.classic.place; }
     this.hints = [];
     this.render();
     if (claimed) {
       this.busy = true;
-      var roomCells = [], fenceCells = [];
+      var roomCells = [], fenceCells = [], fenceColors = [];
       for (var q = 0; q < rooms.length; q++) { roomCells = roomCells.concat(rooms[q].cells); fenceCells = fenceCells.concat(rooms[q].fence); }
+      // The colour of each fence block, taken while it is still on the board:
+      // a ghost reads as the wall that stood there.
+      for (var fc = 0; fc < fenceCells.length; fc++) fenceColors.push(this.grid[fenceCells[fc][0]][fenceCells[fc][1]] || '#ffffff');
       for (var a = 0; a < roomCells.length; a++) this.cells[roomCells[a][0] * N + roomCells[a][1]].classList.add('room');
       var delay = reduced ? 0 : 420;
       setTimeout(function () {
         for (var f = 0; f < fenceCells.length; f++) self.cells[fenceCells[f][0] * N + fenceCells[f][1]].classList.add('dissolve');
         setTimeout(function () {
           for (var f2 = 0; f2 < fenceCells.length; f2++) self.grid[fenceCells[f2][0]][fenceCells[f2][1]] = null;
+          self.settleEcho(rooms, fenceCells, fenceColors);
           self.busy = false; self.afterMove(summary);
         }, reduced ? 0 : 480);
       }, delay);
       var label = rooms.length > 1 ? rooms.length + ' ROOMS ×' + summary.multi.toFixed(1) : (summary.totalArea >= 16 ? 'MASSIVE ROOM' : summary.totalArea >= 9 ? 'BIG ROOM' : rooms[0].area + ' CELL' + (rooms[0].area > 1 ? 'S' : ''));
       if (summary.sm > 1) label += ' · STREAK ×' + summary.sm.toFixed(2).replace(/0$/, '');
+      if (summary.factor < 1) label += ' · RELIT ×' + summary.factor.toFixed(2).replace(/\.?0+$/, '');
+      if (summary.echo > 1) label += ' · ECHO ×' + ECHO.multiplier;
       this.popup('+' + fmt(summary.turn), label, false);
     } else {
       if (lost) this.popup('STREAK LOST', '', true);
@@ -750,8 +979,9 @@
   Demo.prototype.afterMove = function (s) {
     var o = this.opts;
     if (!o.infinite && s.claimed) { this.done = true; }
-    this.hints = this.done ? [] : closingCells(this.grid);
+    this.hints = this.done ? [] : closingCells(this.grid, this.wallSet(), this.spent);
     this.render(); this.updateOpenCount();
+    if (o.territory) this.setStat('lit', this.litCount() + '/' + TERRITORY.inner);
     this.setStat('score', fmt(this.score));
     if (s.claimed) { this.setStat('turn', '+' + fmt(s.turn)); this.setStat('rooms', String(s.rooms.length)); this.setStat('time', '+' + s.time.toFixed(1) + ' s'); }
     else { this.setStat('time', '+' + s.time.toFixed(1) + ' s'); }
@@ -814,11 +1044,11 @@
       [0, 5, 1], [0, 6, 0], [3, 5, 2], [3, 6, 5], [1, 4, 4], [2, 4, 3], [1, 7, 0],
       [4, 3, 2], [4, 4, 5], [7, 3, 0], [7, 4, 1], [5, 2, 7], [6, 2, 3], [5, 5, 4]
     ],
-    hand: 'dot', handColor: 6, infinite: true, cursor: [2, 3],
-    intro: 'Three rooms, three gold cells, an endless supply of DOTs. Close them one after another and watch the multiplier climb. Drop a DOT anywhere else to see the pips burn down.',
+    hand: 'dot', handColor: 6, infinite: true, cursor: [2, 3], territory: true,
+    intro: 'Three rooms, three gold cells, an endless supply of DOTs. Close them one after another and watch the multiplier climb. The floor you claim stays lit. Drop a DOT anywhere else to see the pips burn down.',
     onMove: function (d, s) {
       if (s.claimed) {
-        d.setReadout('<strong>Claim ' + d.streak + '.</strong> Multiplier for this one was ×' + s.sm.toFixed(2) + ': <span class="formula">' + fmt(s.base) + ' × ' + s.sm.toFixed(2) + ' = ' + fmt(s.turn) + '</span>The next claim pays ×' + Math.min(1 + d.streak * SCORING.streakInc, SCORING.streakCap).toFixed(2) + '. The streak resets on the 3rd placement without a claim.');
+        d.setReadout('<strong>Claim ' + d.streak + '.</strong> Multiplier for this one was ×' + s.sm.toFixed(2) + ': <span class="formula">' + fmt(s.base) + ' × ' + s.sm.toFixed(2) + ' = ' + fmt(s.turn) + '</span>The next claim pays ×' + Math.min(1 + d.streak * SCORING.streakInc, SCORING.streakCap).toFixed(2) + '. The streak resets on the 3rd placement without a claim. Territory ×' + s.factor.toFixed(2) + ' — the floor was new. It is lit now (' + d.litCount() + '/' + TERRITORY.inner + '), and rebuilding this room would pay ×0.50.');
       } else if (s.lost) {
         d.setReadout('<strong style="color:var(--danger)">Streak lost.</strong> Three placements without a claim reset it to zero. The game shows a STREAK LOST cue when a streak of 3 or more dies.');
       } else if (d.streak > 0) {
@@ -837,15 +1067,22 @@
       [2, 2, 0], [2, 3, 1], [5, 2, 5], [5, 3, 2], [3, 1, 3], [3, 4, 7], [4, 4, 7],
       [2, 5, 1], [2, 6, 0], [5, 5, 2], [5, 6, 5], [3, 7, 4]
     ],
-    hand: 'dot', handColor: 6, infinite: true, cursor: [4, 1],
-    intro: 'Two 2×2 rooms share the middle column. Each has one gap on its outer side. Close either one and look at the other.',
+    hand: 'dot', handColor: 6, infinite: true, cursor: [4, 1], echo: true,
+    intro: 'Two 2×2 rooms share the middle column. Each has one gap on its outer side. Close the left one, then close the right one within two seconds, while the middle column is still fading.',
     onMove: function (d, s) {
-      if (s.claimed && d.streak === 1) {
-        d.setReadout('<strong>Claimed for ' + fmt(s.turn) + '.</strong> Its fence went with it, including the two shared blocks in the middle column. The other room is now open on two sides: its own gap plus the wall it just lost. Three blocks to rebuild, and no gold hint until it is one block from closed.');
+      if (s.claimed && s.echo > 1) {
+        d.setReadout('<strong>Echo close, ' + fmt(s.turn) + '.</strong> The middle column was already gone. What held this room in was the ghost of it, and the game pays for that:<span class="formula">' + fmt(s.base) + ' × 1.25 = ' + fmt(s.turn) + '</span>Two rooms, one wall, both claimed. This is the combo the mechanic exists for.');
+      } else if (s.claimed && d.streak === 1) {
+        d.setReadout('<strong>Claimed for ' + fmt(s.turn) + '.</strong> Its fence went with it, including the two shared blocks in the middle column — but look at them: they are fading, not gone. For two seconds they still count as a wall — which is why the board has just lit up with gold. Close the room on the right now, on the gap at its far right edge, and it pays ×1.25.');
       } else if (s.claimed) {
-        d.setReadout('<strong>Second claim, ' + fmt(s.turn) + '.</strong> You rebuilt the wall and closed it, with the streak multiplier helping. Compare with step 4, where one domino would have taken both for 480.');
+        d.setReadout('<strong>Second claim, ' + fmt(s.turn) + '.</strong> No echo on this one: the wall was real, because you rebuilt it. Reset and close the right room while the middle column is still fading to see the ×1.25.');
       } else {
-        d.setReadout('<strong>Block placed.</strong> ' + (d.hints.length ? 'A gold cell is back: the room is one block from closed.' : 'Keep going: the room still needs more wall before a single block can close it.'));
+        d.setReadout('<strong>Block placed.</strong> ' + (d.hints.length ? 'A gold cell is back: a room is one block from closed.' : 'Keep going: the room still needs more wall before a single block can close it.'));
+      }
+    },
+    onEchoEnd: function (d) {
+      if (d.streak === 1) {
+        d.setReadout('<strong>The echo faded.</strong> The ghosts are gone and the right room is open on two sides: its own gap plus the wall it lost. Two blocks to rebuild, and no gold hint until it is one block from closed. Reset and try it inside the window.');
       }
     }
   });
@@ -913,6 +1150,20 @@
       this.setAttribute('aria-pressed', 'true'); mode = this.dataset.mode; restart();
     });
     restart(); requestAnimationFrame(frame);
+  })();
+
+  // ── Survey map (static illustration) ─────────────────────
+  (function () {
+    var el = document.querySelector('[data-litmap]');
+    if (!el) return;
+    // 23 of the 49 inner cells lit: seven rows of seven, the clumped shape a
+    // real run leaves behind rather than a scatter.
+    var pattern = '.###....#####..####....###....##.##....###...#...';
+    for (var i = 0; i < pattern.length; i++) {
+      var d = document.createElement('div');
+      d.className = 'lc' + (pattern.charAt(i) === '#' ? ' on' : '');
+      el.appendChild(d);
+    }
   })();
 
   // ── Piece shelf ──────────────────────────────────────────

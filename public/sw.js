@@ -1,7 +1,7 @@
 // Service worker — network-first with auto-update
 // Bump CACHE_VERSION on each deploy (Vite's hashed filenames handle asset busting,
 // but this ensures the SW itself triggers an update check).
-const CACHE_NAME = 'enclave-v0.1.0';
+const CACHE_NAME = 'enclave-v0.2.0';
 
 const PRECACHE_URLS = [
   '/',

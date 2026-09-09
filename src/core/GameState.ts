@@ -4,7 +4,7 @@ import { Difficulty, GameConfig, TerritoryConfig, DEFAULT_CONFIG } from './Confi
 import { dailyKey, dailySeed } from './Daily';
 import { getProgressStatus } from './Progression';
 import { mulberry32, randomSeed } from './Random';
-import { getPersonalBest, recordPersonalBest } from './Settings';
+import { getPersonalBest, recordPbTimeline, recordPersonalBest } from './Settings';
 import {
   PieceInstance, FeedbackEvent, ClaimResult, ClaimPoints, ScoreBreakdown, Region,
   RunEndCause, RunSummary, GridPos, CellColor, EchoWall,
@@ -25,6 +25,13 @@ interface EchoRecord extends TimedCell {
 function cellKey(p: GridPos): string {
   return `${p.row},${p.col}`;
 }
+
+/**
+ * How many seconds of a run the score timeline keeps. Fifteen minutes is far
+ * past any survivable Classic run, and the cap is what stops a tab left open
+ * on a paused game from growing an unbounded array.
+ */
+const TIMELINE_CAP = 900;
 
 /**
  * What a stretch of floor is worth: full price for ground never claimed,
@@ -72,6 +79,14 @@ export class GameState {
   pieceElapsed = 0;
   gameElapsed = 0;
   drainRate = 1;
+  /**
+   * The score at each whole second of the run, index i being second i.
+   *
+   * Sampled off the game clock rather than off placements, because what it
+   * feeds is a pace line: the ghost of a past run has to keep moving while
+   * this one is still thinking about where the piece goes.
+   */
+  scoreTimeline: number[] = [];
 
   totalTurns = 0;
   claims = 0;
@@ -269,6 +284,7 @@ export class GameState {
     this.pieceElapsed = 0;
     this.gameElapsed = 0;
     this.drainRate = 1;
+    this.scoreTimeline = [];
     this.totalTurns = 0;
     this.claims = 0;
     this.cellsClaimed = 0;
@@ -305,6 +321,7 @@ export class GameState {
     if (this.isGameOver) return false;
     this.pieceElapsed += dt;
     this.gameElapsed += dt;
+    this.sampleTimeline();
     // Echo walls run on the game clock, not on placements, so this is the one
     // place they can fade out.
     this.filterEchoes(c => c.expiresAt > this.gameElapsed);
@@ -321,6 +338,18 @@ export class GameState {
       return true;
     }
     return false;
+  }
+
+  /**
+   * One score sample per whole second. The loop fills every second a long
+   * frame stepped over, so index i is always second i — a backgrounded tab
+   * must not shift the whole curve left.
+   */
+  private sampleTimeline(): void {
+    const second = Math.floor(this.gameElapsed);
+    while (this.scoreTimeline.length <= second && this.scoreTimeline.length < TIMELINE_CAP) {
+      this.scoreTimeline.push(this.score);
+    }
   }
 
   addTime(seconds: number): void {
@@ -605,7 +634,11 @@ export class GameState {
   }
 
   finalizeBest(): void {
-    recordPersonalBest(this.difficulty, this.score, this.dailyDate ?? undefined);
+    const isBest = recordPersonalBest(this.difficulty, this.score, this.dailyDate ?? undefined);
+    // The pace line races the clock, and only the timed modes have one: the
+    // daily deals the same thirty pieces to everyone with no seconds to
+    // compare, so a curve stored for it would be measuring thinking time.
+    if (isBest && this.difficulty !== 'daily') recordPbTimeline(this.difficulty, this.scoreTimeline);
   }
 
   buildRunSummary(endCauseOverride?: RunEndCause): RunSummary {
@@ -633,6 +666,7 @@ export class GameState {
       // Infinity, which has no business in a summary that gets serialised.
       piecesLeft: Number.isFinite(this.piecesRemaining) ? this.piecesRemaining : 0,
       gameElapsed: this.gameElapsed,
+      scoreTimeline: [...this.scoreTimeline],
       previousBest: this.highScore,
       isNewBest: this.score > this.highScore,
     };

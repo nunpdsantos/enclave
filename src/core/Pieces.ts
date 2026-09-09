@@ -107,7 +107,7 @@ const SOVEREIGN_BAG = bagWith(WARDEN_BAG, { domino: 2, square: 2, pent_line: 0 }
  * What each progress tier is dealt, indexed by `getProgressStatus().tierIndex`
  * (SETTLER, BUILDER, ARCHITECT, WARDEN, SOVEREIGN, LEGEND).
  *
- * Difficulty here is the mix, not the pace: every bag holds 23–25 pieces, so
+ * Difficulty here is the mix, not the pace: every bag holds 23–24 pieces, so
  * the deal keeps its rhythm and only the material changes. SETTLER and BUILDER
  * share the base bag — the ramp starts once the player has proved they can
  * close rooms at all.

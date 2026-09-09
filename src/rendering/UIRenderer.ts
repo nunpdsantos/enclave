@@ -17,7 +17,8 @@ const SURVEY_FLASH_SECONDS = 2.2;
  * Layout (top → bottom):
  *   ┌ TIER chip + progress ─── SCORE ─── BEST ┐
  *   │ SURVEY 23/49      STREAK ×N  ●●○        │
- *   │ 42s ━━━━━━━━━━━━━━━━━━━━━━━━━━━━ ⚡1.0  │  ← time bank (thick) + speed bonus (thin)
+ *   │ 42s      PB PACE 1,240            ⚡1.0 │  ← pace sits between the two
+ *   │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │  ← time bank (thick) + speed bonus (thin)
  *   └───────────────── board ─────────────────┘
  */
 export class UIRenderer {
@@ -36,6 +37,7 @@ export class UIRenderer {
   private rankText: Text;
   private goalText: Text;
   private surveyText: Text;
+  private paceText: Text;
   private progressBarGfx: Graphics;
   private layout!: Layout;
 
@@ -173,6 +175,19 @@ export class UIRenderer {
     });
     this.surveyText.visible = false;
 
+    // Hidden until a stored personal-best curve says what to race
+    this.paceText = new Text({
+      text: '',
+      style: new TextStyle({
+        fontFamily: FONT_MONO,
+        fontSize: 10,
+        fontWeight: '400',
+        fill: THEME.textMuted,
+        letterSpacing: 1,
+      }),
+    });
+    this.paceText.visible = false;
+
     this.timerBarGfx = new Graphics();
     this.speedBarGfx = new Graphics();
     this.progressBarGfx = new Graphics();
@@ -192,6 +207,7 @@ export class UIRenderer {
     this.container.addChild(this.timerBarGfx);
     this.container.addChild(this.timerText);
     this.container.addChild(this.speedText);
+    this.container.addChild(this.paceText);
   }
 
   setLayout(layout: Layout): void {
@@ -244,6 +260,14 @@ export class UIRenderer {
     this.speedText.anchor.set(1, 1);
     this.speedText.x = right;
     this.speedText.y = layout.gridOriginY - 27;
+
+    // Pace: centred under the score, in the only band the HUD leaves free.
+    // The row above holds SURVEY hard left and BEST hard right; this row is
+    // the timer's, and at 360 px "42s" ends around x = 52 while "⚡1.0x"
+    // starts around x = 297, so a centred 10 px line clears both.
+    this.paceText.anchor.set(0.5, 1);
+    this.paceText.x = layout.width / 2;
+    this.paceText.y = layout.gridOriginY - 28;
   }
 
   /** Per-frame: score punch decay, and the survey celebration timing out */
@@ -284,6 +308,23 @@ export class UIRenderer {
       this.surveyText.style.fill = this.surveyLit >= SURVEY_GOLD_AT ? THEME.gold : THEME.textMuted;
     }
     this.surveyText.visible = true;
+  }
+
+  /**
+   * The ghost of the personal best: what that run had banked at this second.
+   *
+   * Green once the current run is in front, muted while it is behind, gone
+   * when there is nothing stored to race — a first run should not be shown an
+   * empty scoreboard. Called on the second, not per frame.
+   */
+  updatePace(score: number, paceScore: number | null): void {
+    if (paceScore === null) {
+      this.paceText.visible = false;
+      return;
+    }
+    this.paceText.text = `PB PACE ${paceScore.toLocaleString()}`;
+    this.paceText.style.fill = score > paceScore ? THEME.success : THEME.textMuted;
+    this.paceText.visible = true;
   }
 
   updateScore(score: number): void {

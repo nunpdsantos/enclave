@@ -150,6 +150,11 @@ export interface RunSummary {
   /** Pieces still undealt under a budget; 0 in the unbudgeted modes */
   piecesLeft: number;
   gameElapsed: number;
+  /**
+   * The score at each whole second of the run, index i being second i. Stored
+   * for a personal best so the next run can be raced against its pace.
+   */
+  scoreTimeline: number[];
   previousBest: number;
   isNewBest: boolean;
 }

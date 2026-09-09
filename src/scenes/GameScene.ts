@@ -15,7 +15,7 @@ import { INNER_CELLS } from '../core/Board';
 import { FeedbackEvent, GRID_SIZE, GridPos, PieceInstance, Region, RunEndCause, RunSummary } from '../core/types';
 import { Difficulty, DIFFICULTY_LABELS, GameConfig } from '../core/Config';
 import { getProgressStatus } from '../core/Progression';
-import { loadSettings, updateSettings } from '../core/Settings';
+import { getPbTimeline, loadSettings, pbPaceAt, updateSettings } from '../core/Settings';
 import {
   MOTION_LABELS, MOTION_ORDER, REDUCED_PARTICLE_SCALE, isReducedMotion, onReducedMotionChange,
 } from '../core/Accessibility';
@@ -68,6 +68,10 @@ export class GameScene implements Scene {
   private alertsFired = { ten: false, five: false, two: false };
   private lastTickSecond = -1;
   private lastHapticSecond = -1;
+  /** The personal best's score curve, empty when there is no ghost to race */
+  private pbTimeline: number[] = [];
+  /** Whole second the pace readout was last written at */
+  private lastPaceSecond = -1;
   private progressTierIndex = 0;
   private skipCountdown: boolean;
   private hapticsEnabled: boolean;
@@ -198,11 +202,19 @@ export class GameScene implements Scene {
     }
     this.updateProgressPresentation(false);
 
+    // A ghost to race needs a stored run and seconds to compare it over. The
+    // daily has neither: the same thirty pieces for everyone, no clock.
+    this.pbTimeline = this.gameState.difficulty === 'daily'
+      ? []
+      : getPbTimeline(this.gameState.difficulty);
+    this.uiRenderer.updatePace(0, null);
+
     this.countdownTime = this.skipCountdown ? 0 : 3;
     this.lastCountdownNumber = 4;
     this.alertsFired = { ten: false, five: false, two: false };
     this.lastTickSecond = -1;
     this.lastHapticSecond = -1;
+    this.lastPaceSecond = -1;
     this.progressTierIndex = getProgressStatus(this.gameState.difficulty, this.gameState.score).tierIndex;
     this.gameOverSequenceActive = false;
     this.gameOverElapsed = 0;
@@ -288,6 +300,7 @@ export class GameScene implements Scene {
     this.animationManager.update(animDt);
     if (this.gameState.tick(dt)) { this.startGameOverSequence(); return; }
     this.syncEchoWalls();
+    this.updatePaceReadout();
 
     this.fxManager.update(dt, this.gameState.drainRate, this.gameState.gameElapsed);
     // Without a clock there is no bar to fill, no urgency to announce and no
@@ -529,6 +542,19 @@ export class GameScene implements Scene {
       saveStats(summary.difficulty, foldRun(loadStats(summary.difficulty), summary));
     }
     return summary;
+  }
+
+  /**
+   * The pace line, on the second. That is the resolution the stored curve has,
+   * so refreshing it per frame would rewrite the same string sixty times over
+   * for a number that only moves once.
+   */
+  private updatePaceReadout(): void {
+    if (this.pbTimeline.length === 0) return;
+    const second = Math.floor(this.gameState.gameElapsed);
+    if (second === this.lastPaceSecond) return;
+    this.lastPaceSecond = second;
+    this.uiRenderer.updatePace(this.gameState.score, pbPaceAt(this.pbTimeline, second));
   }
 
   private haptic(pattern: number | number[]): void {
