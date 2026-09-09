@@ -297,7 +297,7 @@ export class UIRenderer {
       this.tierPanel, this.rankText, this.goalText, this.progressBarGfx,
       this.streakText, this.streakPips, this.surveyText, this.paceText,
       this.speedText, this.speedBarGfx, this.timerText, this.timerBarGfx,
-      this.scoreLabelText,
+      this.scoreLabelText, this.bestLabelText, this.bestText,
     ]) {
       node.visible = false;
     }
@@ -374,10 +374,12 @@ export class UIRenderer {
    *
    *   RELIEF IN 12 TURNS          ← what the run is
    *   CAPTURED 3      HELD 12     ← the two things that pay
-   *   SCORE 940  BEST 1,200   NEXT RAIDERS: TURN 5
+   *   SCORE 940       NEXT RAIDERS: TURN 5
    *
    * The right of the second line stays empty because the pause button lives
-   * there; the third clears it.
+   * there; the third clears it. BEST is not here: at 360 px a third item on
+   * the last row runs into the forecast, and the forecast is the one a player
+   * has to be able to read. The menu and the game-over screen carry the best.
    */
   private layoutSiegeHud(layout: Layout, left: number, right: number): void {
     this.siegeReliefText.anchor.set(0.5, 0);
@@ -396,19 +398,17 @@ export class UIRenderer {
     this.scoreText.x = left;
     this.scoreText.y = 46;
 
-    this.bestLabelText.visible = false;
-    this.bestText.anchor.set(0.5, 0);
-    this.bestText.x = layout.width / 2;
-    this.bestText.y = 46;
-
     this.siegeForecastText.anchor.set(1, 0);
     this.siegeForecastText.x = right;
     this.siegeForecastText.y = 46;
 
-    // The breach warning takes the strip between the HUD and the board
-    this.siegeBreachText.anchor.set(0.5, 1);
+    // The breach warning goes *under* the board, in the gap above the hand.
+    // The HUD's third row is already full at 360 px — score, best and the
+    // wave forecast — and the forecast is the last thing to cover when a
+    // raider is two steps from the Keep.
+    this.siegeBreachText.anchor.set(0.5, 0);
     this.siegeBreachText.x = layout.width / 2;
-    this.siegeBreachText.y = layout.gridOriginY - 4;
+    this.siegeBreachText.y = layout.gridOriginY + layout.gridSize + 2;
   }
 
   /** Per-frame: score punch decay, and the survey celebration timing out */
@@ -574,13 +574,12 @@ export class UIRenderer {
   }
 
   updateHighScore(highScore: number): void {
+    // The siege's HUD has three lines and no room for a fourth number
+    if (this.siegeMode) return;
     if (highScore > 0) {
-      // The siege has no room for a label above the number, so it carries one
-      this.bestText.text = this.siegeMode
-        ? `BEST ${highScore.toLocaleString()}`
-        : highScore.toLocaleString();
+      this.bestText.text = highScore.toLocaleString();
       this.bestText.visible = true;
-      this.bestLabelText.visible = !this.siegeMode;
+      this.bestLabelText.visible = true;
     } else {
       this.bestText.visible = false;
       this.bestLabelText.visible = false;
@@ -589,14 +588,17 @@ export class UIRenderer {
 
   /** Flash the BEST readout gold once the player passes it */
   markNewBest(score: number): void {
-    this.bestText.text = this.siegeMode
-      ? `BEST ${score.toLocaleString()}`
-      : score.toLocaleString();
+    // With no BEST readout to flash, the siege's own score turns gold
+    if (this.siegeMode) {
+      this.scoreText.style.fill = THEME.gold;
+      return;
+    }
+    this.bestText.text = score.toLocaleString();
     this.bestText.style.fill = THEME.gold;
     this.bestLabelText.text = 'NEW BEST';
     this.bestLabelText.style.fill = THEME.gold;
     this.bestText.visible = true;
-    this.bestLabelText.visible = !this.siegeMode;
+    this.bestLabelText.visible = true;
   }
 
   updateProgress(difficulty: Difficulty, score: number): void {

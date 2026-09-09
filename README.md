@@ -199,8 +199,13 @@ The HUD is three lines in 64 px, and the order is the argument:
 ```
       RELIEF IN 12 TURNS
 CAPTURED 3        HELD 12
-SCORE 940  BEST 1,200   NEXT RAIDERS: TURN 5
+SCORE 940          NEXT RAIDERS: TURN 5
 ```
+
+The best is not on it: at 360 px a third item on the last row runs into the
+forecast, and the forecast is the one a player has to be able to read. The
+menu and the game-over screen carry the best instead. A breach warning goes
+*under* the board, in the gap above the hand, for the same reason.
 
 No score tiers, no streak, no clock bar, no pace ghost, no BIG ROOM
 celebration, no room dissolve or shockwave on enclosure. Instead: a persistent
