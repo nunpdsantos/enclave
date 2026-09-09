@@ -287,6 +287,45 @@ describe('review 4, finding 1 — a score goes to the board its run was played i
     expect(board.getEntries().map(e => e.name)).toEqual(['Ann']);
   });
 
+  // review 5, finding 4 — the same routing, one await further on: the board
+  // was derived from the replay and then read back off the client after the
+  // corrective read, which is mutable state anything else can change.
+  it('posts to the replay\'s board when the client is switched mid-submission', async () => {
+    deferredFetch();
+    // The client is on Blitz — the menu was left there — and the run being
+    // posted was played in Classic.
+    const board = new Leaderboard('blitz');
+    only('GET', 'difficulty=blitz').resolve([]);
+    await board.waitForRemote();
+
+    const posted = board.submit(1200, 'Ann', emptyReplay('classic'), 'signed-token');
+    await settle();
+    // Pointing the client at Classic is itself a read, and the menu is still
+    // on screen behind the name entry taking taps while it is in the air.
+    const corrective = only('GET', 'difficulty=classic');
+
+    const switched = board.switchDifficulty('daily', '2026-09-09');
+    await settle();
+    only('GET', 'difficulty=daily-2026-09-09').resolve([row('Daily player', 500)]);
+    await switched;
+    corrective.resolve([]);
+    await settle();
+
+    // The board on screen followed the menu; the POST followed the replay.
+    // It used to read the board back off the client after the await, which
+    // sent a Classic replay to `?difficulty=daily-2026-09-09` to be refused
+    // as `shape` — a run played and proved, lost to a tap.
+    expect(board.getBoardId()).toBe('daily-2026-09-09');
+    const post = only('POST');
+    expect(post.url).toContain('difficulty=classic');
+
+    post.resolve({ rank: 1, entries: [row('Ann', 1200)] });
+    expect(await posted).toEqual({ rank: 1, verified: true });
+    // And Classic's answer is kept for Classic rather than drawn over the
+    // board the player is now looking at.
+    expect(board.getEntries().map(e => e.name)).toEqual(['Daily player']);
+  });
+
   it('keeps a daily on the day it was dealt from', async () => {
     deferredFetch();
     const board = new Leaderboard('classic');

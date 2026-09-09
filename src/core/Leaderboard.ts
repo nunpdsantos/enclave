@@ -327,19 +327,33 @@ export class Leaderboard {
     // and a Classic replay went to `?difficulty=blitz` to be refused as
     // `shape`. The replay names its own mode and daily date, and it is that
     // same pair the server checks the query against — so reading the board
-    // out of the replay is the one way the two cannot disagree. Already the
-    // loaded board in the ordinary case, where this costs nothing.
-    await this.switchDifficulty(
-      replay.mode,
-      replay.mode === 'daily' ? replay.dailyKey ?? this.dailyDate : this.dailyDate,
-    );
+    // out of the replay is the one way the two cannot disagree.
+    //
+    // Captured here, before anything is awaited, and used for the request and
+    // for its answer. Reading it back off `this` afterwards was reading state
+    // that anything else holding this shared client can change while the
+    // corrective read and then the POST are in the air — which put the run
+    // back on the board the *menu* had moved to, the very failure this
+    // paragraph exists to close.
+    const dailyDate = replay.mode === 'daily'
+      ? replay.dailyKey ?? this.dailyDate
+      : this.dailyDate;
+    const board = boardId(replay.mode, dailyDate);
+    // Point the shared client at it too, so the panel under the name entry is
+    // the board the score is going to. A no-op when it is already there,
+    // which is the ordinary case.
+    await this.switchDifficulty(replay.mode, dailyDate);
 
     if (!token) {
-      return { rank: this.submitLocal(score, cleanName), verified: false, reason: 'unticketed' };
+      return {
+        rank: this.submitLocal(score, cleanName, board),
+        verified: false,
+        reason: 'unticketed',
+      };
     }
 
     try {
-      const res = await fetch(`${API_URL}?difficulty=${this.getBoardId()}`, {
+      const res = await fetch(`${API_URL}?difficulty=${board}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -355,7 +369,7 @@ export class Leaderboard {
       // board, and the reason is what the screen tells the player.
       if (res.status === 400) {
         return {
-          rank: this.submitLocal(score, cleanName),
+          rank: this.submitLocal(score, cleanName, board),
           verified: false,
           reason: await refusalReason(res),
         };
@@ -366,12 +380,13 @@ export class Leaderboard {
 
       const data = await res.json();
       if (data.entries && Array.isArray(data.entries)) {
-        this.entries = data.entries.map(toEntry);
-        this.saveLocal();
+        // The board this answer belongs to, which is not necessarily the one
+        // on screen by now — see the capture above.
+        this.writeLocal(board, data.entries.map(toEntry));
       }
       return { rank: data.rank || null, verified: true };
     } catch {
-      return { rank: this.submitLocal(score, cleanName), verified: false };
+      return { rank: this.submitLocal(score, cleanName, board), verified: false };
     }
   }
 
@@ -430,42 +445,53 @@ export class Leaderboard {
     }
     // Superseded, or answering for a board that is no longer loaded
     if (seq !== this.sequence || this.getBoardId() !== board) return;
-    if (fetched) {
-      this.entries = fetched;
-      this.saveLocal();
-    }
+    if (fetched) this.writeLocal(board, fetched);
     this.fetchPromise = null;
   }
 
-  private submitLocal(score: number, name: string): number | null {
+  /** Rank a score into a named board's rows, and keep them. */
+  private submitLocal(score: number, name: string, board: string): number | null {
+    const entries = board === this.getBoardId() ? this.entries : this.readLocal(board);
     const entry: LeaderboardEntry = { name, score, date: new Date().toISOString(), mine: true };
 
-    let rank = this.entries.findIndex(e => score > e.score);
-    if (rank === -1) rank = this.entries.length;
+    let rank = entries.findIndex(e => score > e.score);
+    if (rank === -1) rank = entries.length;
     if (rank >= MAX_ENTRIES) return null;
 
-    this.entries.splice(rank, 0, entry);
-    if (this.entries.length > MAX_ENTRIES) this.entries.length = MAX_ENTRIES;
-    this.saveLocal();
+    entries.splice(rank, 0, entry);
+    if (entries.length > MAX_ENTRIES) entries.length = MAX_ENTRIES;
+    this.writeLocal(board, entries);
     return rank + 1;
   }
 
   private loadLocal(): void {
+    this.entries = this.readLocal(this.getBoardId());
+  }
+
+  /** A board's cached rows, whether or not it is the board on screen. */
+  private readLocal(board: string): LeaderboardEntry[] {
     try {
-      const raw = localStorage.getItem(storageKey(this.getBoardId()));
-      if (raw) {
-        this.entries = JSON.parse(raw);
-      } else {
-        this.entries = [];
-      }
+      const raw = localStorage.getItem(storageKey(board));
+      const parsed = raw ? JSON.parse(raw) : null;
+      return Array.isArray(parsed) ? parsed : [];
     } catch {
-      this.entries = [];
+      return [];
     }
   }
 
-  private saveLocal(): void {
+  /**
+   * Keep a board's rows, and show them only if that board is the one loaded.
+   *
+   * The board is named rather than taken from `this`, because rows arrive
+   * from requests that were sent for a board the client may since have
+   * switched away from: a submission's answer belongs to the run's board, and
+   * drawing it over whatever is on screen is how the Daily's ten ended up
+   * under Classic's heading — and in Classic's cache, where they stayed.
+   */
+  private writeLocal(board: string, entries: LeaderboardEntry[]): void {
+    if (board === this.getBoardId()) this.entries = entries;
     try {
-      localStorage.setItem(storageKey(this.getBoardId()), JSON.stringify(this.entries));
+      localStorage.setItem(storageKey(board), JSON.stringify(entries));
     } catch { /* */ }
   }
 }
