@@ -122,6 +122,22 @@ export class MenuScene implements Scene {
    */
   private selectorBottom = 0;
   private actionsBottom = 0;
+  /**
+   * A pointer is down on the menu, and a rebuild would eat its click.
+   *
+   * `createButton` fires `onClick` only when the *same* object instance gets
+   * both the press and the release: the press sets a flag on that instance,
+   * and the release reads it. Rebuilding the menu in between destroys the
+   * button that was pressed, so the release lands on a fresh one whose flag
+   * is false and nothing happens — a tap silently lost, with the next one
+   * working fine because no rebuild interrupts it.
+   *
+   * The menu could not do this until it grew a `resize()`: `SceneManager`
+   * called into it and found nothing, so a relayout on the menu was a no-op.
+   * Now that it is real, every rebuild waits for the finger to come up.
+   */
+  private pressed = false;
+  private relayoutPending = false;
 
   // Ambient background
   private bgGfx: Graphics;
@@ -159,8 +175,28 @@ export class MenuScene implements Scene {
   resize(width: number, height: number): void {
     this.width = width;
     this.height = height;
+    // Never mid-press: see `pressed`. The layout it would have produced is
+    // the layout it produces a moment later, and the tap is not recoverable.
+    if (this.pressed) { this.relayoutPending = true; return; }
     this.build();
   }
+
+  private onPointerDown = (): void => {
+    this.pressed = true;
+  };
+
+  /**
+   * Pixi listens for `pointerup` on the window in the *capture* phase, so its
+   * own dispatch — and any button's onClick — has already run by the time
+   * this bubble-phase listener sees the event. A rebuild here is therefore
+   * after the click it was waiting for, never instead of it.
+   */
+  private onPointerRelease = (): void => {
+    this.pressed = false;
+    if (!this.relayoutPending) return;
+    this.relayoutPending = false;
+    this.build();
+  };
 
   private initBlocks(): void {
     this.blocks = [];
@@ -1079,10 +1115,16 @@ export class MenuScene implements Scene {
   enter(): void {
     window.addEventListener('pointerdown', this.onFirstGesture);
     window.addEventListener('keydown', this.onFirstGesture);
+    window.addEventListener('pointerdown', this.onPointerDown);
+    window.addEventListener('pointerup', this.onPointerRelease);
+    window.addEventListener('pointercancel', this.onPointerRelease);
   }
 
   exit(): void {
     this.detachGestureWatch();
+    window.removeEventListener('pointerdown', this.onPointerDown);
+    window.removeEventListener('pointerup', this.onPointerRelease);
+    window.removeEventListener('pointercancel', this.onPointerRelease);
     this.container.removeAllListeners();
   }
 }
