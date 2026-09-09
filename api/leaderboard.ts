@@ -430,9 +430,10 @@ export const SUBMIT_STATUSES: SubmitStatus[] = ['ok', 'token', 'replay', 'alread
  */
 export const SUBMIT_SCRIPT = `
 local function badtype(key, want)
-  local kind = redis.call('TYPE', key)
-  -- A status reply arrives as { ok = 'hash' }; unwrap it without assuming it
-  if type(kind) == 'table' then kind = kind['ok'] end
+  -- TYPE answers with a status reply, and a status reply reaches Lua as a
+  -- table carrying one 'ok' field. A key that is not there answers 'none',
+  -- which is not a wrong type: it is the key this submission will create.
+  local kind = redis.call('TYPE', key)['ok']
   return kind ~= 'none' and kind ~= want
 end
 
