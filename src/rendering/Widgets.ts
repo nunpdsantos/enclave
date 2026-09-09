@@ -1,9 +1,10 @@
-import { Container, Graphics, Text, TextStyle } from 'pixi.js';
+import { Container, FederatedPointerEvent, Graphics, Rectangle, Text, TextStyle } from 'pixi.js';
 import { FONT_DISPLAY, FONT_MONO, THEME, drawButton, drawPanel } from './Theme';
 
 /**
  * Small reusable UI widgets built from PixiJS primitives so every scene
- * shares the same look: buttons, toggle pills, stat chips, section labels.
+ * shares the same look: buttons, toggle pills, sliders, stat chips, section
+ * labels.
  */
 
 export interface ButtonOptions {
@@ -193,6 +194,120 @@ export function createCycleToggle(
     render();
     onChange(index);
   });
+  return root;
+}
+
+export interface SliderOptions {
+  /** Centre of the row */
+  cx?: number;
+  cy?: number;
+  width?: number;
+  /** Hit height. Floored at 36: a 6 px track is not a thumb target. */
+  height?: number;
+  color?: number;
+}
+
+/**
+ * Horizontal 0–1 slider: label on the left, percentage on the right, a track
+ * with a knob underneath.
+ *
+ * The whole row is the hit area rather than the knob, because on a phone the
+ * knob is smaller than the finger: a tap anywhere jumps the value there and a
+ * drag follows. `onChange` fires on every whole percent, which is fine enough
+ * to hear and coarse enough not to flood the thing being controlled.
+ */
+export function createSlider(
+  label: string,
+  value: number,
+  onChange: (value: number) => void,
+  opts: SliderOptions = {},
+): Container {
+  const cx = opts.cx ?? 0;
+  const cy = opts.cy ?? 0;
+  const w = opts.width ?? 240;
+  const h = Math.max(36, opts.height ?? 40);
+  const color = opts.color ?? THEME.accent;
+  const knobR = 8;
+  const left = cx - w / 2;
+  const x0 = left + knobR;
+  const x1 = cx + w / 2 - knobR;
+  const trackY = cy + 7;
+
+  const root = new Container();
+  const gfx = new Graphics();
+  root.addChild(gfx);
+
+  const name = new Text({
+    text: label,
+    style: new TextStyle({
+      fontFamily: FONT_DISPLAY,
+      fontSize: 10,
+      fontWeight: '700',
+      fill: THEME.textSecondary,
+      letterSpacing: 1.5,
+    }),
+  });
+  name.anchor.set(0, 0.5);
+  name.x = left;
+  name.y = cy - 9;
+  root.addChild(name);
+
+  const readout = new Text({
+    text: '',
+    style: new TextStyle({ fontFamily: FONT_MONO, fontSize: 11, fill: THEME.textPrimary }),
+  });
+  readout.anchor.set(1, 0.5);
+  readout.x = cx + w / 2;
+  readout.y = cy - 9;
+  root.addChild(readout);
+
+  let current = Math.max(0, Math.min(1, value));
+  const render = (): void => {
+    const kx = x0 + current * (x1 - x0);
+    gfx.clear();
+    gfx.roundRect(left, trackY - 3, w, 6, 3);
+    gfx.fill({ color: 0x000000, alpha: 0.45 });
+    gfx.roundRect(left, trackY - 3, Math.max(6, kx - left), 6, 3);
+    gfx.fill({ color, alpha: 0.9 });
+    gfx.circle(kx, trackY, knobR);
+    gfx.fill({ color: THEME.textPrimary });
+    gfx.circle(kx, trackY, knobR);
+    gfx.stroke({ color, alpha: 0.9, width: 2 });
+    readout.text = `${Math.round(current * 100)}%`;
+  };
+  render();
+
+  const setFromX = (localX: number): void => {
+    const raw = (localX - x0) / (x1 - x0);
+    const next = Math.round(Math.max(0, Math.min(1, raw)) * 100) / 100;
+    if (next === current) return;
+    current = next;
+    render();
+    onChange(current);
+  };
+
+  let dragging = false;
+  const move = (e: FederatedPointerEvent): void => setFromX(root.toLocal(e.global).x);
+  const end = (): void => {
+    if (!dragging) return;
+    dragging = false;
+    root.off('globalpointermove', move);
+  };
+
+  root.eventMode = 'static';
+  root.cursor = 'pointer';
+  // Explicit, because the graphics are a 6 px track and two lines of small text
+  root.hitArea = new Rectangle(left - knobR, cy - h / 2, w + knobR * 2, h);
+  root.on('pointerdown', (e) => {
+    e.stopPropagation();
+    dragging = true;
+    // Tracked globally so the value keeps following a finger that has slid off
+    root.on('globalpointermove', move);
+    setFromX(root.toLocal(e.global).x);
+  });
+  root.on('pointerup', (e) => { e.stopPropagation(); end(); });
+  root.on('pointerupoutside', end);
+  root.on('pointercancel', end);
   return root;
 }
 

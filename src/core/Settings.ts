@@ -20,6 +20,10 @@ export interface GameSettings {
   sfx: boolean;
   /** Background music on/off */
   music: boolean;
+  /** Sound-effect level, 0–1. The bus applies it through a perceptual curve. */
+  sfxVolume: number;
+  /** Music level, 0–1 */
+  musicVolume: number;
   /** Vibration feedback on supported devices */
   haptics: boolean;
   /** Whether the first-run tutorial has been dismissed */
@@ -36,9 +40,19 @@ export interface GameSettings {
 
 const SETTINGS_KEY = 'enclave_settings_v1';
 
+/**
+ * The default slider positions. They are not 1: the mix the game shipped with
+ * is the middle of the knob, so a player who wants it louder has somewhere to
+ * go. AudioManager scales its buses so these two reproduce that mix exactly.
+ */
+export const DEFAULT_SFX_VOLUME = 0.8;
+export const DEFAULT_MUSIC_VOLUME = 0.7;
+
 const DEFAULT_SETTINGS: GameSettings = {
   sfx: true,
   music: true,
+  sfxVolume: DEFAULT_SFX_VOLUME,
+  musicVolume: DEFAULT_MUSIC_VOLUME,
   haptics: true,
   tutorialSeen: false,
   telemetry: true,
@@ -57,6 +71,19 @@ function gamesKey(difficulty: Difficulty): string {
 
 let cached: GameSettings | null = null;
 
+/** Stored volumes go straight into a gain node, so a bad one must not survive */
+function clampVolume(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(0, Math.min(1, value))
+    : fallback;
+}
+
+function sanitise(settings: GameSettings): GameSettings {
+  settings.sfxVolume = clampVolume(settings.sfxVolume, DEFAULT_SFX_VOLUME);
+  settings.musicVolume = clampVolume(settings.musicVolume, DEFAULT_MUSIC_VOLUME);
+  return settings;
+}
+
 export function loadSettings(): GameSettings {
   if (cached) return cached;
   let loaded: GameSettings = { ...DEFAULT_SETTINGS };
@@ -67,12 +94,12 @@ export function loadSettings(): GameSettings {
       loaded = { ...DEFAULT_SETTINGS, ...parsed };
     }
   } catch { /* storage unavailable */ }
-  cached = loaded;
-  return loaded;
+  cached = sanitise(loaded);
+  return cached;
 }
 
 export function updateSettings(partial: Partial<GameSettings>): GameSettings {
-  const next = { ...loadSettings(), ...partial };
+  const next = sanitise({ ...loadSettings(), ...partial });
   cached = next;
   try {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));

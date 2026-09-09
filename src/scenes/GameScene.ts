@@ -12,7 +12,7 @@ import { FXManager } from '../rendering/FXManager';
 import { DragController, DragState } from '../input/DragController';
 import { AudioManager } from '../audio/AudioManager';
 import { INNER_CELLS } from '../core/Board';
-import { FeedbackEvent, GridPos, PieceInstance, Region, RunEndCause, RunSummary } from '../core/types';
+import { FeedbackEvent, GRID_SIZE, GridPos, PieceInstance, Region, RunEndCause, RunSummary } from '../core/types';
 import { Difficulty, DIFFICULTY_LABELS, GameConfig } from '../core/Config';
 import { getProgressStatus } from '../core/Progression';
 import { loadSettings, updateSettings } from '../core/Settings';
@@ -536,6 +536,14 @@ export class GameScene implements Scene {
     if (navigator.vibrate) { try { navigator.vibrate(pattern); } catch { /* */ } }
   }
 
+  /** Mean column of a set of cells — where on the board a sound should come from */
+  private centreColumn(cells: GridPos[]): number {
+    if (cells.length === 0) return (GRID_SIZE - 1) / 2;
+    let sum = 0;
+    for (const c of cells) sum += c.col;
+    return sum / cells.length;
+  }
+
   // ── Pause ──
 
   private buildPauseButton(): void {
@@ -819,7 +827,11 @@ export class GameScene implements Scene {
     for (const event of events) {
       switch (event.type) {
         case 'place': {
-          this.audioManager.playPlace(this.gameState.streakCount, event.speedFraction ?? 1);
+          // Panned to where the piece landed, so the board has a stereo image
+          const placedCol = event.placedCells?.length
+            ? this.centreColumn(event.placedCells)
+            : origin?.col ?? (GRID_SIZE - 1) / 2;
+          this.audioManager.playPlace(this.gameState.streakCount, event.speedFraction ?? 1, placedCol);
           this.refreshBoard();
           this.haptic(10);
           if (event.placedCells && event.pieceColor !== undefined) {
@@ -849,10 +861,20 @@ export class GameScene implements Scene {
           const claim = event.claim!;
           const rooms = claim.regions.length;
           const biggest = Math.max(...claim.regions.map(r => r.area));
-          // Sound scales with the size of the claim; double closes add a higher run
-          this.audioManager.playClaim(claim.totalArea, rooms, this.gameState.streakCount);
+          // Sound scales with the size of the claim; double closes add a higher
+          // run, and it comes from the columns the rooms occupied. A claim a
+          // ghost wall helped seal gets the echo instead: the same run, again,
+          // quieter and late.
+          const claimCol = this.centreColumn(claim.regions.flatMap(r => r.cells));
+          const echoed = (event.scoreBreakdown?.echoMultiplier ?? 1) > 1;
+          if (echoed) {
+            this.audioManager.playEchoClaim(claim.totalArea, rooms, this.gameState.streakCount, claimCol);
+            this.haptic([18, 40, 18]);
+          } else {
+            this.audioManager.playClaim(claim.totalArea, rooms, this.gameState.streakCount, claimCol);
+            this.haptic(biggest >= 9 ? [40, 30, 60] : 30);
+          }
           if (this.gameState.streakCount >= 3) this.audioManager.playComboReverb(this.gameState.streakCount);
-          this.haptic(biggest >= 9 ? [40, 30, 60] : 30);
 
           this.fxManager.triggerShake(Math.min(8, 2 + biggest * 0.4), 0.12);
           this.fxManager.triggerImpactFrame(0.1, 0.05);
@@ -920,6 +942,9 @@ export class GameScene implements Scene {
         case 'survey': {
           // The lit map is already wiped, so the floor dissolves off the board
           // while the flash and the label say what it was worth.
+          this.audioManager.playSurvey();
+          // Its own pattern: the rarest thing in a run should not feel like a claim
+          this.haptic([30, 40, 30, 40, 60]);
           this.gridRenderer.surveyFadeOut();
           this.fxManager.triggerFlash(0.45, 3, THEME.gold);
           this.animationManager.showStreakPopup(

@@ -11,7 +11,8 @@ import {
 import { AudioManager } from '../audio/AudioManager';
 import { FONT_DISPLAY, FONT_MONO, THEME, DIFFICULTY_COLORS, drawPanel, drawBeveledBlock, easeOutBack } from '../rendering/Theme';
 import {
-  createButton, createToggle, createCycleToggle, createSectionLabel, createBodyText, createTextButton,
+  createButton, createToggle, createCycleToggle, createSectionLabel, createBodyText,
+  createSlider, createTextButton,
 } from '../rendering/Widgets';
 
 const DIFFICULTIES: Difficulty[] = ['classic', 'blitz', 'daily'];
@@ -497,10 +498,34 @@ export class MenuScene implements Scene {
 
     group.addChild(createSectionLabel('OPTIONS', cx, top + 14, panelW - 60));
 
+    // Volume before comfort: it is the setting people come here for, and the
+    // pills on the menu only say on or off. The heading is the first thing a
+    // short screen loses — the two sliders label themselves — and after that
+    // the comfort rows tighten. Nothing below is ever pushed off.
+    const roomy = this.height >= 640;
+    if (roomy) group.addChild(createSectionLabel('AUDIO', cx, top + 40, panelW - 140));
+    const sliderY = roomy ? top + 88 : top + 50;
+    group.addChild(createSlider('SFX', this.audio.sfxLevel, (v) => {
+      this.audio.unlock();
+      this.audio.setSfxVolume(v);
+      this.audio.playVolumePreview('sfx');
+    }, { cx, cy: sliderY, width: rowW }));
+    group.addChild(createSlider('MUSIC', this.audio.musicLevel, (v) => {
+      this.audio.unlock();
+      this.audio.setMusicVolume(v);
+      this.audio.playVolumePreview('music');
+    }, { cx, cy: sliderY + 40, width: rowW }));
+
     // Rows are stacked off measured text height rather than a fixed pitch, so
     // a caption that wraps on a narrow phone pushes the next row down instead
-    // of colliding with it.
-    let y = top + 58;
+    // of colliding with it. The gap between them closes to fit whatever the
+    // audio section left, the way the STATS rows do: a caption is a single
+    // line at every width this panel is drawn at, so what three rows need is
+    // knowable before any of them has been measured.
+    let y = sliderY + 78;
+    const captionLine = 15;
+    const rowGap = Math.max(30, Math.min(42, (this.height - 44 - y - 3 * captionLine) / 2));
+    let contentBottom = y;
     const addRow = (control: Container, note: string): void => {
       group.addChild(control);
       const caption = createBodyText(note, cx, y + 20, {
@@ -509,7 +534,8 @@ export class MenuScene implements Scene {
         wrapWidth: captionW,
       });
       group.addChild(caption);
-      y += caption.height + 48;
+      contentBottom = caption.y + caption.height;
+      y += caption.height + rowGap;
     };
 
     addRow(createCycleToggle(
@@ -541,8 +567,10 @@ export class MenuScene implements Scene {
     ), 'HOLD and NEXT sides. Next run.');
 
     // The footer is the one droppable line, so a short screen loses it rather
-    // than pushing the panel over the build number in the corner
-    const footerY = y - 20;
+    // than pushing the panel over the build number in the corner. Measured off
+    // the last caption rather than the next row's slot, so the panel encloses
+    // its content whatever the gap has closed to.
+    const footerY = contentBottom + 10;
     const footer = createBodyText('SYSTEM follows your device.', cx, footerY, {
       fontSize: 10,
       color: THEME.textMuted,
@@ -790,8 +818,42 @@ export class MenuScene implements Scene {
     if (!this.showingHelp && !this.showingOptions && !this.showingStats) this.buildLowerSection();
   }
 
-  enter(): void {}
+  /** Pending logo jingle, dropped if the menu is left before it starts */
+  private jingleTimer: number | null = null;
+
+  /**
+   * The first gesture on the menu is what browsers accept as permission to
+   * make a sound, so it is also the first moment the logo jingle can play.
+   * AudioManager keeps it to once a page load; this only has to catch the
+   * gesture, wherever on the screen it lands — and hold it back a beat, since
+   * a first tap is quite often PLAY, and a menu jingle should not follow the
+   * player into the countdown.
+   */
+  private onFirstGesture = (): void => {
+    this.audio.unlock();
+    this.detachGestureWatch();
+    this.jingleTimer = window.setTimeout(() => {
+      this.jingleTimer = null;
+      this.audio.playLogoJingle();
+    }, 250);
+  };
+
+  private detachGestureWatch(): void {
+    window.removeEventListener('pointerdown', this.onFirstGesture);
+    window.removeEventListener('keydown', this.onFirstGesture);
+    if (this.jingleTimer !== null) {
+      window.clearTimeout(this.jingleTimer);
+      this.jingleTimer = null;
+    }
+  }
+
+  enter(): void {
+    window.addEventListener('pointerdown', this.onFirstGesture);
+    window.addEventListener('keydown', this.onFirstGesture);
+  }
+
   exit(): void {
+    this.detachGestureWatch();
     this.container.removeAllListeners();
   }
 }
