@@ -373,10 +373,15 @@ function lastAt(moves: readonly Move[]): number {
 
 // ── The write, as one indivisible step ──
 
-/** What the script decided. Anything but 'ok' and 'already' is a 400. */
-type SubmitStatus = 'ok' | 'token' | 'replay' | 'already';
+/**
+ * What the script decided. 'ok' and 'already' are the board answering; 'token'
+ * and 'replay' are 400s; 'storage' is a 503, and the only one of the five that
+ * is not about this submission at all.
+ */
+type SubmitStatus = 'ok' | 'token' | 'replay' | 'already' | 'storage';
 
-const SUBMIT_STATUSES: SubmitStatus[] = ['ok', 'token', 'replay', 'already'];
+/** Exported so a test can hold the Lua's own vocabulary against this list. */
+export const SUBMIT_STATUSES: SubmitStatus[] = ['ok', 'token', 'replay', 'already', 'storage'];
 
 /**
  * Everything a submission changes, in one script.
@@ -407,6 +412,16 @@ const SUBMIT_STATUSES: SubmitStatus[] = ['ok', 'token', 'replay', 'already'];
  * player's name, because the `HSET` was a separate command that did not know
  * whether its `ZADD` had won.
  *
+ * What it is **not** is transactional. A script runs alone, but a command
+ * that raises inside one does not undo the commands before it: if the board
+ * key held a plain string, the fingerprint and the daily id were already
+ * banked by the time `ZADD` raised WRONGTYPE, and the ticket's outcome — the
+ * last write of all — never happened. Repairing the key and resubmitting then
+ * answered `replay`, because the fingerprint was there and nothing recorded
+ * why. So every key the script is about to write is type-checked first, while
+ * refusing still costs nothing, and a mistyped key comes back as 'storage':
+ * a 503, a database that cannot be used rather than a score refused.
+ *
  * KEYS: 1 spent tickets, 2 fingerprints, 3 daily ids, 4 board, 5 meta.
  * ARGV: 1 token id, 2 fingerprint ('' skips the check), 3 player id,
  *       4 score, 5 meta JSON, 6 '1' on a daily, 7 spent-ticket TTL,
@@ -414,6 +429,19 @@ const SUBMIT_STATUSES: SubmitStatus[] = ['ok', 'token', 'replay', 'already'];
  * Returns `{ status, changed }`.
  */
 export const SUBMIT_SCRIPT = `
+local function badtype(key, want)
+  local kind = redis.call('TYPE', key)
+  -- A status reply arrives as { ok = 'hash' }; unwrap it without assuming it
+  if type(kind) == 'table' then kind = kind['ok'] end
+  return kind ~= 'none' and kind ~= want
+end
+
+if badtype(KEYS[1], 'hash') or badtype(KEYS[4], 'zset') or badtype(KEYS[5], 'hash')
+  or (ARGV[2] ~= '' and badtype(KEYS[2], 'set'))
+  or (ARGV[6] == '1' and badtype(KEYS[3], 'set')) then
+  return { 'storage', 0 }
+end
+
 local identity = ARGV[4] .. '|' .. ARGV[2] .. '|' .. KEYS[4] .. '|' .. ARGV[3]
 local spent = redis.call('HGET', KEYS[1], ARGV[1])
 if spent then
@@ -672,6 +700,12 @@ export default async function handler(request: Request): Promise<Response> {
         String(DAILY_TTL_SECONDS),
       ]));
       if (!outcome) return unavailable();
+      // A key this submission would have written holds another type. The
+      // script checks before it writes, so nothing has been consumed: the
+      // ticket, the fingerprint and the daily id are all still unspent and
+      // the same submission lands once the key is repaired. That makes it a
+      // database that cannot be used, not a score that was refused.
+      if (outcome.status === 'storage') return unavailable();
       if (outcome.status === 'token' || outcome.status === 'replay') {
         return unverified(outcome.status);
       }

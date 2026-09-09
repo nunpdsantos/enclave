@@ -60,24 +60,41 @@ const hung: { destroy: () => void }[] = [];
 let server: Server;
 let base = '';
 
+/**
+ * Redis holds one type per key and refuses any other command against it. The
+ * stub used to quietly overwrite instead, so no test could ever see the
+ * failure `SUBMIT_SCRIPT`'s type gate exists for — a wrong-typed key simply
+ * became the right type, and a broken database looked like a working one.
+ */
+function requireType(key: string, kind: StubValue['kind']): void {
+  const existing = store.get(key);
+  if (existing && existing.kind !== kind) {
+    throw new Error('WRONGTYPE Operation against a key holding the wrong kind of value');
+  }
+}
+
 // Reads never create the key — Redis has no empty collections, and a stub
 // that conjured one would put keys in `store` that the handler never wrote.
 function readZset(key: string): Map<string, number> {
+  requireType(key, 'zset');
   const existing = store.get(key);
   return existing?.kind === 'zset' ? existing.members : new Map();
 }
 
 function readHash(key: string): Map<string, string> {
+  requireType(key, 'hash');
   const existing = store.get(key);
   return existing?.kind === 'hash' ? existing.fields : new Map();
 }
 
 function readSet(key: string): Set<string> {
+  requireType(key, 'set');
   const existing = store.get(key);
   return existing?.kind === 'set' ? existing.members : new Set();
 }
 
 function zsetAt(key: string): Map<string, number> {
+  requireType(key, 'zset');
   const existing = store.get(key);
   if (existing?.kind === 'zset') return existing.members;
   const members = new Map<string, number>();
@@ -86,6 +103,7 @@ function zsetAt(key: string): Map<string, number> {
 }
 
 function hashAt(key: string): Map<string, string> {
+  requireType(key, 'hash');
   const existing = store.get(key);
   if (existing?.kind === 'hash') return existing.fields;
   const fields = new Map<string, string>();
@@ -94,6 +112,7 @@ function hashAt(key: string): Map<string, string> {
 }
 
 function setAt(key: string): Set<string> {
+  requireType(key, 'set');
   const existing = store.get(key);
   if (existing?.kind === 'set') return existing.members;
   const members = new Set<string>();
@@ -187,9 +206,14 @@ function execute(cmd: unknown[]): unknown {
   const key = String(cmd[1]);
   switch (name) {
     case 'get': {
+      requireType(key, 'string');
       const value = store.get(key);
       return value?.kind === 'string' ? value.value : null;
     }
+    // The four kinds this stub holds are named exactly as Redis names them,
+    // and a key that is not there is 'none' rather than an error.
+    case 'type':
+      return store.get(key)?.kind ?? 'none';
     // SET with the flags the ticket store uses: NX answers null rather than
     // OK when the key is already there, and EX is the TTL in the same command
     // — which is the whole point of it, there being no second command whose
@@ -279,6 +303,19 @@ function evalSubmit(cmd: unknown[]): unknown[] {
   const [spentKey, replaysKey, idsKey, boardKey, metaKey] = keys;
   const [tokenId, fingerprint, id, score, meta, isDaily, tokenTtl, replayTtl, boardTtl] = argv;
 
+  // The type gate, before a single write, exactly as the Lua does it: a
+  // script is atomic but it is not a transaction, so a WRONGTYPE raised
+  // halfway through would leave the writes before it standing.
+  const wrongType = (key: string, want: StubValue['kind']): boolean => {
+    const kind = String(execute(['type', key]));
+    return kind !== 'none' && kind !== want;
+  };
+  if (wrongType(spentKey, 'hash') || wrongType(boardKey, 'zset') || wrongType(metaKey, 'hash')
+    || (fingerprint !== '' && wrongType(replaysKey, 'set'))
+    || (isDaily === '1' && wrongType(idsKey, 'set'))) {
+    return ['storage', 0];
+  }
+
   const identity = `${score}|${fingerprint}|${boardKey}|${id}`;
   const spent = execute(['hget', spentKey, tokenId]);
   if (typeof spent === 'string') {
@@ -357,7 +394,16 @@ beforeAll(async () => {
         return;
       }
       for (const cmd of cmds) commands.push(String(cmd[0]).toLowerCase());
-      const results = cmds.map(cmd => ({ result: encodeResult(execute(cmd)) }));
+      let results;
+      try {
+        results = cmds.map(cmd => ({ result: encodeResult(execute(cmd)) }));
+      } catch (e) {
+        // A command against a key of the wrong type, as the REST API answers
+        // one: HTTP 500 and `{ error }`, which the SDK throws as UpstashError.
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }));
+        return;
+      }
       // The command has run and its effects stand; only the answer is lost.
       // This is what makes the SDK re-send, and re-sending is what the
       // handler has to survive.
@@ -1436,7 +1482,7 @@ describe('review 2, finding 1 — a submission is one indivisible step', () => {
     const { SUBMIT_SCRIPT } = await import('../api/leaderboard');
     const called = [...SUBMIT_SCRIPT.matchAll(/redis\.call\('([A-Z]+)'/g)].map(m => m[1]);
     expect([...new Set(called)].sort())
-      .toEqual(['EXPIRE', 'HGET', 'HSET', 'SADD', 'ZADD']);
+      .toEqual(['EXPIRE', 'HGET', 'HSET', 'SADD', 'TYPE', 'ZADD']);
 
     // The idempotent branch: a spent ticket whose stored identity matches is
     // answered with the outcome it was spent on, not refused.
@@ -1953,5 +1999,59 @@ describe('review 4, finding 4 — replacing an unusable daily ticket is still on
     expect(again).toEqual(first);
     expect(storedString(ticketKey)).toBe(first.token);
     expect(expiresFor(ticketKey)).toEqual([DAILY_TTL]);
+  });
+});
+
+describe('review 4, finding 2 — a key of the wrong type consumes nothing', () => {
+  it('answers 503 and leaves the ticket, the fingerprint and the day unspent', async () => {
+    const h = await handler();
+    const today = daysAgo(0);
+    const played = dailyRun(today, 14);
+    const submission = await body(played, 'p1', 'Ann');
+    // A plain string where the daily board's sorted set belongs. However it
+    // got there, it is the shape of failure the script has to survive.
+    store.set(dailyKeyFor(today), { kind: 'string', value: 'not a board' });
+
+    const res = await h(post(`daily-${today}`, submission));
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Leaderboard unavailable' });
+
+    // The writes used to run in order: the fingerprint reserved, the daily id
+    // recorded, and then `ZADD` raising WRONGTYPE with the ticket's outcome —
+    // the last write of all — never reached. A script is atomic but it is not
+    // a transaction, so those two stood. Repairing the key and resubmitting
+    // was then answered `replay`: the run was banked and the score was not.
+    expect([...store.keys()]).toEqual([dailyKeyFor(today)]);
+
+    // Repair it, and the same ticket and the same replay still land.
+    store.delete(dailyKeyFor(today));
+    const retried = await h(post(`daily-${today}`, submission));
+    expect(retried.status).toBe(200);
+    expect(await retried.json()).toMatchObject({ rank: 1 });
+    expect(storedBoard(dailyKeyFor(today))).toEqual([['p1', played.score]]);
+  });
+
+  it('checks only the keys the submission would write', async () => {
+    const h = await handler();
+    // Classic never touches the daily-id set, so junk parked there is not
+    // this submission's problem and must not take the board down with it.
+    store.set(`${CLASSIC_KEY}:ids`, { kind: 'string', value: 'not a set' });
+
+    const res = await h(post('classic', await body(run('classic', 12), 'p1', 'Ann')));
+    expect(res.status).toBe(200);
+    expect(storedBoard(CLASSIC_KEY)).toHaveLength(1);
+  });
+
+  it('surfaces a wrong-typed board on a read as well', async () => {
+    const h = await handler();
+    store.set(CLASSIC_KEY, { kind: 'string', value: 'not a board' });
+
+    // The stub used to answer a ZRANGE against a string with an empty list,
+    // so a broken board read back as an empty one — a 200 saying nobody has
+    // ever scored. Redis raises WRONGTYPE, and the handler's guard is what
+    // turns that into the 503 it documents.
+    const res = await h(get('classic'));
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Leaderboard unavailable' });
   });
 });
