@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { createServer, Server } from 'node:http';
 import { Difficulty, DIFFICULTY_CONFIGS } from '../src/core/Config';
-import { dailySeed } from '../src/core/Daily';
-import { drainIntegral } from '../src/core/Replay';
+import { dailyNumber, dailySeed } from '../src/core/Daily';
+import { drainIntegral, simulateRun } from '../src/core/Replay';
 import { RULES_VERSION } from '../src/core/Rules';
-import { signTicket, TICKET_VERSION } from '../src/core/Ticket';
+import { dailySeedFor, readTicketPayload, signTicket, TICKET_VERSION } from '../src/core/Ticket';
 import { Move } from '../src/core/types';
 import { BotRun, playBotRun } from './helpers';
 
@@ -718,15 +718,66 @@ describe('api/run-start — the ticket that starts a run', () => {
     expect((await start(new Request('https://x/api/run-start', { method: 'PUT' }))).status).toBe(405);
   });
 
-  it('reads today\'s daily deal without a ticket, and will not hand one to free play', async () => {
+  it('says which day it is without a ticket, and never the deal', async () => {
     const start = await runStartHandler();
+    const today = daysAgo(0);
     const res = await start(new Request('https://x/api/run-start?mode=daily'));
     const data = await res.json();
-    expect(data.dailyKey).toBe(daysAgo(0));
-    expect(Number.isInteger(data.seed)).toBe(true);
+
+    // The date and the number a player compares, and nothing else. The seed
+    // used to come back here, which handed the shared puzzle to anybody who
+    // asked: solve it at leisure, then post it from an id that had never
+    // spent an attempt on it.
+    expect(Object.keys(data).sort()).toEqual(['dailyKey', 'mode', 'number']);
+    expect(data.dailyKey).toBe(today);
+    expect(data.number).toBe(dailyNumber(today));
+    expect(data.seed).toBeUndefined();
     expect(data.token).toBeUndefined();
+    // Not under another name either
+    expect(JSON.stringify(data)).not.toContain(String(await dailySeedFor(SECRET, today)));
 
     expect((await start(new Request('https://x/api/run-start?mode=classic'))).status).toBe(400);
+  });
+
+  it('spends the daily attempt on the first ticket and marks every later one practice', async () => {
+    const start = await runStartHandler();
+    const h = await handler();
+    const today = daysAgo(0);
+    const ticketsKey = `${dailyKeyFor(today)}:tickets`;
+
+    const first = await (await start(startRun({ id: 'p1', mode: 'daily' }))).json();
+    const second = await (await start(startRun({ id: 'p1', mode: 'daily' }))).json();
+    // A second go gets the real puzzle — replaying the day is allowed — and a
+    // ticket that says it cannot be posted.
+    expect(second.seed).toBe(first.seed);
+    expect(readTicketPayload(first.token)?.practice).toBeUndefined();
+    expect(readTicketPayload(second.token)?.practice).toBe(true);
+
+    // The attempt is recorded where the board is, and expires with it
+    expect([...readSet(ticketsKey)]).toEqual(['p1']);
+    expect(expiresFor(ticketsKey)).toContain(DAILY_TTL);
+
+    // Another player's first ticket is a first ticket
+    const other = await (await start(startRun({ id: 'p2', mode: 'daily' }))).json();
+    expect(readTicketPayload(other.token)?.practice).toBeUndefined();
+
+    // Short enough to have been played in the moment since the tickets were
+    // minted, which is what the real-time check asks
+    const played = playBotRun('daily', first.seed, 4);
+    const replay = { ...played.replay, dailyKey: today };
+    const submission = (token: string): Record<string, unknown> =>
+      ({ id: 'p1', name: 'Ann', score: played.score, replay, token });
+
+    const refused = await h(post(`daily-${today}`, submission(second.token)));
+    expect(refused.status).toBe(400);
+    expect(await refused.json())
+      .toEqual({ error: 'Score could not be verified', reason: 'practice' });
+    expect(store.has(dailyKeyFor(today))).toBe(false);
+
+    // And the refusal cost nothing: the ticket that did spend the attempt
+    // still posts the run it was issued for.
+    expect((await h(post(`daily-${today}`, submission(first.token)))).status).toBe(200);
+    expect(storedBoard(dailyKeyFor(today))).toEqual([['p1', played.score]]);
   });
 });
 
@@ -1084,6 +1135,69 @@ describe('finding 9 — a daily has no clock, so it has no hurry', () => {
       replay: { ...classic.replay, moves: shorter },
     }));
     expect(await drained.json()).toEqual({ error: 'Score could not be verified', reason: 'clock' });
+  });
+});
+
+describe('finding 11 — a daily solution is one solution however it is timed', () => {
+  it('refuses a copied daily replay with one timestamp nudged, under a second id', async () => {
+    const h = await handler();
+    const today = daysAgo(0);
+    const played = dailyRun(today, 14);
+
+    expect((await h(post(`daily-${today}`, await body(played, 'p1', 'Ann')))).status).toBe(200);
+
+    // The whole attack, as the review ran it. The log is passed to a second
+    // player, one `at` is moved by a microsecond — invisible, and in a mode
+    // with no clock and no echo window it cannot change a single point — and
+    // it goes back up under a fresh id with that id's own honest ticket.
+    const nudged = played.replay.moves.map(
+      (m, i) => (i === 6 ? { ...m, at: m.at + 1e-6 } : m),
+    );
+    expect(nudged).not.toEqual(played.replay.moves);
+    // It is refused as a copy, not as a bad score: the rules still pay the
+    // re-timed log exactly what they paid the original.
+    expect(simulateRun({ ...played.replay, moves: nudged }))
+      .toMatchObject({ valid: true, score: played.score });
+    const res = await h(post(`daily-${today}`, {
+      ...await body(played, 'p2', 'Bo'),
+      replay: { ...played.replay, moves: nudged },
+    }));
+
+    // The fingerprint is over the deal and the placements, so the two logs
+    // are one run and the second one is refused as the copy it is.
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Score could not be verified', reason: 'replay' });
+    expect(storedBoard(dailyKeyFor(today)).map(([id]) => id)).toEqual(['p1']);
+  });
+
+  it('still lets two different solutions of the same daily onto the board', async () => {
+    const h = await handler();
+    const today = daysAgo(0);
+    // Same seed, same date, different placements: two players who both
+    // played it, which is the case the dedupe must never touch.
+    const ann = dailyRun(today, 14);
+    const bo = dailyRun(today, 15);
+
+    expect((await h(post(`daily-${today}`, await body(ann, 'p1', 'Ann')))).status).toBe(200);
+    expect((await h(post(`daily-${today}`, await body(bo, 'p2', 'Bo')))).status).toBe(200);
+    expect(storedBoard(dailyKeyFor(today)).map(([id]) => id).sort()).toEqual(['p1', 'p2']);
+  });
+
+  it('refuses a Classic run re-timed and posted again by the player who banked it', async () => {
+    const h = await handler();
+    const played = run('classic', 12);
+    expect((await h(post('classic', await body(played, 'p1', 'Ann')))).status).toBe(200);
+
+    // Timing is out of the fingerprint in every mode, not only the daily.
+    // The same placements, every gap stretched by a hundredth of a second.
+    const retimed = played.replay.moves.map(m => ({ ...m, at: m.at * 1.01 }));
+    expect(simulateRun({ ...played.replay, moves: retimed }))
+      .toMatchObject({ valid: true, score: played.score });
+    const res = await h(post('classic', {
+      ...await body(played, 'p1', 'Ann'),
+      replay: { ...played.replay, moves: retimed },
+    }));
+    expect(await res.json()).toEqual({ error: 'Score could not be verified', reason: 'replay' });
   });
 });
 

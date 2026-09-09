@@ -9,6 +9,7 @@ import { getProgressStatus } from '../core/Progression';
 import { insightsFor } from '../core/Insights';
 import { renderShareCard } from '../core/ShareCard';
 import { getGamesPlayed } from '../core/Settings';
+import { isPracticeTicket } from '../core/Ticket';
 import { AudioManager } from '../audio/AudioManager';
 import { FONT_DISPLAY, FONT_MONO, THEME, DIFFICULTY_COLORS } from '../rendering/Theme';
 import { createButton, createStatChip, createSectionLabel, createBodyText, createTextButton } from '../rendering/Widgets';
@@ -52,8 +53,9 @@ export class GameOverScene implements Scene {
   /** Which daily this run belongs to — the day it was dealt, not necessarily today */
   private dailyDate: string;
   /**
-   * True when this browser had already submitted today's daily before the run
-   * started. Read once, here, because submitting is what sets the flag.
+   * This run was never going to be posted: the server issued it a practice
+   * ticket, or this browser knows it has already submitted this daily.
+   * Read once, here, because submitting is what sets the local flag.
    */
   private isPracticeRun: boolean;
   private nameSubmitted = false;
@@ -102,7 +104,12 @@ export class GameOverScene implements Scene {
     this.difficulty = difficulty;
     this.runToken = runToken;
     this.dailyDate = summary.dailyKey ?? dailyKey();
-    this.isPracticeRun = difficulty === 'daily' && hasSubmittedDaily(this.dailyDate);
+    // The server's answer first: a daily ticket that says `practice` is the
+    // attempt this id had already spent when the deal was handed over, and it
+    // is the only one of the two that survives a cleared localStorage. The
+    // local flag stands behind it for the run that never reached the network.
+    this.isPracticeRun = isPracticeTicket(runToken)
+      || (difficulty === 'daily' && hasSubmittedDaily(this.dailyDate));
     this.onReplay = onReplay;
     this.onMenu = onMenu;
     this.container = new Container();

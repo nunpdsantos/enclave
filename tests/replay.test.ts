@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { DIFFICULTY_CONFIGS } from '../src/core/Config';
+import { Difficulty, DIFFICULTY_CONFIGS } from '../src/core/Config';
 import { dailyKey, dailySeed } from '../src/core/Daily';
+import { GameState } from '../src/core/GameState';
 import { drainIntegral, simulateRun, verifyScore } from '../src/core/Replay';
 import { PROGRESS_TIERS } from '../src/core/Progression';
+import { mulberry32 } from '../src/core/Random';
 import { RULES_VERSION } from '../src/core/Rules';
 import { GRID_SIZE, MAX_REPLAY_MOVES, Move, Replay } from '../src/core/types';
-import { playBotRun } from './helpers';
+import { playBestMove, playBotRun } from './helpers';
 
 /**
  * Server-side score validation: a run is re-played from its seed and its
@@ -298,6 +300,155 @@ describe('a run the browser ticked a frame at a time', () => {
     const result = simulateRun({ ...framed.replay, moves: rounded });
     expect(result.valid && result.score === framed.score).toBe(false);
   });
+});
+
+/**
+ * The bonus the simulation credits at each placement.
+ *
+ * `simulateRun` folds these into the reconstructed bank and never reports
+ * them, so this drives the same GameState the same way it does —
+ * `advanceClockTo` the recorded time, turn the piece, place it — and reads
+ * the awards off the events. It is the simulation's own arithmetic rather
+ * than a second implementation of it.
+ */
+function replayedBonuses(replay: Replay): number[] {
+  const gs = new GameState({ ...DIFFICULTY_CONFIGS[replay.mode], seed: replay.seed }, replay.mode);
+  gs.start();
+  const bonuses: number[] = [];
+  for (const move of replay.moves) {
+    gs.advanceClockTo(move.at);
+    if (move.t === 'h') {
+      gs.hold();
+      continue;
+    }
+    for (let n = 0; n < 4 && gs.current !== null && gs.current.rotation !== move.rot; n++) {
+      gs.rotate();
+    }
+    bonuses.push(gs.tryPlace(move.row, move.col)[0]?.timeBonus ?? Number.NaN);
+  }
+  return bonuses;
+}
+
+describe('the piece clock both sides read', () => {
+  /**
+   * The run the adversarial review found, reproduced frame for frame.
+   *
+   * `pieceElapsed` used to be accumulated in `tick`, while the simulation
+   * reached the same instant by assigning the recorded `at`. The two landed a
+   * few bits apart, and the time bonus is rounded to a tenth of a second, so
+   * the rounding could flip: 1.8 s banked in the browser against 1.7 s
+   * credited by the server. That is not a rounding nuisance — it breaks the
+   * invariant the 0.05 s clock slack rests on (reconstructed bank ≥ real
+   * bank), and a run the browser survived with 0.035 s left reconstructed to
+   * −0.065 s and was refused as `'clock'`.
+   *
+   * The frame pattern is the reviewer's: 38 frames of a sixtieth, a
+   * placement, then 16 more and one of 0.13737373737373737 s, and another.
+   * It lands the second piece on 0.404 s of thinking, which is exactly where
+   * `round(1.8 × speedFraction × 10)` sits on the 17.5 boundary.
+   */
+  const FRAME = 1 / 60;
+  const SAT_ON = 0.13737373737373737;
+
+  function reviewersRun(): { gs: GameState; bonuses: number[]; bankBeforeLast: number } {
+    const gs = new GameState({ ...DIFFICULTY_CONFIGS.classic, seed: 12_345 }, 'classic');
+    gs.start();
+    const bonuses: number[] = [];
+    const place = (): void => { bonuses.push(playBestMove(gs)[0].timeBonus ?? Number.NaN); };
+
+    for (let i = 0; i < 38; i++) gs.tick(FRAME);
+    place();
+    for (let i = 0; i < 16; i++) gs.tick(FRAME);
+    gs.tick(SAT_ON);
+    place();
+
+    // Sit on the third piece until the bank is down to 35 ms, draining a
+    // frame at a time as a browser does, and then place. The run is alive:
+    // this is an honest player finishing on the edge, not a forged log.
+    while (gs.timeRemaining > 0.06 && !gs.isGameOver) gs.tick(FRAME);
+    gs.tick((gs.timeRemaining - 0.035) / gs.drainRate);
+    const bankBeforeLast = gs.timeRemaining;
+    place();
+    return { gs, bonuses, bankBeforeLast };
+  }
+
+  const run = reviewersRun();
+
+  it('lands the second piece on the rounding boundary that used to split the two', () => {
+    const timer = DIFFICULTY_CONFIGS.classic.timer;
+    const bonusFor = (pieceElapsed: number): number => {
+      const t = Math.min(pieceElapsed / timer.speedWindowSeconds, 1);
+      return Math.round(timer.placeBonus * (1 - (1 - timer.minSpeedFraction) * t) * 10) / 10;
+    };
+
+    // What `tick` used to add up for the second piece, a frame at a time
+    let accumulated = 0;
+    for (let i = 0; i < 16; i++) accumulated += FRAME;
+    accumulated += SAT_ON;
+    expect(accumulated).toBe(0.40404040404040403);
+
+    // And what both sides compute now: one subtraction of two recorded times
+    const moves = run.gs.buildReplay().moves;
+    expect(moves[1].at - moves[0].at).toBe(0.404040404040405);
+    expect(run.gs.pieceElapsed).not.toBe(accumulated);
+
+    // Three bits apart, and a tenth of a second of bank apart
+    expect(bonusFor(accumulated)).toBe(1.8);
+    expect(bonusFor(moves[1].at - moves[0].at)).toBe(1.7);
+  });
+
+  it('re-plays valid, on a bank the browser survived by 35 milliseconds', () => {
+    expect(run.gs.isGameOver).toBe(false);
+    expect(run.bankBeforeLast).toBeCloseTo(0.035, 4);
+
+    // The refusal that used to happen: bank the browser's 1.8 s, credit the
+    // server's 1.7 s, and the third move stands on 0.035 − 0.1 = −0.065 s,
+    // past the 0.05 s the clock check allows.
+    expect(run.bankBeforeLast - 0.1).toBeLessThan(-0.05);
+
+    expect(simulateRun(run.gs.buildReplay()))
+      .toMatchObject({ valid: true, score: run.gs.score });
+  });
+
+  it('credits every placement the bonus the browser actually paid', () => {
+    expect(replayedBonuses(run.gs.buildReplay())).toEqual(run.bonuses);
+
+    // And on a long frame-driven run, where the speed fraction really moves:
+    // every placement, not just the one that happened to sit on a boundary.
+    const rnd = mulberry32(4242);
+    const framed = playBotRun('classic', 21, 80, {
+      frameSeconds: FRAME,
+      step: () => 0.12 + rnd() * 1.4,
+    });
+    const live = framed.events.map(ev => ev[0].timeBonus);
+    expect(live.length).toBeGreaterThan(40);
+    expect(new Set(live).size).toBeGreaterThan(3);
+    expect(replayedBonuses(framed.replay)).toEqual(live);
+  });
+});
+
+describe('two hundred runs a browser could have played', () => {
+  /**
+   * The property the clock check needs: every honest frame-driven run
+   * re-simulates, and to the same score. Seeded, so a failure names one run
+   * that can be replayed rather than a mood.
+   */
+  it('all re-simulate valid, with the score the frames produced', () => {
+    for (let seed = 1; seed <= 200; seed++) {
+      const mode: Difficulty = seed % 2 === 0 ? 'blitz' : 'classic';
+      const rnd = mulberry32(seed * 7919);
+      const played = playBotRun(mode, seed, 14, {
+        frameSeconds: 1 / 60,
+        step: () => 0.12 + rnd() * 1.1,
+      });
+      const result = simulateRun(played.replay);
+      // One assertion carrying the seed, so a red build says which run broke
+      expect(`${mode}/${seed}: ${result.reason ?? 'valid'} ${result.score}`)
+        .toBe(`${mode}/${seed}: valid ${played.score}`);
+    }
+    // Two hundred runs is the point of it, and the bot's placement search is
+    // what they cost. Well past the default 5 s, nowhere near a hang.
+  }, 30_000);
 });
 
 describe('the cadence floor', () => {

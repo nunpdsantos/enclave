@@ -77,8 +77,13 @@ export class GameState {
   deathCause: RunEndCause | null = null;
 
   timeRemaining = 0;
-  pieceElapsed = 0;
   gameElapsed = 0;
+  /**
+   * The `gameElapsed` the piece in hand was dealt at — the previous placement,
+   * or 0 at the start of the run. `pieceElapsed` is derived from it rather
+   * than accumulated, which is the whole point: see the getter below.
+   */
+  lastPlacementAt = 0;
   drainRate = 1;
   /**
    * The score at each whole second of the run, index i being second i.
@@ -154,6 +159,40 @@ export class GameState {
 
   get maxTime(): number {
     return this.config.timer.maxSeconds;
+  }
+
+  /**
+   * How long the piece in hand has been sat on, as a difference of two
+   * absolute clock readings rather than a sum of frames.
+   *
+   * This used to be accumulated in `advanceClock`, and that was a bug with a
+   * price on it. A browser reaches a placement by adding up sixty frames a
+   * second; the replay simulation *assigns* the recorded `at` to its clock
+   * (see `advanceClockTo`), so its own accumulation landed a few bits away —
+   * 0.40404040404040403 against 0.404040404040405 in the case that found
+   * this. The time bonus is rounded to a tenth of a second, so a difference
+   * in the last bits can round one way live and the other way on the server:
+   * 1.8 s banked in the browser, 1.7 s reconstructed. That breaks the
+   * invariant the clock check rests on — reconstructed bank ≥ real bank —
+   * and an honest run finishing on 0.035 s reconstructs to −0.065 s and is
+   * refused as `'clock'`.
+   *
+   * Derived from `gameElapsed`, both sides compute `gameElapsed −
+   * lastPlacementAt` from the same two doubles: the recorded `at` of this
+   * placement and of the one before it. One subtraction, bit-identical, so
+   * the rounded bonus is bit-identical too.
+   */
+  get pieceElapsed(): number {
+    return this.gameElapsed - this.lastPlacementAt;
+  }
+
+  /**
+   * Only the tests set this, to age a piece without playing the seconds. It
+   * moves the anchor rather than storing a total, so the derivation above
+   * stays the one definition of what `pieceElapsed` means.
+   */
+  set pieceElapsed(seconds: number) {
+    this.lastPlacementAt = this.gameElapsed - seconds;
   }
 
   /**
@@ -315,8 +354,8 @@ export class GameState {
     this.isGameOver = false;
     this.deathCause = null;
     this.timeRemaining = this.config.timer.startSeconds;
-    this.pieceElapsed = 0;
     this.gameElapsed = 0;
+    this.lastPlacementAt = 0;
     this.drainRate = 1;
     this.scoreTimeline = [];
     this.totalTurns = 0;
@@ -364,7 +403,6 @@ export class GameState {
    */
   advanceClock(dt: number): void {
     if (this.isGameOver) return;
-    this.pieceElapsed += dt;
     this.gameElapsed += dt;
     this.sampleTimeline();
     // Echo walls run on the game clock, not on placements, so this is the one
@@ -382,7 +420,10 @@ export class GameState {
    * `gameElapsed + windowSeconds`, and whether a claim pays the ECHO
    * multiplier is `expiresAt > gameElapsed` — so a few bits is the whole
    * difference between two scores. Assigning the recorded time makes both
-   * sides compare the same two numbers.
+   * sides compare the same two numbers. `pieceElapsed` rides on the same
+   * assignment: it is `gameElapsed − lastPlacementAt`, and both of those are
+   * recorded `at` values here, so the speed fraction and the tenth-of-a-
+   * second bonus it feeds come out bit-identical to the browser's.
    *
    * Never runs backwards: a move that claims to be earlier than the clock is
    * the caller's to refuse, and silently rewinding one would un-expire the
@@ -391,7 +432,6 @@ export class GameState {
   advanceClockTo(elapsed: number): void {
     if (this.isGameOver) return;
     if (!(elapsed > this.gameElapsed)) return;
-    this.pieceElapsed += elapsed - this.gameElapsed;
     this.gameElapsed = elapsed;
     this.sampleTimeline();
     this.filterEchoes(c => c.expiresAt > this.gameElapsed);
@@ -462,6 +502,10 @@ export class GameState {
     this.held = outgoing;
     this.holdUsed = true;
     this.holds++;
+    // `lastPlacementAt` is deliberately untouched: the speed window runs from
+    // one piece landing to the next, and a swap is not a placement. Moving it
+    // here would hand back a full time bonus for the price of a hold, which
+    // is a scoring change and would need a RULES_VERSION bump, not a tidy-up.
     this.record({ t: 'h', at: this.gameElapsed });
     events.push({ type: 'hold' });
     events.push({ type: 'newHand' });
@@ -554,7 +598,9 @@ export class GameState {
     const covered = new Set(placedCells.map(cellKey));
     this.filterEchoes(c => !covered.has(cellKey(c)));
     const speedFraction = this.currentSpeedFraction;
-    this.pieceElapsed = 0;
+    // The new piece's clock starts here, at the same double this placement
+    // was recorded at — which is what the simulation reads it back as.
+    this.lastPlacementAt = this.gameElapsed;
     events.push({ type: 'place', placedCells, pieceColor: piece.color, speedFraction });
 
     // Placement points

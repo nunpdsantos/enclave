@@ -29,8 +29,9 @@ export const config = { runtime: 'edge' };
  *    the seed, signed it against one player id and one clock reading, and
  *    will not take a submission whose replay claims more play than the wall
  *    clock has allowed since — nor take the same ticket twice.
- *  - the **replay fingerprint** and, on a daily, the per-day id set stop the
- *    same proven run from being banked more than once.
+ *  - the **replay fingerprint** — the deal and the placements, never their
+ *    timing — and, on a daily, the per-day id set stop the same proven run
+ *    from being banked more than once.
  *
  * What is still open is written down in the README: a bot that scripts legal
  * moves through the real rules, at human speed, produces a run that is real
@@ -90,7 +91,7 @@ const REPLAY_TTL_SECONDS = 30 * 24 * 60 * 60;
 const MS_PER_DAY = 86_400_000;
 
 /** Why a submission was refused, beyond what the simulation can say. */
-type Refusal = SimFailure | 'token' | 'time' | 'replay';
+type Refusal = SimFailure | 'token' | 'time' | 'replay' | 'practice';
 
 interface Entry {
   id: string;
@@ -338,6 +339,10 @@ function lastAt(moves: readonly Move[]): number {
 function ticketMatches(
   ticket: TicketPayload, board: Board, id: string, replay: Replay, now: number,
 ): Refusal | null {
+  // A practice ticket is a daily attempt this id had already spent when the
+  // deal was handed over. Its own reason, because it is not a forgery and
+  // the screen has something honest to say about it.
+  if (ticket.practice) return 'practice';
   if (ticket.id !== id) return 'token';
   if (ticket.mode !== replay.mode || ticket.mode !== board.mode) return 'token';
   if (ticket.seed !== replay.seed) return 'token';
@@ -474,10 +479,12 @@ export default async function handler(request: Request): Promise<Response> {
     if (tokenFresh === 0) return unverified('token');
     await redis.expire(tokensKey, USED_TOKEN_TTL_SECONDS);
 
-    // One run per run. A replay is a document: it verifies as well the tenth
-    // time as the first, and on a daily — where every player is dealt the
-    // same seed — a good one would otherwise be worth passing around.
-    const fingerprint = await replayFingerprint(replay.seed, replay.moves);
+    // One run per solution. A replay is a document: it verifies as well the
+    // tenth time as the first, and on a daily — where every player is dealt
+    // the same seed — a good one would otherwise be worth passing around.
+    // The fingerprint is over the placements and not their timing, so the
+    // same solution re-timed is still the same solution.
+    const fingerprint = await replayFingerprint(replay);
     const seenKey = replaysKey(board);
     const replayFresh = await redis.sadd(seenKey, fingerprint);
     if (replayFresh === 0) return unverified('replay');
@@ -491,6 +498,11 @@ export default async function handler(request: Request): Promise<Response> {
       // the first one good enough to rank. The set is the record of who has
       // played today, so a score outside the top ten still closes the day for
       // that player instead of leaving them free to grind for a better one.
+      //
+      // The day is really closed a step earlier now, when `api/run-start.ts`
+      // hands over the deal: a second daily ticket for the same id and date
+      // is a practice ticket and is refused above. This set is the second
+      // line of defence, and the one that still works if that write did not.
       const idsKey = dailyIdsKey(board);
       const firstToday = await redis.sadd(idsKey, id);
       await redis.expire(idsKey, DAILY_TTL_SECONDS);

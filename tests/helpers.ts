@@ -125,6 +125,25 @@ function bestPlacement(gs: GameState): BotMove | null {
   return best;
 }
 
+/**
+ * Play the bot's move on a GameState the caller is driving itself.
+ *
+ * `playBotRun` owns the whole run, frames and all. A test that has to control
+ * the frames to the tick — the clock cases, where the last bits of a double
+ * are the thing under test — drives `tick` itself and calls this for the
+ * placement, so both are playing the same player. Empty when there is
+ * nothing legal left, which is how a caller knows the run is over.
+ */
+export function playBestMove(gs: GameState): FeedbackEvent[] {
+  const move = bestPlacement(gs);
+  if (!move) return [];
+  // Turn the piece the way the bot wants it, exactly as a player would
+  for (let n = 0; n < 4 && gs.current !== null && gs.current.rotation !== move.rot; n++) {
+    gs.rotate();
+  }
+  return gs.tryPlace(move.row, move.col);
+}
+
 export interface BotRun {
   gs: GameState;
   /** The events of each placement, in order, for asserting what the run contained */
@@ -185,13 +204,7 @@ export function playBotRun(
       gs.hold();
       continue;
     }
-    const move = bestPlacement(gs);
-    if (!move) break;
-    // Turn the piece the way the bot wants it, exactly as a player would
-    for (let n = 0; n < 4 && gs.current !== null && gs.current.rotation !== move.rot; n++) {
-      gs.rotate();
-    }
-    const ev = gs.tryPlace(move.row, move.col);
+    const ev = playBestMove(gs);
     if (ev.length === 0) break;
     events.push(ev);
   }

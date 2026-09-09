@@ -53,16 +53,33 @@ const MAX_UNCLOCKED_GAP_SECONDS = 24 * 60 * 60;
  * How far under zero the reconstructed bank may go before the run is called
  * dead.
  *
- * Fifty milliseconds, not the second this used to allow. The argument for
- * the tight bound is in `drainIntegral`: the client drains per frame at the
- * rate at the END of each frame, the rate never falls, so a browser always
- * eats at least the closed-form integral this reconstruction subtracts. Both
- * sides then add the same engine-computed bonus and clamp at the same cap,
- * and clamping is monotonic — so the reconstructed bank is greater than or
- * equal to the bank the browser actually had at every move. A run that
- * survived on the client therefore reconstructs to a bank at or above zero,
- * and the slack only has to absorb float noise, not model error. A whole
- * second of slack was a whole second of free play for a forged log.
+ * Fifty milliseconds, not the second this used to allow. The claim is that
+ * the reconstructed bank is never below the bank the browser really had, at
+ * any move, so the slack absorbs float noise and nothing else. By induction
+ * on the moves, with both banks read just before the move's bonus is added:
+ *
+ *  - they start equal, at `timer.startSeconds`;
+ *  - between two moves the browser subtracts `dt × drainRate` per frame at
+ *    the rate at the END of the frame, and the rate never falls, so the sum
+ *    of the frames is at least the closed-form integral subtracted here
+ *    (see `drainIntegral`) — including a backgrounded tab, whose one huge
+ *    frame drains at the highest rate of all;
+ *  - at the move both sides add the SAME bonus. That is what the derived
+ *    `pieceElapsed` bought: it is `gameElapsed − lastPlacementAt` in both
+ *    places, and both of those are the recorded `at` of a placement, so the
+ *    speed fraction and the tenth-of-a-second rounding on top of it are
+ *    computed from bit-identical doubles. While it was accumulated per
+ *    frame, the two sides could disagree in the last bits, the rounding
+ *    could flip a 1.7 into a 1.8, and an honest run finishing on 0.035 s
+ *    reconstructed to −0.065 s and was refused;
+ *  - and both then clamp at `timer.maxSeconds`, which is monotonic.
+ *
+ * So a run the browser survived — bank above zero at every move — cannot
+ * reconstruct below zero. The one thing left between the two numbers is
+ * float noise: a single closed-form evaluation against a sum of thousands of
+ * per-frame subtractions of the same quantity, which is a part in 1e13 of a
+ * ninety-second bank. Fifty milliseconds is eleven orders of magnitude of
+ * headroom; a whole second was a whole second of free play for a forged log.
  */
 const CLOCK_SLACK_SECONDS = 0.05;
 
@@ -96,8 +113,9 @@ const TIME_EPSILON = 1e-6;
  * reading drainRate), and the rate never decreases, so each frame's drain is
  * at least the integral over that frame. The client therefore always drains
  * at least as much as this number — a run that survived on the client cannot
- * run the reconstructed bank dry. CLOCK_SLACK_SECONDS is on top of that, for
- * the rounding of a bonus and the last bits of an accumulated double.
+ * run the reconstructed bank dry. CLOCK_SLACK_SECONDS is on top of that, and
+ * since the bonus is now computed from the same doubles on both sides it has
+ * nothing left to absorb but the noise of the two summations.
  */
 export function drainIntegral(timer: TimerConfig, t0: number, t1: number): number {
   if (!(t1 > t0)) return 0;

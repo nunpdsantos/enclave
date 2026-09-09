@@ -1,4 +1,7 @@
+import { Redis } from '@upstash/redis';
 import type { Difficulty } from '../src/core/Config';
+import { dailyNumber } from '../src/core/Daily';
+import { RULES_VERSION } from '../src/core/Rules';
 import { dailySeedFor, signTicket, TICKET_VERSION } from '../src/core/Ticket';
 import type { TicketPayload } from '../src/core/Ticket';
 
@@ -17,10 +20,18 @@ export const config = { runtime: 'edge' };
  * the seed to one player id and one clock reading, which is how a submission
  * can be refused for claiming more play than has actually happened.
  *
- * `GET ?mode=daily` answers the same seed and date without a ticket, for
- * anything that wants to know today's deal without identifying itself. A
- * score cannot be posted from it: only the POST issues a token, and only a
- * token gets a run on the board.
+ * **A daily ticket is the attempt.** The first one an id asks for on a date
+ * is issued normally and the id goes into that day's ticket set; every later
+ * one is issued `practice: true`, plays the real puzzle, and cannot post a
+ * score. The old arrangement counted the attempt at submission time, which
+ * meant a player could take the deal, play it as many times as they liked
+ * and post only the best of them.
+ *
+ * `GET ?mode=daily` answers which day it is and nothing else. It used to
+ * answer the seed too, without a ticket — which handed the shared deal to
+ * anybody who asked, so a solved daily could be posted from a fresh id that
+ * had never spent an attempt on it. The deal now comes out of the POST, with
+ * the ticket that spends the attempt, like every other mode.
  *
  * The secret is `ENCLAVE_SECRET`, falling back to `KV_REST_API_TOKEN` — which
  * is already a server-only secret that has to be set for the leaderboard to
@@ -43,8 +54,46 @@ const ID_RE = /^[A-Za-z0-9._:-]{1,64}$/;
 /** Small enough that a body this endpoint has no use for is refused early */
 const MAX_BODY_BYTES = 2048;
 
+/** The ticket set outlives its board, and both go eight days after the date */
+const DAILY_TTL_SECONDS = 8 * 24 * 60 * 60;
+
 function secret(): string | null {
   return process.env.ENCLAVE_SECRET || process.env.KV_REST_API_TOKEN || null;
+}
+
+/**
+ * Every id handed a daily deal on that date, whether or not a score came
+ * back. Beside the board it belongs to, and versioned with it: a rules bump
+ * starts the boards empty, and yesterday's attempts have no bearing on them.
+ */
+function dailyTicketsKey(date: string): string {
+  return `leaderboard:enclave:v${RULES_VERSION}:daily:${date}:tickets`;
+}
+
+/**
+ * Record that this id has been dealt this date, and answer whether it had
+ * already been recorded — so the answer is "no" exactly once per id per day.
+ *
+ * Fails **open** — a normal ticket — when Redis is not configured or does not
+ * answer. Refusing to deal would take the daily away from every player for
+ * the duration of an outage, and there is a second line of defence that runs
+ * on the same database: `api/leaderboard.ts` still refuses a second
+ * submission from an id that has already posted today. What an outage can
+ * cost is an extra *attempt*, not an extra score.
+ */
+async function dailyAttemptAlreadySpent(date: string, id: string): Promise<boolean> {
+  const url = process.env.KV_REST_API_URL;
+  const token = process.env.KV_REST_API_TOKEN;
+  if (!url || !token) return false;
+  try {
+    const redis = new Redis({ url, token });
+    const key = dailyTicketsKey(date);
+    const fresh = await redis.sadd(key, id);
+    await redis.expire(key, DAILY_TTL_SECONDS);
+    return fresh === 0;
+  } catch {
+    return false;
+  }
 }
 
 /** 'YYYY-MM-DD' in UTC — the puzzle everybody is on right now */
@@ -79,9 +128,13 @@ export default async function handler(request: Request): Promise<Response> {
     if (mode !== 'daily') {
       return new Response(JSON.stringify({ error: 'Ticket required' }), { status: 400, headers });
     }
+    // Which day it is, and no deal. The seed used to come back here, which
+    // meant the shared puzzle could be taken, solved at leisure and posted
+    // from an id that had never asked for a ticket on it. Anything that wants
+    // to play today's daily asks for a ticket like everybody else.
     const dailyKey = todayKey();
     return new Response(
-      JSON.stringify({ mode: 'daily', dailyKey, seed: await dailySeedFor(key, dailyKey) }),
+      JSON.stringify({ mode: 'daily', dailyKey, number: dailyNumber(dailyKey) }),
       { headers },
     );
   }
@@ -120,12 +173,17 @@ export default async function handler(request: Request): Promise<Response> {
 
   const dailyKey = mode === 'daily' ? todayKey() : undefined;
   const seed = dailyKey ? await dailySeedFor(key, dailyKey) : randomSeed();
+  // Asking for the deal is what spends the attempt. A second ask still gets
+  // today's real puzzle — replaying it is allowed and always was — but its
+  // ticket says practice, and the leaderboard will not take a score from it.
+  const practice = dailyKey ? await dailyAttemptAlreadySpent(dailyKey, id) : false;
   const payload: TicketPayload = {
     v: TICKET_VERSION,
     id,
     mode: mode as Difficulty,
     seed,
     ...(dailyKey ? { dailyKey } : {}),
+    ...(practice ? { practice: true as const } : {}),
     issuedAt: Date.now(),
   };
 

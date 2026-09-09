@@ -44,6 +44,17 @@ export interface TicketPayload {
   seed: number;
   /** 'YYYY-MM-DD' for a daily ticket; absent for free play */
   dailyKey?: string;
+  /**
+   * This ticket cannot post a score.
+   *
+   * Set on the second and every later daily ticket an id asks for on a date:
+   * the daily's promise is one attempt per player per day, and the attempt
+   * starts when the deal is handed over rather than when a score comes back.
+   * The run still gets the real seed and plays for real — it is a practice
+   * go at today's puzzle — and the leaderboard refuses it with `'practice'`.
+   * Absent on every ticket that can be spent.
+   */
+  practice?: boolean;
   /** ms since the epoch, from the server's clock at issue */
   issuedAt: number;
 }
@@ -170,6 +181,10 @@ export async function verifyTicket(secret: string, token: unknown): Promise<Tick
   // The daily's whole promise is one deal per date, so a daily ticket without
   // a date — or a free-play ticket carrying one — is not a ticket we issued.
   if ((p.mode === 'daily') !== (p.dailyKey !== undefined)) return null;
+  // Only ever `true`. A `false` we never mint, or anything that is not a
+  // boolean, is a payload somebody else wrote — and this is the field that
+  // decides whether a score may be posted, so it gets no coercion.
+  if (p.practice !== undefined && p.practice !== true) return null;
 
   return {
     v: p.v,
@@ -177,8 +192,52 @@ export async function verifyTicket(secret: string, token: unknown): Promise<Tick
     mode: p.mode,
     seed: p.seed,
     ...(typeof p.dailyKey === 'string' ? { dailyKey: p.dailyKey } : {}),
+    ...(p.practice === true ? { practice: true as const } : {}),
     issuedAt: p.issuedAt,
   };
+}
+
+/**
+ * The payload segment of a token, read without checking the MAC.
+ *
+ * For the client, which holds no secret and so cannot verify anything: it
+ * needs to know whether its own ticket is a practice one, to say so on the
+ * game-over screen instead of posting a score the server will refuse. A
+ * player who edits the token in their own storage only fools their own
+ * screen — every decision that matters is made by `verifyTicket` on the
+ * server, and nothing here may ever stand in for it.
+ *
+ * Null for anything that is not a readable payload. Deliberately not typed
+ * as a `TicketPayload`: it has not been proved to be one.
+ */
+export function readTicketPayload(token: unknown): Record<string, unknown> | null {
+  if (typeof token !== 'string' || token.length === 0 || token.length > MAX_TOKEN_LENGTH) {
+    return null;
+  }
+  const dot = token.indexOf('.');
+  if (dot <= 0) return null;
+  const json = textFromBase64url(token.slice(0, dot));
+  if (json === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Does this token say the run it started is practice?
+ *
+ * The client's question, answered off the unverified payload, so the
+ * game-over screen can say `PRACTICE RUN · NOT SUBMITTED` instead of
+ * offering a name box and posting a score the server would refuse. False for
+ * a token that is missing or unreadable: a run with no ticket is already
+ * handled as an unverified run, and that is a different sentence.
+ */
+export function isPracticeTicket(token: unknown): boolean {
+  return readTicketPayload(token)?.practice === true;
 }
 
 /**
@@ -197,17 +256,36 @@ export async function dailySeedFor(secret: string, key: string): Promise<number>
 }
 
 /**
- * A stable fingerprint of "this exact run", for the replay dedupe.
+ * A stable fingerprint of "this solution", for the replay dedupe.
+ *
+ * The deal and the placements, and nothing else: the seed, the mode, the
+ * daily's date, and each move as `p, row, col, rot` or a bare `h`. **Times
+ * are deliberately not in it.** They used to be, and that made the dedupe
+ * trivial to walk around: a daily replay is a document, every player of a
+ * date is dealt the same seed, and nudging one `at` by a microsecond made a
+ * different fingerprint out of the same solution. Timing is not part of what
+ * a run *is* — in the daily it cannot even affect the score — so two
+ * submissions of the same placements are one run whatever their timing, and
+ * the second is refused.
  *
  * The moves are re-serialised into fixed tuples rather than hashed as they
  * arrived: JSON.stringify preserves whatever key order the sender used, so
- * hashing the raw text would let `{"t":"p","at":1}` and `{"at":1,"t":"p"}`
+ * hashing the raw text would let `{"t":"p","row":1}` and `{"row":1,"t":"p"}`
  * bank the same run twice.
+ *
+ * The mode and the daily key are in the hash because the seed alone does not
+ * name a deal: the same 32 bits deal differently under Classic's bag and
+ * Blitz's, and a date is what a daily's board is.
  */
-export async function replayFingerprint(seed: number, moves: readonly Move[]): Promise<string> {
-  const canonical = moves.map(m => (m.t === 'p' ? ['p', m.row, m.col, m.rot, m.at] : ['h', m.at]));
-  const digest = await crypto.subtle.digest(
-    'SHA-256', encoder.encode(`${seed}:${JSON.stringify(canonical)}`),
-  );
+export async function replayFingerprint(replay: {
+  seed: number;
+  mode: Difficulty;
+  dailyKey?: string;
+  moves: readonly Move[];
+}): Promise<string> {
+  const canonical = replay.moves.map(m => (m.t === 'p' ? ['p', m.row, m.col, m.rot] : ['h']));
+  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(
+    `${replay.seed}:${replay.mode}:${replay.dailyKey ?? ''}:${JSON.stringify(canonical)}`,
+  ));
   return hex(new Uint8Array(digest));
 }
