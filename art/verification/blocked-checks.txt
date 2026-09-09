@@ -1,0 +1,47 @@
+ENCLAVE art verification limits, 2026-09-09
+
+BLENDER
+Installed executable: /Applications/Blender.app/Contents/MacOS/Blender
+--version verified Blender 5.2.1 LTS, build hash 9e2066aef7ef.
+Attempted the complete default command: art/blender/render.sh
+It invokes:
+  Blender --background --factory-startup --offline-mode --python-exit-code 1
+    --python art/blender/kit.py --
+Result: process exit 139 (segmentation fault), before Python execution.
+A smaller --background --factory-startup --python-expr health check failed
+at the same initialisation stage. Blender's crash trace contained:
+  _platform_strstr
+  blender::gpu::supports_barycentric_whitelist
+  blender::gpu::MTLBackend::metal_is_supported
+  blender::GPU_backend_type_selection_detect
+  blender::wm_homefile_read_ex
+  blender::WM_init
+  main
+The Python backtrace was empty. --help lists only 'metal' as GPU backend.
+This establishes failure during Metal detection in this environment; it does
+not establish whether the underlying cause is sandbox access or a Blender bug.
+No EEVEE image or .blend scene was produced by this run.
+Bundled Python 3.13.13 runs independently; the explicit --software fallback
+rendered the shared source meshes and generated the delivered atlas.
+
+BROWSER
+Computer Use browser inventory: no enabled browser providers.
+Native Chrome selection returned:
+  Computer Use was not approved to use Google Chrome
+No browser screenshot, CDN execution or WebGL rendering was verified.
+verification/board-*.png are CPU atlas composites, not browser screenshots.
+
+VITE / HTTP
+npm run dev -- --host 127.0.0.1 --port 5173 --strictPort started Vite 6.4.3
+successfully and reported http://127.0.0.1:5173/.
+A read-only curl probe of /art-preview.html was rejected before execution:
+  approval required by policy, but AskForApproval is set to Never
+The same policy rejected the grouped HTML/JSON/PNG probes. HTTP responses
+therefore remain unverified. No alternative route bypassed the approval gate.
+
+OFFLINE VERIFICATION
+The installed Pixi 8.20.1 parsed all 31 textures at 64 logical pixels.
+The actual preview script built real Pixi Sprite, Graphics and Container
+objects and exercised controls with DOM and GPU Application adapters.
+This verifies API/scene construction, not GPU drawing or responsive CSS.
+See preview.json, geometry.json, pipeline.json and reproducibility.json.

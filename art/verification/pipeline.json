@@ -1,0 +1,53 @@
+{
+  "engine": "cpu-fallback",
+  "render_seconds": 4.519,
+  "frame_count": 31,
+  "atlas_bytes": 34902,
+  "atlas_dimensions": [
+    1072,
+    536
+  ],
+  "atlas_sha256": "cd3524621ebb787946dd818b70f559e7e77a3dc6e913861604b02d268f9a2fd2",
+  "source_sha256": {
+    "wall-00": "438e0c815576ec60a9bb4209ba2751011f451568c3819a55a479701a19c497ed",
+    "wall-01": "7074938c4f5aa46713f6e0e54d2cb6d2b731ae5d87e2cdcd83b17146910429a0",
+    "wall-02": "cbb75172d385d69b5e414cbb08a64bc9678ba0398b1fb54fa0e9a7a034808ebb",
+    "wall-03": "ccbcaaf8fc86511407fef4ead51ce730a3186ccb195d076ba41a3d8c5fda7c14",
+    "wall-04": "922359dbd8c4673ae77988dd674c179da9ddca0c5c7d525c999cebe6c3440f28",
+    "wall-05": "fa72ab2a6d7a440508cff2df215ae407f6ddaee833cdd27c14d263a1371b8968",
+    "wall-06": "75cc0f044ccbd6f1a51006895f73776150336b30c64e1de4be47d4555b376f2e",
+    "wall-07": "d8210d934204dee3423fbc1823b892b98ab34bc08241fcbe6bdf74469995b774",
+    "wall-08": "a36008086fa0a8c391e18419c38ee5bbe8402b33dcdf22f34e067cf7b6d9467f",
+    "wall-09": "3e01476da98aa5064c672ff709c2c9393c7ce353ac685c134f344561748202c5",
+    "wall-10": "32ab5e2240d15bc8ea17e89230e91afde15213cb2b314713eedb70e2f7046dc9",
+    "wall-11": "e1c93628e3b834cc6a993f202a2084fa36522f0a40e611d6b25a9bf623b2e4b7",
+    "wall-12": "b300a9d42d193d4da4e0db3ddd23062665481bca0e6540cd78cd29bf8718e833",
+    "wall-13": "e378ced524d1a95eda0525dbe4fd21dbf2c15301701c074279d9c39600a58774",
+    "wall-14": "a1ced83484bdff599dc44eb28ccdf6ed7bcbc3533c67ce3e1c5fb418bf7fe11e",
+    "wall-15": "3c5b6a8d2368a2a1837648d3f7eca122dfdd010d43679bafcfe726d75c0cbc5b",
+    "keep": "0f37c7c8a4bc97dde601e2d2a6af5f5ce7b05f62f7fd2f5b6fb9f16203c637a7",
+    "gate-n": "7731ae4389aeed7383db41bc58d8b11370f4e3e1f67e8aebd688e861e732e972",
+    "gate-e": "a984c6c78bb390d71ec02f0e125044a01e3dac114dd5f3b0611f9204d323a377",
+    "gate-s": "2f9c1faa0ff712703309469aec150b5619a9cbc3326053d086e3360fa98e55ee",
+    "gate-w": "1a3b0c40f1674e0f332c18ceda2eae99552485434520fa4e6a704cc9d5eaa47e",
+    "ruin-a": "53a0991e69aa1bde0953622f30f94481de94d1e622e2756574b4adad91bf90c8",
+    "ruin-b": "7a9ceda3031906d0e1c767246d8f4aa93e4df466dea3575dc27c5177e1d8daf3",
+    "floor-stone": "53122546769c9473a5ae5b97a5f3e3f60b3c5dd89b7d10c6e314af4cd4997de1",
+    "floor-courtyard-a": "8680572d8da3a4c1c5c448c9d95ae1e96c9d9855d778923616d3e01678e14920",
+    "floor-courtyard-b": "0a1da7327ed9d03b72fbe19b717342fc4504cb452058f4590aec8691b2255e18",
+    "banner-cobalt": "7eb1127317ad5c8ac4033748ba28d23986036ed56e4fad6e1d94ead8718eab2c",
+    "banner-oxblood": "bd065fa5297e460b271269a79876f627027fd0f65a98cdd2d5a687cd0c9a6be4",
+    "enemy-raider": "a0671524549900306441819554fbd89b171efbe701cfe83c75a2f75b60d16d1b",
+    "enemy-tide": "dff4c67c6b4c3a7492fe59c74c9664ad3ee566458a6f21c2cd7179b916041956",
+    "enemy-target": "0314dbed6d79c03c8efbf2835298a67efb9a13ba07544cfd845832cd02c1651f"
+  },
+  "checks": [
+    "all source frames present",
+    "128x128 RGBA",
+    "nonempty with transparency",
+    "PNG CRC and lossless round trip",
+    "under 2 MB",
+    "untrimmed center anchors",
+    "meta.scale string 2"
+  ]
+}

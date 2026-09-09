@@ -1,0 +1,20 @@
+{
+  "pixiVersion": "8.20.1",
+  "frameCount": 31,
+  "atlasBytes": 34902,
+  "checks": [
+    "preview script syntax",
+    "exact preview/atlas name match",
+    "Pixi spritesheet parse",
+    "all textures 64x64 with center anchors",
+    "three actual Pixi scene graphs",
+    "all catalog entries",
+    "raider/tide toggles",
+    "intent visibility",
+    "grid control",
+    "greyscale CSS class",
+    "inverse projected cell inspection"
+  ],
+  "browserVerified": false,
+  "limitation": "DOM and GPU Application are adapters. No browser was launched; actual CDN, GPU rendering and responsive CSS require a separate visual check."
+}
