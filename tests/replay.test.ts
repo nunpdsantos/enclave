@@ -451,24 +451,44 @@ describe('two hundred runs a browser could have played', () => {
   }, 30_000);
 });
 
-describe('the cadence floor', () => {
-  const run = playBotRun('classic', 11, 20);
+describe('there is no cadence floor', () => {
+  /**
+   * There used to be one: 0.08 s between placements, on the reasoning that
+   * nobody drags a piece onto a board twelve times a second. The live engine
+   * never knew about it. It accepted two placements 79 ms apart, paid the
+   * time bonus for them and put the score on the HUD; the simulation then
+   * refused the whole run as `cadence`, and the player was told their honest
+   * score could not be verified with no way to find out why.
+   *
+   * What it was standing in for — a log written rather than played — is the
+   * wall-clock check in `api/leaderboard.ts`, which compares the run's last
+   * move against a server clock reading the forger did not choose.
+   */
+  it('verifies a run the engine itself played at 79 ms an input', () => {
+    const brisk = playBotRun('classic', 11, 20, { step: () => 0.079 });
+    const gaps = brisk.replay.moves.slice(1).map((m, i) => m.at - brisk.replay.moves[i].at);
+    expect(gaps.length).toBeGreaterThan(10);
+    // Every gap under the floor that used to be here, and the engine played
+    // all of them: this is a run, not a log somebody wrote.
+    expect(Math.max(...gaps)).toBeLessThan(0.08);
+    expect(brisk.replay.moves.some(m => m.t === 'h')).toBe(true);
 
-  it('refuses placements a human hand could not have made', () => {
-    // Every move legal, every score honest, the whole run typed out at forty
-    // placements a second.
-    const rushed: Move[] = run.replay.moves.map((m, i) => ({ ...m, at: 0.5 + i * 0.025 }));
-    expect(simulateRun({ ...run.replay, moves: rushed })).toMatchObject({ reason: 'cadence' });
+    expect(simulateRun(brisk.replay)).toMatchObject({ valid: true, score: brisk.score });
+  });
 
-    // The floor is 0.08 s between placements: a hair under it fails, a hair
-    // over it is a fast player and nothing more.
-    const at = (gap: number): Move[] => run.replay.moves.map((m, i) => ({ ...m, at: 0.5 + i * gap }));
-    expect(simulateRun({ ...run.replay, moves: at(0.0799) }).reason).toBe('cadence');
-    expect(simulateRun({ ...run.replay, moves: at(0.0801) }).reason).not.toBe('cadence');
-
-    // A hold does not reset it: the floor is between one piece landing and
-    // the next, whatever happened in between.
-    expect(run.replay.moves.some(m => m.t === 'h')).toBe(true);
+  it('verifies a hand-retimed run at any spacing, down to a millisecond', () => {
+    // The daily has no clock, so re-timing it cannot change a single point —
+    // which makes it the mode where a cadence rule was purely a cadence rule.
+    const run = playBotRun('daily', dailySeed('2026-05-05'), 20);
+    const at = (gap: number): Move[] =>
+      run.replay.moves.map((m, i) => ({ ...m, at: 0.5 + i * gap }));
+    for (const gap of [0.001, 0.025, 0.0799, 0.0801]) {
+      expect(`${gap}: ${simulateRun({ ...run.replay, moves: at(gap) }).reason ?? 'valid'}`)
+        .toBe(`${gap}: valid`);
+    }
+    // Time still runs one way, and that check has not moved
+    const rewound = run.replay.moves.map((m, i) => ({ ...m, at: i === 4 ? 0 : m.at }));
+    expect(simulateRun({ ...run.replay, moves: rewound }).valid).toBe(false);
   });
 });
 
@@ -523,9 +543,28 @@ describe('the reconstructed clock', () => {
   });
 });
 
-describe('the six-hundred move cap', () => {
+describe('the recorded-input cap', () => {
   // One long run, used twice: the cap, and what a full-length replay costs.
   const run = playBotRun('classic', 9, MAX_REPLAY_MOVES + 1);
+
+  it('sits far past a run anyone has actually played', () => {
+    // Six hundred was reachable: a Classic bank is not a fixed budget, every
+    // placement pays time back into it, and a run that keeps claiming keeps
+    // the clock alive. Six hundred inputs is about twenty minutes of that,
+    // which is a long sitting rather than an impossible one — and the player
+    // who got there had the log stop under them and the score refused for
+    // playing well. Fifteen hundred is about fifty minutes.
+    expect(MAX_REPLAY_MOVES).toBe(1500);
+  });
+
+  it('verifies a run past where the old cap would have cut it off', () => {
+    // 601 inputs: refused outright under the old cap, an ordinary long run
+    // under this one.
+    const long = playBotRun('classic', 9, 601);
+    expect(long.replay.moves.length).toBe(601);
+    expect(long.replay.truncated).toBeUndefined();
+    expect(simulateRun(long.replay)).toMatchObject({ valid: true, score: long.score });
+  });
 
   it('records up to the cap, marks the run, and refuses to validate it', () => {
     expect(run.replay.moves.length).toBe(MAX_REPLAY_MOVES);

@@ -1,5 +1,6 @@
 import { Difficulty } from './Config';
 import { dailyKey } from './Daily';
+import { readTicketPayload } from './Ticket';
 import { Replay } from './types';
 
 const NAME_KEY = 'enclave_lastname';
@@ -87,6 +88,13 @@ export interface RunTicket {
   seed: number;
   /** Opaque; carried to the game-over screen and posted back with the score. */
   token: string;
+  /**
+   * The mode the *ticket* says it is for, read out of its own payload rather
+   * than assumed from what was asked. It is what the server will check the
+   * submission against, so a ticket whose mode is not the run's mode is a
+   * ticket this run cannot use — see `RunStarter`.
+   */
+  mode: string | null;
   /** The server's UTC date, on a daily ticket */
   dailyKey?: string;
 }
@@ -94,34 +102,104 @@ export interface RunTicket {
 /**
  * Ask the server to start a run: it picks the deal and signs a ticket for it.
  *
+ * `practice` asks for a run that cannot post a score, which is what the game
+ * wants when it already knows this browser has spent today's daily attempt:
+ * without it the server hands back the ticket that attempt was issued on,
+ * which has already been spent and would be refused at the end of the run.
+ *
  * Null means the run is unverifiable before it has begun — offline, the API
  * down, a request that took too long. That is not a failure the player can
  * do anything about, so the run simply starts on a local seed and is kept
  * local at the end of it, rather than being played and then refused.
  */
-export async function requestRunTicket(mode: Difficulty): Promise<RunTicket | null> {
+export async function requestRunTicket(
+  mode: Difficulty, practice: boolean = false,
+): Promise<RunTicket | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TICKET_TIMEOUT_MS);
   try {
     const res = await fetch(RUN_START_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: playerId(), mode }),
+      body: JSON.stringify({ id: playerId(), mode, ...(practice ? { practice: true } : {}) }),
       signal: controller.signal,
     });
     if (!res.ok) return null;
     const data = await res.json();
     if (typeof data?.token !== 'string' || typeof data?.seed !== 'number') return null;
     if (!Number.isInteger(data.seed) || data.seed < 0 || data.seed > 0xffffffff) return null;
+    const claimed = readTicketPayload(data.token)?.mode;
     return {
       seed: data.seed,
       token: data.token,
+      mode: typeof claimed === 'string' ? claimed : null,
       ...(typeof data.dailyKey === 'string' ? { dailyKey: data.dailyKey } : {}),
     };
   } catch {
     return null;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/** A run that is starting: the mode it is in, and the ticket it got, if any. */
+export interface StartedRun {
+  mode: Difficulty;
+  ticket: RunTicket | null;
+}
+
+/**
+ * Starting a run, without letting two starts overlap.
+ *
+ * A ticket has to be in hand before the first piece is dealt, so the start is
+ * a network round trip with the menu still on screen and still taking taps.
+ * Two things went wrong there, and both of them shipped:
+ *
+ *  - **Two Plays, two runs.** A double-tap on the Daily started one run,
+ *    then started a second that replaced it — and on the old server the
+ *    second ticket was a practice one, so a double-tap turned a real daily
+ *    attempt into a practice run. A start in flight now swallows the second
+ *    press: `start` answers null and the caller does nothing.
+ *  - **A Blitz game on a Classic ticket.** The mode was read again *after*
+ *    the await, so switching modes while the ticket was in the air paired a
+ *    game of one mode with a ticket for another; the run then played to the
+ *    end and was refused. The mode is captured before the request and is what
+ *    the run is built from, and a ticket that comes back naming a different
+ *    mode is dropped rather than used.
+ *
+ * The fetch is injected so this can be tested without a network: everything
+ * here is timing, and timing is exactly what a test has to be able to hold.
+ */
+export class RunStarter {
+  private busy = false;
+
+  constructor(
+    private readonly fetchTicket: (
+      mode: Difficulty, practice: boolean,
+    ) => Promise<RunTicket | null> = requestRunTicket,
+  ) {}
+
+  /** True while a start is waiting for its ticket. */
+  get inFlight(): boolean {
+    return this.busy;
+  }
+
+  /**
+   * Null when a start is already in flight — the press is ignored, not
+   * queued. Otherwise the run to build, with a ticket only if that ticket
+   * belongs to this run.
+   */
+  async start(mode: Difficulty, practice: boolean = false): Promise<StartedRun | null> {
+    if (this.busy) return null;
+    this.busy = true;
+    try {
+      const ticket = await this.fetchTicket(mode, practice);
+      // A ticket the server signed for another mode cannot vouch for this
+      // run: posting it would spend the ticket to be told `token`.
+      return { mode, ticket: ticket && ticket.mode === mode ? ticket : null };
+    } finally {
+      this.busy = false;
+    }
   }
 }
 
@@ -171,6 +249,8 @@ export interface SubmitResult {
 export class Leaderboard {
   private entries: LeaderboardEntry[] = [];
   private fetchPromise: Promise<void> | null = null;
+  /** Which read is the newest: an older one's answer is never applied. */
+  private sequence = 0;
   private difficulty: Difficulty;
   /** Which day's daily board this is. Ignored outside the daily. */
   private dailyDate: string;
@@ -301,13 +381,27 @@ export class Leaderboard {
     return score > this.entries[this.entries.length - 1].score;
   }
 
+  /**
+   * Read the board, and apply the answer only to the board it was asked for.
+   *
+   * The response used to be applied to whichever board was current when it
+   * arrived, so switching from the Daily to Classic while the Daily's request
+   * was in the air drew the Daily's ten under Classic's heading — and then
+   * wrote them into Classic's local cache, where they stayed. The board id is
+   * read before the request goes out, and a response that comes back to a
+   * different board is dropped; `sequence` does the same for two requests for
+   * the same board, so the older of them can never land last.
+   */
   private async fetchRemote(): Promise<void> {
+    const board = this.getBoardId();
+    const seq = ++this.sequence;
+    let fetched: LeaderboardEntry[] | null = null;
     try {
       // The id goes out so the server can mark the player's own row, and it
       // is only ever the one this browser already has: reading a board must
       // not be what gives an anonymous visitor an identity.
       const stored = getStoredPlayerId();
-      const url = `${API_URL}?difficulty=${this.getBoardId()}`
+      const url = `${API_URL}?difficulty=${board}`
         + (stored ? `&id=${encodeURIComponent(stored)}` : '');
       const res = await fetch(url);
       if (!res.ok) throw new Error('API error');
@@ -315,10 +409,15 @@ export class Leaderboard {
       if (!contentType.includes('application/json')) throw new Error('Not JSON');
       const data = await res.json();
       if (!Array.isArray(data)) throw new Error('Invalid data');
-      this.entries = data.map(toEntry);
-      this.saveLocal();
+      fetched = data.map(toEntry);
     } catch {
       // Offline or invalid response — keep local data
+    }
+    // Superseded, or answering for a board that is no longer loaded
+    if (seq !== this.sequence || this.getBoardId() !== board) return;
+    if (fetched) {
+      this.entries = fetched;
+      this.saveLocal();
     }
     this.fetchPromise = null;
   }

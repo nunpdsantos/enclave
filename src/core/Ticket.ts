@@ -1,6 +1,7 @@
 import type { Difficulty } from './Config';
 import { isDailyKey } from './Daily';
-import type { Move } from './types';
+import { GRID_SIZE } from './types';
+import type { Move, PlacedPiece } from './types';
 
 /**
  * Run tickets: the server's signed record that a particular player was dealt
@@ -255,6 +256,52 @@ export async function dailySeedFor(secret: string, key: string): Promise<number>
   return ((mac[0] << 24) | (mac[1] << 16) | (mac[2] << 8) | mac[3]) >>> 0;
 }
 
+/** How many quarter turns a square board has. */
+const BOARD_ROTATIONS = 4;
+
+/** Stands in for a placement whose piece the caller could not resolve. */
+const ZERO_PIECE: PlacedPiece = { rows: 0, cols: 0, turns: 1 };
+
+/** One placement as the canonical form works on it, plus the piece it stood for. */
+interface CanonicalMove {
+  hold: boolean;
+  row: number;
+  col: number;
+  rot: number;
+  /** Rows and columns the piece occupied at `rot` */
+  rows: number;
+  cols: number;
+  /** Distinct rotations of the piece type, which `rot` counts modulo */
+  turns: number;
+}
+
+/**
+ * The same solution, with the whole board turned 90° clockwise.
+ *
+ * A cell at `(r, c)` lands at `(c, 8 − r)`, so a piece whose bounding box was
+ * `rows × cols` with its top-left at `(row, col)` comes out `cols × rows`
+ * with its top-left at `(col, 9 − rows − row)`; and the piece itself is now
+ * one rotation further round its own cycle, which is `(rot + 1) % turns`
+ * because `Pieces.rotations` lists the distinct turns in clockwise order.
+ * Holds carry no position and pass through untouched.
+ */
+function turnBoard(moves: readonly CanonicalMove[]): CanonicalMove[] {
+  return moves.map(m => (m.hold ? m : {
+    hold: false,
+    row: m.col,
+    col: GRID_SIZE - m.rows - m.row,
+    rot: (m.rot + 1) % m.turns,
+    rows: m.cols,
+    cols: m.rows,
+    turns: m.turns,
+  }));
+}
+
+/** The fixed tuples the hash is taken over: `['p', row, col, rot]` or `['h']`. */
+function serialiseMoves(moves: readonly CanonicalMove[]): string {
+  return JSON.stringify(moves.map(m => (m.hold ? ['h'] : ['p', m.row, m.col, m.rot])));
+}
+
 /**
  * A stable fingerprint of "this solution", for the replay dedupe.
  *
@@ -268,6 +315,25 @@ export async function dailySeedFor(secret: string, key: string): Promise<number>
  * submissions of the same placements are one run whatever their timing, and
  * the second is refused.
  *
+ * **Nor is orientation.** The board is a square with no gravity and no
+ * privileged corner, so a solution turned 90°, 180° or 270° is legal, is
+ * dealt the same pieces in the same order, and scores to the point — rooms,
+ * fences, the lit map and the survey are all rotation-invariant. A copied
+ * daily rotated half a turn was therefore a different fingerprint for the
+ * same run, which is a copy with an extra step. The four turns of a solution
+ * are generated here and the lexicographically smallest serialisation is the
+ * one that gets hashed, so all four land on the same fingerprint. Reflections
+ * are deliberately not canonicalised: a mirrored solution needs mirror-image
+ * pieces (an S where the deal gave a Z), which the deal does not supply, so
+ * there is no reflected copy to catch.
+ *
+ * Turning the board needs the shape behind each move, which the replay does
+ * not carry — a move is a `row, col, rot` triple and the piece comes from the
+ * deal — so `placed` is the simulation's own record of what it handed over,
+ * one entry per placement in move order. A caller with a placement count that
+ * does not match it has not proved the run, and gets the untuned
+ * serialisation rather than a wrong one.
+ *
  * The moves are re-serialised into fixed tuples rather than hashed as they
  * arrived: JSON.stringify preserves whatever key order the sender used, so
  * hashing the raw text would let `{"t":"p","row":1}` and `{"row":1,"t":"p"}`
@@ -277,15 +343,39 @@ export async function dailySeedFor(secret: string, key: string): Promise<number>
  * name a deal: the same 32 bits deal differently under Classic's bag and
  * Blitz's, and a date is what a daily's board is.
  */
-export async function replayFingerprint(replay: {
-  seed: number;
-  mode: Difficulty;
-  dailyKey?: string;
-  moves: readonly Move[];
-}): Promise<string> {
-  const canonical = replay.moves.map(m => (m.t === 'p' ? ['p', m.row, m.col, m.rot] : ['h']));
-  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(
-    `${replay.seed}:${replay.mode}:${replay.dailyKey ?? ''}:${JSON.stringify(canonical)}`,
-  ));
-  return hex(new Uint8Array(digest));
+export async function replayFingerprint(
+  replay: {
+    seed: number;
+    mode: Difficulty;
+    dailyKey?: string;
+    moves: readonly Move[];
+  },
+  placed: readonly PlacedPiece[] = [],
+): Promise<string> {
+  const placements = replay.moves.filter(m => m.t === 'p').length;
+  let next = 0;
+  const canonical: CanonicalMove[] = replay.moves.map(m => (m.t === 'p'
+    ? { hold: false, row: m.row, col: m.col, rot: m.rot, ...(placed[next++] ?? ZERO_PIECE) }
+    : { hold: true, row: 0, col: 0, rot: 0, ...ZERO_PIECE }));
+
+  // Without the pieces there is nothing to turn the board with, so the
+  // fingerprint stays what it has always been: this solution, as submitted.
+  if (placed.length !== placements) return digestOf(replay, serialiseMoves(canonical));
+
+  let smallest = serialiseMoves(canonical);
+  let turned = canonical;
+  for (let n = 1; n < BOARD_ROTATIONS; n++) {
+    turned = turnBoard(turned);
+    const text = serialiseMoves(turned);
+    if (text < smallest) smallest = text;
+  }
+  return digestOf(replay, smallest);
+}
+
+function digestOf(
+  replay: { seed: number; mode: Difficulty; dailyKey?: string }, moves: string,
+): Promise<string> {
+  return crypto.subtle.digest('SHA-256', encoder.encode(
+    `${replay.seed}:${replay.mode}:${replay.dailyKey ?? ''}:${moves}`,
+  )).then(digest => hex(new Uint8Array(digest)));
 }

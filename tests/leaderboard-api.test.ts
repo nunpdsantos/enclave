@@ -4,8 +4,8 @@ import { Difficulty, DIFFICULTY_CONFIGS } from '../src/core/Config';
 import { dailyNumber, dailySeed } from '../src/core/Daily';
 import { drainIntegral, simulateRun } from '../src/core/Replay';
 import { RULES_VERSION } from '../src/core/Rules';
-import { dailySeedFor, readTicketPayload, signTicket, TICKET_VERSION } from '../src/core/Ticket';
-import { Move } from '../src/core/types';
+import { dailySeedFor, readTicketPayload, replayFingerprint, signTicket, TICKET_VERSION } from '../src/core/Ticket';
+import { GRID_SIZE, Move, PlacedPiece, Replay } from '../src/core/types';
 import { BotRun, playBotRun } from './helpers';
 
 /**
@@ -33,8 +33,28 @@ type StubValue =
   | { kind: 'set'; members: Set<string> };
 
 const store = new Map<string, StubValue>();
-/** Every EXPIRE the handler issued, in order */
+/** Every TTL the handler set, in order, by EXPIRE or by SET ... EX */
 const expires: [string, number][] = [];
+/** Every command the handler issued, in order, by name */
+const commands: string[] = [];
+/**
+ * The name of one command whose response is to be thrown away.
+ *
+ * The command still runs — this is a *lost response*, not a lost write, which
+ * is the failure the REST client's own retry turns into a second execution of
+ * a command that has already happened. Cleared once it has fired.
+ */
+let dropResponseFor: string | null = null;
+/** While true the server accepts requests and never answers them */
+let hangForever = false;
+/**
+ * When set, every command is answered with this Redis error, in the shape the
+ * REST API sends one: HTTP 500 and `{ error }`, which the SDK turns into a
+ * thrown `UpstashError`.
+ */
+let failWith: string | null = null;
+/** Responses being held open by `hangForever`, so they can be torn down */
+const hung: { destroy: () => void }[] = [];
 let server: Server;
 let base = '';
 
@@ -168,9 +188,19 @@ function execute(cmd: unknown[]): unknown {
       const value = store.get(key);
       return value?.kind === 'string' ? value.value : null;
     }
-    case 'set':
+    // SET with the flags the ticket store uses: NX answers null rather than
+    // OK when the key is already there, and EX is the TTL in the same command
+    // — which is the whole point of it, there being no second command whose
+    // failure could leave a stored ticket with no expiry.
+    case 'set': {
+      const opts = cmd.slice(3).map(o => String(o).toLowerCase());
+      if (opts.includes('nx') && store.has(key)) return null;
+      if (opts.includes('xx') && !store.has(key)) return null;
+      const ex = opts.indexOf('ex');
+      if (ex !== -1) expires.push([key, Number(opts[ex + 1])]);
       store.set(key, { kind: 'string', value: String(cmd[2]) });
       return 'OK';
+    }
     case 'expire':
       expires.push([key, Number(cmd[2])]);
       return store.has(key) ? 1 : 0;
@@ -195,10 +225,14 @@ function execute(cmd: unknown[]): unknown {
       }
       return added;
     }
+    case 'hget':
+      return readHash(key).get(String(cmd[2])) ?? null;
     case 'hmget': {
       const fields = readHash(key);
       return cmd.slice(2).map(f => fields.get(String(f)) ?? null);
     }
+    case 'eval':
+      return evalSubmit(cmd);
     case 'sadd': {
       const members = setAt(key);
       let added = 0;
@@ -217,6 +251,66 @@ function execute(cmd: unknown[]): unknown {
   }
 }
 
+/**
+ * `SUBMIT_SCRIPT`, in TypeScript.
+ *
+ * A line-for-line transcription of the Lua in `api/leaderboard.ts`: the same
+ * commands, in the same order, with the same branches and the same return.
+ * Every step goes back through `execute`, so the script and the plain
+ * commands share one implementation of SADD, ZADD, HSET and EXPIRE rather
+ * than agreeing by coincidence — and `the script the stub mirrors` below
+ * checks the Lua still calls exactly these and nothing more, so a command
+ * added to the script and not to this function fails the build.
+ *
+ * Redis runs a script to completion before anything else runs, and the stub
+ * is single-threaded, so the atomicity is faithful too.
+ */
+function evalSubmit(cmd: unknown[]): unknown[] {
+  const keyCount = Number(cmd[2]);
+  const keys = cmd.slice(3, 3 + keyCount).map(String);
+  const argv = cmd.slice(3 + keyCount).map(String);
+  const [spentKey, replaysKey, idsKey, boardKey, metaKey] = keys;
+  const [tokenId, fingerprint, id, score, meta, isDaily, tokenTtl, replayTtl, boardTtl] = argv;
+
+  const identity = `${score}|${fingerprint}|${boardKey}|${id}`;
+  const spent = execute(['hget', spentKey, tokenId]);
+  if (typeof spent === 'string') {
+    const cut = spent.indexOf('|');
+    if (cut !== -1 && spent.slice(cut + 1) === identity) return [spent.slice(0, cut), 0];
+    return ['token', 0];
+  }
+
+  let status = 'ok';
+  let changed = 0;
+
+  if (fingerprint !== '') {
+    if (execute(['sadd', replaysKey, fingerprint]) === 0) status = 'replay';
+    else if (Number(replayTtl) > 0) execute(['expire', replaysKey, replayTtl]);
+  }
+
+  if (status === 'ok') {
+    if (isDaily === '1') {
+      const first = execute(['sadd', idsKey, id]);
+      execute(['expire', idsKey, boardTtl]);
+      if (first === 0) {
+        status = 'already';
+      } else {
+        changed = Number(execute(['zadd', boardKey, 'NX', 'CH', score, id]));
+        if (changed === 1) execute(['hset', metaKey, id, meta]);
+        execute(['expire', boardKey, boardTtl]);
+        execute(['expire', metaKey, boardTtl]);
+      }
+    } else {
+      changed = Number(execute(['zadd', boardKey, 'GT', 'CH', score, id]));
+      if (changed === 1) execute(['hset', metaKey, id, meta]);
+    }
+  }
+
+  execute(['hset', spentKey, tokenId, `${status}|${identity}`]);
+  execute(['expire', spentKey, tokenTtl]);
+  return [status, changed];
+}
+
 beforeAll(async () => {
   server = createServer((req, res) => {
     let raw = '';
@@ -226,7 +320,27 @@ beforeAll(async () => {
       // The SDK auto-pipelines, so a body may be one command or a list of them.
       const pipelined = Array.isArray(parsed[0]);
       const cmds = (pipelined ? parsed : [parsed]) as unknown[][];
+      // A database that has stopped answering: the request is accepted, the
+      // commands never run, and the client is left on its own deadline.
+      if (hangForever) {
+        hung.push(res);
+        return;
+      }
+      if (failWith) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: failWith }));
+        return;
+      }
+      for (const cmd of cmds) commands.push(String(cmd[0]).toLowerCase());
       const results = cmds.map(cmd => ({ result: encodeResult(execute(cmd)) }));
+      // The command has run and its effects stand; only the answer is lost.
+      // This is what makes the SDK re-send, and re-sending is what the
+      // handler has to survive.
+      if (dropResponseFor && cmds.some(c => String(c[0]).toLowerCase() === dropResponseFor)) {
+        dropResponseFor = null;
+        res.destroy();
+        return;
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(pipelined ? results : results[0]));
     });
@@ -239,11 +353,21 @@ beforeAll(async () => {
   delete process.env.ENCLAVE_SECRET;
 });
 
-afterAll(() => { server.close(); });
+afterAll(() => {
+  // A response left hanging holds its socket open, and an open socket keeps
+  // `close` waiting for a connection that is never going to end.
+  for (const res of hung.splice(0)) res.destroy();
+  server.close();
+});
 
 beforeEach(() => {
   store.clear();
   expires.length = 0;
+  commands.length = 0;
+  dropResponseFor = null;
+  hangForever = false;
+  failWith = null;
+  for (const res of hung.splice(0)) res.destroy();
 });
 
 async function handler() {
@@ -380,6 +504,12 @@ function storedMeta(key: string, id: string): { name?: string; date?: string } {
   return raw ? JSON.parse(raw) : {};
 }
 
+/** A plain string value, or null where there is none. */
+function storedString(key: string): string | null {
+  const value = store.get(key);
+  return value?.kind === 'string' ? value.value : null;
+}
+
 function expiresFor(key: string): number[] {
   return expires.filter(([k]) => k === key).map(([, ttl]) => ttl);
 }
@@ -492,14 +622,16 @@ describe('api/leaderboard — the score has to be provable', () => {
     expect(store.size).toBe(0);
   });
 
-  it('refuses a body over 64 KB before it parses it', async () => {
+  it('refuses an oversized body while it is arriving, not after', async () => {
     const h = await handler();
     const played = run('classic', 12);
     const res = await h(post('classic', {
-      ...await body(played, 'p1', 'Ann'), pad: 'x'.repeat(70_000),
+      ...await body(played, 'p1', 'Ann'), pad: 'x'.repeat(200_000),
     }));
 
-    expect(res.status).toBe(400);
+    // 413, and nothing was parsed: the reader is cancelled at the first byte
+    // past the cap rather than buffering the whole body to measure it.
+    expect(res.status).toBe(413);
     expect(await res.json()).toEqual({ error: 'Body too large' });
     expect(store.size).toBe(0);
   });
@@ -739,26 +871,35 @@ describe('api/run-start — the ticket that starts a run', () => {
     expect((await start(new Request('https://x/api/run-start?mode=classic'))).status).toBe(400);
   });
 
-  it('spends the daily attempt on the first ticket and marks every later one practice', async () => {
+  it('stores the daily ticket, hands the same one back, and only makes practice on request', async () => {
     const start = await runStartHandler();
     const h = await handler();
     const today = daysAgo(0);
-    const ticketsKey = `${dailyKeyFor(today)}:tickets`;
+    const ticketKey = `${dailyKeyFor(today)}:ticket:p1`;
 
     const first = await (await start(startRun({ id: 'p1', mode: 'daily' }))).json();
-    const second = await (await start(startRun({ id: 'p1', mode: 'daily' }))).json();
-    // A second go gets the real puzzle — replaying the day is allowed — and a
-    // ticket that says it cannot be posted.
-    expect(second.seed).toBe(first.seed);
+    const again = await (await start(startRun({ id: 'p1', mode: 'daily' }))).json();
+    // Asking twice is not playing twice. A reload, a second tab or a retried
+    // request gets the ticket the attempt was issued on, to the byte.
+    expect(again).toEqual(first);
     expect(readTicketPayload(first.token)?.practice).toBeUndefined();
-    expect(readTicketPayload(second.token)?.practice).toBe(true);
 
-    // The attempt is recorded where the board is, and expires with it
-    expect([...readSet(ticketsKey)]).toEqual(['p1']);
-    expect(expiresFor(ticketsKey)).toContain(DAILY_TTL);
+    // The attempt is recorded where the board is, and expires with it — in
+    // the same command that stored it, so there is no window in which a
+    // ticket is stored without a TTL.
+    expect(storedString(ticketKey)).toBe(first.token);
+    expect(expiresFor(ticketKey)).toEqual([DAILY_TTL]);
 
-    // Another player's first ticket is a first ticket
-    const other = await (await start(startRun({ id: 'p2', mode: 'daily' }))).json();
+    // Asking for a *new* run is the only thing that spends a practice ticket:
+    // the real puzzle, played for real, and unable to post a score.
+    const practice = await (await start(startRun({ id: 'p1', mode: 'daily', practice: true }))).json();
+    expect(practice.seed).toBe(first.seed);
+    expect(readTicketPayload(practice.token)?.practice).toBe(true);
+    // And it does not overwrite the ticket the attempt belongs to
+    expect(storedString(ticketKey)).toBe(first.token);
+
+    // Another player's first ticket is a first ticket, practice asked for or not
+    const other = await (await start(startRun({ id: 'p2', mode: 'daily', practice: true }))).json();
     expect(readTicketPayload(other.token)?.practice).toBeUndefined();
 
     // Short enough to have been played in the moment since the tickets were
@@ -768,7 +909,7 @@ describe('api/run-start — the ticket that starts a run', () => {
     const submission = (token: string): Record<string, unknown> =>
       ({ id: 'p1', name: 'Ann', score: played.score, replay, token });
 
-    const refused = await h(post(`daily-${today}`, submission(second.token)));
+    const refused = await h(post(`daily-${today}`, submission(practice.token)));
     expect(refused.status).toBe(400);
     expect(await refused.json())
       .toEqual({ error: 'Score could not be verified', reason: 'practice' });
@@ -833,20 +974,34 @@ describe('finding 1 — a replay cannot be played faster than real time', () => 
     expect(store.size).toBe(0);
   });
 
-  it('refuses placements closer together than any hand could manage', async () => {
+  it('takes a fast run the live engine accepted, and still refuses compressed time', async () => {
     const h = await handler();
-    const played = run('classic', 12);
-    // The same inputs, fired off forty times a second. Every move is legal
-    // and the score is exactly what the rules produce for them.
-    const rushed: Move[] = played.replay.moves.map((m, i) => ({ ...m, at: 0.5 + i * 0.025 }));
-    const res = await h(post('classic', {
-      ...await body(played, 'p1', 'Ann'),
-      replay: { ...played.replay, moves: rushed },
-    }));
+    // A real run, played through the engine at 79 ms an input: under the
+    // cadence floor that used to live in the simulation, and something the
+    // live game accepts and pays for without a murmur. A rule the game does
+    // not enforce while you play cannot be a rule the server enforces after.
+    const brisk = playBotRun('classic', 4242, 14, { step: () => 0.079 });
+    const gaps = brisk.replay.moves.map((m, i) => m.at - (brisk.replay.moves[i - 1]?.at ?? m.at));
+    expect(Math.max(...gaps.slice(1))).toBeLessThan(0.08);
 
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Score could not be verified', reason: 'cadence' });
-    expect(store.size).toBe(0);
+    const last = brisk.replay.moves[brisk.replay.moves.length - 1].at;
+    const ok = await h(post('classic', {
+      ...await body(brisk, 'p1', 'Ann', { issuedAt: Date.now() - last * 1000 - 500 }),
+    }));
+    expect(ok.status).toBe(200);
+    expect(storedBoard(CLASSIC_KEY)).toEqual([['p1', brisk.score]]);
+
+    // The same run with a ticket minted a moment ago is refused, and for the
+    // reason that is actually true of it: it claims more seconds of play than
+    // have happened. That is the check a fabricated log cannot beat, and it
+    // is the one the cadence floor was standing in for.
+    const compressed = playBotRun('classic', 4242, 200, { step: () => 0.079 });
+    expect(compressed.replay.moves[compressed.replay.moves.length - 1].at).toBeGreaterThan(5);
+    const rushed = await h(post('classic', {
+      ...await body(compressed, 'p2', 'Bo', { issuedAt: Date.now() }),
+    }));
+    expect(rushed.status).toBe(400);
+    expect(await rushed.json()).toEqual({ error: 'Score could not be verified', reason: 'time' });
   });
 
   it('refuses a run a fifth of a second past its bank, which the old slack allowed', async () => {
@@ -1021,10 +1176,18 @@ describe('finding 5 — two submissions at once cannot both land', () => {
     const lower = run('classic', 8);
     const higher = run('classic', 24);
 
-    await Promise.all([
-      h(post('classic', await body(higher, 'p1', 'Ann'))),
-      h(post('classic', await body(lower, 'p1', 'Ann'))),
+    // Two tickets, minted a second apart, for the same reason the daily case
+    // above does it: a payload is only its fields, and both of these runs are
+    // the same id on the same seed, so two issued in the same millisecond
+    // would be the same token — one ticket, and the second submission rightly
+    // refused for spending it twice. Which of the two arrived first used to
+    // decide this test; it should be `GT` that decides it.
+    const now = Date.now();
+    const [a, b] = await Promise.all([
+      h(post('classic', await body(higher, 'p1', 'Ann', { issuedAt: now - 60_000 }))),
+      h(post('classic', await body(lower, 'p1', 'Ann', { issuedAt: now - 61_000 }))),
     ]);
+    expect([a.status, b.status]).toEqual([200, 200]);
 
     expect(storedBoard(CLASSIC_KEY)).toEqual([['p1', higher.score]]);
   });
@@ -1225,4 +1388,396 @@ describe('finding 10 — a malformed body is a 400, not a crash', () => {
 
     expect(store.size).toBe(0);
   });
+});
+
+// ── One regression test per finding of the second review ──
+
+describe('review 2, finding 1 — a submission is one indivisible step', () => {
+  it('does the whole write in the script, and nothing outside it', async () => {
+    const h = await handler();
+    await h(post('classic', await body(run('classic', 12), 'p1', 'Ann')));
+
+    // The writes all live in the script now. A bare SADD, ZADD or HSET on
+    // this path would be a step that can commit while the rest does not.
+    expect(commands).toContain('eval');
+    expect(commands.filter(c => ['sadd', 'zadd', 'hset', 'expire'].includes(c))).toEqual([]);
+  });
+
+  it('is mirrored by the stub, command for command', async () => {
+    // Everything else in this file exercises the *stub's* transcription of
+    // the script, because that is what runs: the Lua never executes here.
+    // This is the alarm for the two drifting apart — the commands the script
+    // issues and the decisions it turns on, read out of the script itself.
+    const { SUBMIT_SCRIPT } = await import('../api/leaderboard');
+    const called = [...SUBMIT_SCRIPT.matchAll(/redis\.call\('([A-Z]+)'/g)].map(m => m[1]);
+    expect([...new Set(called)].sort())
+      .toEqual(['EXPIRE', 'HGET', 'HSET', 'SADD', 'ZADD']);
+
+    // The idempotent branch: a spent ticket whose stored identity matches is
+    // answered with the outcome it was spent on, not refused.
+    expect(SUBMIT_SCRIPT).toContain(`string.sub(spent, cut + 1) == identity`);
+    expect(SUBMIT_SCRIPT).toContain(`return { string.sub(spent, 1, cut - 1), 0 }`);
+    // The flags that decide each board, and the guard that keeps the name
+    // beside a score from being written by a submission that did not move it.
+    expect(SUBMIT_SCRIPT).toContain(`'NX', 'CH'`);
+    expect(SUBMIT_SCRIPT).toContain(`'GT', 'CH'`);
+    expect(SUBMIT_SCRIPT.match(/if changed == 1 then redis\.call\('HSET'/g)).toHaveLength(2);
+  });
+
+  it('keeps the score when the submission\'s response is lost and the client re-sends it', async () => {
+    const h = await handler();
+    const today = daysAgo(0);
+    const played = dailyRun(today, 14);
+    const submission = await body(played, 'p1', 'Ann');
+
+    // The script runs, its writes stand, and the answer never gets back. The
+    // REST client re-sends, so the script runs a second time on state its own
+    // first run left behind — which is exactly the case that used to consume
+    // the ticket, the fingerprint and the daily id and store no score,
+    // answering 200 with `rank: null` and an empty board.
+    dropResponseFor = 'eval';
+    const first = await h(post(`daily-${today}`, submission));
+    expect(first.status).toBe(200);
+    const firstBody = await first.json();
+    expect(firstBody.rank).toBe(1);
+    expect(firstBody.entries).toHaveLength(1);
+    expect(storedBoard(dailyKeyFor(today))).toEqual([['p1', played.score]]);
+    expect(commands.filter(c => c === 'eval')).toHaveLength(2);
+
+    // And the client re-sending the whole submission — a retry one level up,
+    // where the network dropped the HTTP response rather than the Redis one —
+    // gets the same answer again rather than a refusal.
+    const again = await h(post(`daily-${today}`, submission));
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual(firstBody);
+    expect(storedBoard(dailyKeyFor(today))).toEqual([['p1', played.score]]);
+  });
+
+  it('still refuses a ticket re-spent on a different run', async () => {
+    const h = await handler();
+    const first = run('classic', 10);
+    const second = run('classic', 20);
+    const token = await ticketFor(first, 'p1');
+
+    expect((await h(post('classic', {
+      id: 'p1', name: 'Ann', score: first.score, replay: first.replay, token,
+    }))).status).toBe(200);
+
+    // Idempotency is for the *same* submission. A different run under the
+    // same ticket is the reuse the single-use check exists for.
+    const reused = await h(post('classic', {
+      id: 'p1', name: 'Ann', score: second.score, replay: second.replay, token,
+    }));
+    expect(await reused.json()).toEqual({ error: 'Score could not be verified', reason: 'token' });
+    expect(storedBoard(CLASSIC_KEY)).toEqual([['p1', first.score]]);
+  });
+
+  it('answers a retried refusal the same way it answered the first one', async () => {
+    const h = await handler();
+    const today = daysAgo(0);
+    const played = dailyRun(today, 14);
+
+    expect((await h(post(`daily-${today}`, await body(played, 'p1', 'Ann')))).status).toBe(200);
+    // p2 posts p1's solution: refused as a copy, and the ticket is spent on
+    // that refusal. Re-sending it must give the same refusal, not a new one.
+    const copy = await body(played, 'p2', 'Bo');
+    const refused = await h(post(`daily-${today}`, copy));
+    expect(await refused.json()).toEqual({ error: 'Score could not be verified', reason: 'replay' });
+    const retried = await h(post(`daily-${today}`, copy));
+    expect(await retried.json()).toEqual({ error: 'Score could not be verified', reason: 'replay' });
+  });
+});
+
+describe('review 2, finding 2 — the first daily ticket is not lost to a dropped reply', () => {
+  it('issues a real ticket, not a practice one, when the store\'s reply goes missing', async () => {
+    const start = await runStartHandler();
+    const today = daysAgo(0);
+    const ticketKey = `${dailyKeyFor(today)}:ticket:p1`;
+
+    // The SET commits and its answer is lost. The client re-sends; the SET
+    // now says the key exists. Under the old per-day set that answer was the
+    // whole decision, so a player's very first daily ticket came back marked
+    // practice because a packet went missing.
+    dropResponseFor = 'set';
+    const issued = await (await start(startRun({ id: 'p1', mode: 'daily' }))).json();
+    expect(readTicketPayload(issued.token)?.practice).toBeUndefined();
+    expect(storedString(ticketKey)).toBe(issued.token);
+
+    // The re-sent SET found the key already there, so the ticket that comes
+    // back is the stored one — the same seed, the same issue time, the same
+    // token — rather than a second attempt or a practice run.
+    const again = await (await start(startRun({ id: 'p1', mode: 'daily' }))).json();
+    expect(again).toEqual(issued);
+  });
+
+  it('hands back a normal ticket for a stored value it did not sign', async () => {
+    const start = await runStartHandler();
+    const today = daysAgo(0);
+    const ticketKey = `${dailyKeyFor(today)}:ticket:p1`;
+    store.set(ticketKey, { kind: 'string', value: 'not-a-ticket' });
+
+    // Nothing there can be spent, so charging the player an attempt for it
+    // would be charging them for our own bad data.
+    const issued = await (await start(startRun({ id: 'p1', mode: 'daily' }))).json();
+    expect(readTicketPayload(issued.token)?.practice).toBeUndefined();
+    expect(storedString(ticketKey)).toBe(issued.token);
+  });
+
+  it('deals free play without storing anything', async () => {
+    const start = await runStartHandler();
+    await start(startRun({ id: 'p1', mode: 'classic' }));
+    expect(store.size).toBe(0);
+  });
+});
+
+describe('review 2, finding 4 — a solution turned round the board is the same solution', () => {
+  /**
+   * The same run with the board turned `quarter` times clockwise.
+   *
+   * A cell at `(r, c)` lands at `(c, 8 - r)`, so a piece with its top-left at
+   * `(row, col)` and a `rows x cols` box comes out at `(col, 9 - rows - row)`
+   * with the box on its side, one rotation further round its own cycle. This
+   * is written out here rather than imported so the test is a second opinion
+   * on the transform in `Ticket.ts` and not an echo of it.
+   */
+  function turnRun(replay: Replay, quarter: number): Replay {
+    let moves = replay.moves;
+    let placed = simulateRun(replay).placed;
+    for (let turn = 0; turn < quarter; turn++) {
+      const nextMoves: Move[] = [];
+      const nextPlaced: PlacedPiece[] = [];
+      let i = 0;
+      for (const m of moves) {
+        if (m.t !== 'p') {
+          nextMoves.push(m);
+          continue;
+        }
+        const p = placed[i++];
+        nextMoves.push({
+          ...m,
+          row: m.col,
+          col: GRID_SIZE - p.rows - m.row,
+          rot: (m.rot + 1) % p.turns,
+        });
+        nextPlaced.push({ rows: p.cols, cols: p.rows, turns: p.turns });
+      }
+      moves = nextMoves;
+      placed = nextPlaced;
+    }
+    return { ...replay, moves };
+  }
+
+  it('scores every quarter turn of a run exactly the same', () => {
+    // The premise. The board is a square with no gravity and no privileged
+    // corner, the deal is the same pieces in the same order, and rooms,
+    // fences, the lit map and the survey are all rotation-invariant. If this
+    // ever stops being true, the dedupe below is refusing honest runs.
+    const played = dailyRun(daysAgo(0), 14);
+    for (const quarter of [1, 2, 3]) {
+      const turned = turnRun(played.replay, quarter);
+      expect(turned.moves).not.toEqual(played.replay.moves);
+      const result = simulateRun(turned);
+      // One assertion carrying the turn, so a red build says which one broke
+      expect(`${quarter}: ${result.reason ?? 'valid'} ${result.score}`)
+        .toBe(`${quarter}: valid ${played.score}`);
+    }
+  });
+
+  it('hashes all four turns to one fingerprint', async () => {
+    const played = dailyRun(daysAgo(0), 14);
+    const prints = new Set<string>();
+    for (const quarter of [0, 1, 2, 3]) {
+      const turned = turnRun(played.replay, quarter);
+      prints.add(await replayFingerprint(turned, simulateRun(turned).placed));
+    }
+    expect(prints.size).toBe(1);
+
+    // And a genuinely different solution is still a different fingerprint:
+    // the canonical form collapses the four turns and nothing else.
+    const other = dailyRun(daysAgo(0), 15);
+    prints.add(await replayFingerprint(other.replay, simulateRun(other.replay).placed));
+    expect(prints.size).toBe(2);
+  });
+
+  it('refuses a copied daily posted at any of the other three turns', async () => {
+    const today = daysAgo(0);
+    const played = dailyRun(today, 14);
+
+    for (const quarter of [1, 2, 3]) {
+      store.clear();
+      expires.length = 0;
+      const h = await handler();
+      expect((await h(post(`daily-${today}`, await body(played, 'p1', 'Ann')))).status).toBe(200);
+
+      // The whole attack: take the banked run, turn the board, post it under
+      // a fresh id with that id's own honest ticket. Legal, identical in
+      // score, and a different fingerprint until the fingerprint was made to
+      // look at all four turns.
+      const turned = turnRun(played.replay, quarter);
+      const res = await h(post(`daily-${today}`, {
+        ...await body(played, 'p2', 'Bo'),
+        replay: turned,
+      }));
+      expect(`${quarter}: ${res.status}`).toBe(`${quarter}: 400`);
+      expect(await res.json()).toEqual({ error: 'Score could not be verified', reason: 'replay' });
+      expect(storedBoard(dailyKeyFor(today)).map(([id]) => id)).toEqual(['p1']);
+    }
+  });
+
+  it('takes the rotated run when it is the one that gets there first', async () => {
+    const h = await handler();
+    const today = daysAgo(0);
+    const played = dailyRun(today, 14);
+    const turned = turnRun(played.replay, 2);
+
+    // The canonical form has no preferred orientation: whichever of the four
+    // arrives first is the run, and the other three are its copies.
+    const first = await h(post(`daily-${today}`, {
+      ...await body(played, 'p1', 'Ann'), replay: turned,
+    }));
+    expect(first.status).toBe(200);
+    const second = await h(post(`daily-${today}`, await body(played, 'p2', 'Bo')));
+    expect(await second.json()).toEqual({ error: 'Score could not be verified', reason: 'replay' });
+  });
+
+  it('does not call two short runs copies of each other', async () => {
+    const h = await handler();
+    const today = daysAgo(0);
+    // Two players who each place one piece and quit write byte-identical
+    // solutions without ever having met. Calling the second a copy told an
+    // honest player their score could not be verified.
+    const stub = playBotRun('daily', dailySeed(today), 1, { holdAt: -1 });
+    const dated: BotRun = { ...stub, replay: { ...stub.replay, dailyKey: today } };
+    expect(dated.replay.moves).toHaveLength(1);
+    expect(dated.score).toBeGreaterThan(0);
+
+    expect((await h(post(`daily-${today}`, await body(dated, 'p1', 'Ann')))).status).toBe(200);
+    const second = await h(post(`daily-${today}`, await body(dated, 'p2', 'Bo')));
+    expect(second.status).toBe(200);
+    expect(storedBoard(dailyKeyFor(today)).map(([id]) => id).sort()).toEqual(['p1', 'p2']);
+  });
+
+  it('starts calling them copies at eight placements', async () => {
+    const today = daysAgo(0);
+    for (const [placements, expected] of [[7, 200], [8, 400]] as const) {
+      store.clear();
+      const h = await handler();
+      const shared = playBotRun('daily', dailySeed(today), placements, { holdAt: -1 });
+      const dated: BotRun = { ...shared, replay: { ...shared.replay, dailyKey: today } };
+      expect(dated.replay.moves.filter(m => m.t === 'p')).toHaveLength(placements);
+
+      expect((await h(post(`daily-${today}`, await body(dated, 'p1', 'Ann')))).status).toBe(200);
+      const second = await h(post(`daily-${today}`, await body(dated, 'p2', 'Bo')));
+      expect(`${placements}: ${second.status}`).toBe(`${placements}: ${expected}`);
+    }
+  });
+});
+
+describe('review 2, finding 8 — an unanswering database is a 503, not a hang', () => {
+  it('gives up on a read and a write that never come back', async () => {
+    const h = await handler();
+    hangForever = true;
+
+    // Both deadlines run at once, so this costs one timeout rather than two.
+    const [read, write] = await Promise.all([
+      h(get('classic')),
+      h(post('classic', await body(run('classic', 8), 'p1', 'Ann'))),
+    ]);
+    expect([read.status, write.status]).toEqual([503, 503]);
+    expect(await write.json()).toEqual({ error: 'Leaderboard unavailable' });
+  }, 20_000);
+
+  it('turns a database error into a 503 rather than a rejected promise', async () => {
+    const h = await handler();
+    const played = run('classic', 8);
+    // A store that answers, and answers with an error — a WRONGTYPE, a quota,
+    // an expired credential. The SDK throws on these, and an unhandled throw
+    // here rejects the handler's own promise: a 500 with whatever body the
+    // platform writes on it, and a client that cannot tell a refused score
+    // from a database that is simply down.
+    failWith = 'WRONGTYPE Operation against a key holding the wrong kind of value';
+
+    const read = await h(get('classic'));
+    expect(read.status).toBe(503);
+    expect(await read.json()).toEqual({ error: 'Leaderboard unavailable' });
+    const write = await h(post('classic', await body(played, 'p1', 'Ann')));
+    expect(write.status).toBe(503);
+    expect(await write.json()).toEqual({ error: 'Leaderboard unavailable' });
+  });
+
+  it('cancels an oversized body instead of reading it to the end', async () => {
+    const h = await handler();
+    let pulled = 0;
+    let cancelled = false;
+    const chunk = new TextEncoder().encode('x'.repeat(64 * 1024));
+    // A body with no end to it. `request.text()` would read this forever.
+    const endless = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled++;
+        controller.enqueue(chunk);
+      },
+      cancel() { cancelled = true; },
+    });
+
+    const res = await h(new Request(`${URL_BASE}?difficulty=classic`, {
+      method: 'POST',
+      body: endless,
+      // Node requires this for a streaming request body
+      duplex: 'half',
+    } as RequestInit & { duplex: 'half' }));
+
+    expect(res.status).toBe(413);
+    expect(await res.json()).toEqual({ error: 'Body too large' });
+    expect(cancelled).toBe(true);
+    // Three 64 KB chunks is over the 128 KB cap; anything near a gigabyte
+    // would mean the limit is being applied after the fact again.
+    expect(pulled).toBeLessThan(8);
+    expect(store.size).toBe(0);
+  });
+});
+
+describe('review 2, finding 9 — the name beside a score is that score\'s name', () => {
+  it('leaves a higher score under its own name when a lower one follows', async () => {
+    const h = await handler();
+    const higher = run('classic', 24);
+    const lower = run('classic', 8);
+    const now = Date.now();
+
+    expect((await h(post('classic', {
+      ...await body(higher, 'p1', 'Ann', { issuedAt: now - 60_000 }),
+    }))).status).toBe(200);
+    expect((await h(post('classic', {
+      ...await body(lower, 'p1', 'Bo', { issuedAt: now - 61_000 }),
+    }))).status).toBe(200);
+
+    // The `HSET` used to be a separate command that did not know whether its
+    // `ZADD` had won, so the slower, lower submission relabelled the faster,
+    // higher one. The script writes the name only when the score moved.
+    expect(storedBoard(CLASSIC_KEY)).toEqual([['p1', higher.score]]);
+    expect(storedMeta(CLASSIC_KEY, 'p1').name).toBe('Ann');
+  });
+
+  it('follows the name up when the score does move', async () => {
+    const h = await handler();
+    const now = Date.now();
+    await h(post('classic', await body(run('classic', 8), 'p1', 'Ann', { issuedAt: now - 60_000 })));
+    await h(post('classic', await body(run('classic', 24), 'p1', 'Bo', { issuedAt: now - 61_000 })));
+    expect(storedMeta(CLASSIC_KEY, 'p1').name).toBe('Bo');
+  });
+});
+
+describe('review 2, finding 10 — a long run is a run, not a forgery', () => {
+  it('verifies a 601-input run the old cap cut off', async () => {
+    const h = await handler();
+    const long = playBotRun('classic', 9, 601);
+    expect(long.replay.moves).toHaveLength(601);
+    expect(long.replay.truncated).toBeUndefined();
+
+    const last = long.replay.moves[long.replay.moves.length - 1].at;
+    const res = await h(post('classic', {
+      ...await body(long, 'p1', 'Ann', { issuedAt: Date.now() - last * 1000 - 2000 }),
+    }));
+    expect(res.status).toBe(200);
+    expect(storedBoard(CLASSIC_KEY)).toEqual([['p1', long.score]]);
+  }, 30_000);
 });

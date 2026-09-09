@@ -1,5 +1,6 @@
 import { Redis } from '@upstash/redis';
 import type { Difficulty } from '../src/core/Config';
+import { readBody } from '../src/core/RequestBody';
 import { verifyScore } from '../src/core/Replay';
 import type { SimFailure } from '../src/core/Replay';
 import { RULES_VERSION } from '../src/core/Rules';
@@ -30,8 +31,11 @@ export const config = { runtime: 'edge' };
  *    will not take a submission whose replay claims more play than the wall
  *    clock has allowed since — nor take the same ticket twice.
  *  - the **replay fingerprint** — the deal and the placements, never their
- *    timing — and, on a daily, the per-day id set stop the same proven run
- *    from being banked more than once.
+ *    timing and never their orientation — and, on a daily, the per-day id set
+ *    stop the same proven run from being banked more than once.
+ *
+ * The state all three of those consume is written by ONE Lua script, so a
+ * submission either happens or does not: see `SUBMIT_SCRIPT`.
  *
  * What is still open is written down in the README: a bot that scripts legal
  * moves through the real rules, at human speed, produces a run that is real
@@ -45,11 +49,14 @@ const VALID_DIFFICULTIES = ['classic', 'blitz'];
 const MAX_ENTRIES = 10;
 
 /**
- * A six-hundred-move replay serialises to about 35 KB now that move times
- * are recorded unrounded, so 64 KB leaves room for the name, the id and the
- * ticket and still refuses anything that is not a run.
+ * A move serialises to 57 bytes, measured — `at` is a full double and most of
+ * it — so the 1,500-input cap puts a full-length log at about 86 KB. 128 KB
+ * leaves room for the name, the id and the ticket with 40 KB to spare, and
+ * still refuses anything that is not a run. Enforced while the body is being
+ * read rather than after it has all been held, so a client that sends a
+ * gigabyte is cut off at the first byte past the cap.
  */
-const MAX_BODY_BYTES = 64 * 1024;
+const MAX_BODY_BYTES = 128 * 1024;
 /** The modes a replay may name — the daily included, unlike the board ids */
 const VALID_REPLAY_MODES = ['classic', 'blitz', 'daily'];
 /** No piece has more than four distinct rotations */
@@ -83,10 +90,35 @@ const TICKET_FUTURE_SKEW_MS = 60 * 1000;
  * rather than played.
  */
 const REALTIME_SLACK_SECONDS = 2;
-/** A used-token set covers one day of issued tickets, and outlives them */
+/** A spent-ticket bucket covers one day of issued tickets, and outlives them */
 const USED_TOKEN_TTL_SECONDS = 2 * 24 * 60 * 60;
 /** A daily's replay fingerprints only have to outlive its board */
 const REPLAY_TTL_SECONDS = 30 * 24 * 60 * 60;
+
+/**
+ * How few placements make a solution too ordinary to be anybody's in
+ * particular.
+ *
+ * The fingerprint says "this run has already been banked", which is only true
+ * of a run somebody could have copied. Two players who each place one piece
+ * and quit produce byte-identical solutions without ever meeting, and the
+ * second of them was being told their score could not be verified. Below
+ * eight placements the dedupe is switched off: the seed is shared, the space
+ * of short openings is small, and a collision there is coincidence rather
+ * than a copy. A run that short cannot rank on any board anyway.
+ */
+const MIN_FINGERPRINT_PLACEMENTS = 8;
+
+/**
+ * How long any one Redis command may take before the request gives up.
+ *
+ * The SDK is given a fresh `AbortSignal.timeout` per command (its `signal`
+ * option accepts a factory for exactly this), so a database that has stopped
+ * answering costs five seconds and a 503 rather than the whole edge
+ * function's budget. The signal covers the SDK's own retries, so this is a
+ * deadline on the command and not on one attempt at it.
+ */
+const REDIS_TIMEOUT_MS = 5000;
 
 const MS_PER_DAY = 86_400_000;
 
@@ -156,15 +188,27 @@ function replaysKey(board: Board): string {
  * day it was spent. A ticket lives at most 24 hours, so its bucket is fixed
  * the moment it is minted and one lookup can never miss a token that landed
  * in yesterday's bucket.
+ *
+ * A hash rather than the set it used to be, because a spent ticket has to
+ * remember *what it was spent on*. The REST client retries a request whose
+ * response was lost, and a retry that could only learn "this ticket is spent"
+ * had to refuse the submission it had itself just accepted. The field holds
+ * the outcome and the submission it belongs to, so a retry is answered with
+ * the answer the first attempt gave. The key is new — the old set is left to
+ * expire on its own, which it does within two days.
  */
-function usedTokensKey(issuedAt: number): string {
-  return `leaderboard:enclave:used-tokens:${new Date(issuedAt).toISOString().slice(0, 10)}`;
+function spentTicketsKey(issuedAt: number): string {
+  return `leaderboard:enclave:spent-tickets:${new Date(issuedAt).toISOString().slice(0, 10)}`;
 }
 
 function getRedis(): Redis {
   return new Redis({
     url: process.env.KV_REST_API_URL!,
     token: process.env.KV_REST_API_TOKEN!,
+    // A factory, not a signal: the SDK calls it once per command, so every
+    // command gets its own five seconds instead of sharing one deadline
+    // across the whole handler.
+    signal: () => AbortSignal.timeout(REDIS_TIMEOUT_MS),
   });
 }
 
@@ -327,6 +371,107 @@ function lastAt(moves: readonly Move[]): number {
   return moves.length === 0 ? 0 : moves[moves.length - 1].at;
 }
 
+// ── The write, as one indivisible step ──
+
+/** What the script decided. Anything but 'ok' and 'already' is a 400. */
+type SubmitStatus = 'ok' | 'token' | 'replay' | 'already';
+
+const SUBMIT_STATUSES: SubmitStatus[] = ['ok', 'token', 'replay', 'already'];
+
+/**
+ * Everything a submission changes, in one script.
+ *
+ * These used to be four commands — spend the ticket, reserve the fingerprint,
+ * record the daily id, write the score — and the gap between any two of them
+ * was a place a submission could die half-done. The worst of it was not a
+ * crash but a *retry*: the REST client re-sends a request whose response was
+ * lost, so the daily-id write could commit, the retry find the id already
+ * there, and the handler answer "you have already submitted today" — 200, no
+ * rank, no board, and no score anywhere, with the ticket and the fingerprint
+ * spent. One `EVAL` closes every one of those gaps at once, because Redis
+ * runs a script to completion before anything else runs at all.
+ *
+ * It is also **idempotent**, which is what makes the retry safe rather than
+ * merely atomic. The first thing it does is look the ticket up in the
+ * spent-ticket hash: a field holds the outcome and an identity — the score,
+ * the fingerprint, the board and the player — of the submission that spent
+ * it. A retry of the same submission matches that identity and is handed back
+ * the same outcome; a different run under the same ticket does not, and is
+ * refused as the reused ticket it is.
+ *
+ * `ZADD` decides the write, not a read followed by a write: `GT` on a
+ * permanent board (the entry moves only for a higher score), `NX` on a daily
+ * (whatever lands first stands), and `CH` on both so the name and date beside
+ * it are written **only when the score itself moved**. Two submissions racing
+ * used to be able to leave the faster player's score under the slower
+ * player's name, because the `HSET` was a separate command that did not know
+ * whether its `ZADD` had won.
+ *
+ * KEYS: 1 spent tickets, 2 fingerprints, 3 daily ids, 4 board, 5 meta.
+ * ARGV: 1 token id, 2 fingerprint ('' skips the check), 3 player id,
+ *       4 score, 5 meta JSON, 6 '1' on a daily, 7 spent-ticket TTL,
+ *       8 fingerprint TTL (0 for none), 9 board TTL (0 for none).
+ * Returns `{ status, changed }`.
+ */
+export const SUBMIT_SCRIPT = `
+local identity = ARGV[4] .. '|' .. ARGV[2] .. '|' .. KEYS[4] .. '|' .. ARGV[3]
+local spent = redis.call('HGET', KEYS[1], ARGV[1])
+if spent then
+  local cut = string.find(spent, '|', 1, true)
+  if cut and string.sub(spent, cut + 1) == identity then
+    return { string.sub(spent, 1, cut - 1), 0 }
+  end
+  return { 'token', 0 }
+end
+
+local status = 'ok'
+local changed = 0
+
+if ARGV[2] ~= '' then
+  if redis.call('SADD', KEYS[2], ARGV[2]) == 0 then
+    status = 'replay'
+  elseif tonumber(ARGV[8]) > 0 then
+    redis.call('EXPIRE', KEYS[2], ARGV[8])
+  end
+end
+
+if status == 'ok' then
+  if ARGV[6] == '1' then
+    local first = redis.call('SADD', KEYS[3], ARGV[3])
+    redis.call('EXPIRE', KEYS[3], ARGV[9])
+    if first == 0 then
+      status = 'already'
+    else
+      changed = redis.call('ZADD', KEYS[4], 'NX', 'CH', ARGV[4], ARGV[3])
+      if changed == 1 then redis.call('HSET', KEYS[5], ARGV[3], ARGV[5]) end
+      redis.call('EXPIRE', KEYS[4], ARGV[9])
+      redis.call('EXPIRE', KEYS[5], ARGV[9])
+    end
+  else
+    changed = redis.call('ZADD', KEYS[4], 'GT', 'CH', ARGV[4], ARGV[3])
+    if changed == 1 then redis.call('HSET', KEYS[5], ARGV[3], ARGV[5]) end
+  end
+end
+
+redis.call('HSET', KEYS[1], ARGV[1], status .. '|' .. identity)
+redis.call('EXPIRE', KEYS[1], ARGV[7])
+return { status, changed }
+`;
+
+/**
+ * The script's two-element answer, defensively: anything else is a failure.
+ *
+ * `changed` — whether the board actually moved — is part of the script's
+ * contract and nothing in the response needs it yet; it is what decided
+ * whether the name was written, and it is here so a caller can be told.
+ */
+function readVerdict(raw: unknown): { status: SubmitStatus; changed: boolean } | null {
+  if (!Array.isArray(raw) || raw.length < 2) return null;
+  const status = String(raw[0]) as SubmitStatus;
+  if (!SUBMIT_STATUSES.includes(status)) return null;
+  return { status, changed: Number(raw[1]) === 1 };
+}
+
 /**
  * Does this ticket vouch for this submission?
  *
@@ -366,6 +511,15 @@ export default async function handler(request: Request): Promise<Response> {
     'Content-Type': 'application/json',
     'Cache-Control': 'no-store',
   };
+  /**
+   * Redis did not answer — it timed out, it refused, it is not there. The
+   * player has done nothing wrong and the score is not refused, so this is a
+   * 503 and not a 400: the client keeps it locally and says so, which is a
+   * true sentence, rather than telling a player their run was not verified.
+   */
+  const unavailable = (): Response => new Response(
+    JSON.stringify({ error: 'Leaderboard unavailable' }), { status: 503, headers },
+  );
 
   const board = parseBoard(request.url);
   if (!board) {
@@ -379,8 +533,14 @@ export default async function handler(request: Request): Promise<Response> {
         return new Response(JSON.stringify({ error: 'Date out of range' }), { status: 400, headers });
       }
     }
-    const entries = await readTop(getRedis(), board);
-    return new Response(JSON.stringify(publicEntries(entries, askerId(request.url))), { headers });
+    try {
+      const entries = await readTop(getRedis(), board);
+      return new Response(JSON.stringify(publicEntries(entries, askerId(request.url))), { headers });
+    } catch {
+      // A read that throws used to reject the handler's own promise, which is
+      // a 500 with whatever body the platform writes on it.
+      return unavailable();
+    }
   }
 
   if (request.method === 'POST') {
@@ -391,19 +551,16 @@ export default async function handler(request: Request): Promise<Response> {
       }
     }
 
-    let text: string;
-    try {
-      text = await request.text();
-    } catch {
-      return new Response(JSON.stringify({ error: 'Unreadable body' }), { status: 400, headers });
-    }
-    if (new TextEncoder().encode(text).length > MAX_BODY_BYTES) {
-      return new Response(JSON.stringify({ error: 'Body too large' }), { status: 400, headers });
+    const read = await readBody(request, MAX_BODY_BYTES);
+    if (!read.ok) {
+      return read.reason === 'too-large'
+        ? new Response(JSON.stringify({ error: 'Body too large' }), { status: 413, headers })
+        : new Response(JSON.stringify({ error: 'Unreadable body' }), { status: 400, headers });
     }
 
     let parsed: unknown;
     try {
-      parsed = JSON.parse(text);
+      parsed = JSON.parse(read.text);
     } catch {
       return new Response(JSON.stringify({ error: 'Invalid JSON' }), { status: 400, headers });
     }
@@ -446,11 +603,7 @@ export default async function handler(request: Request): Promise<Response> {
     );
 
     const secret = ticketSecret();
-    if (!secret) {
-      return new Response(
-        JSON.stringify({ error: 'Leaderboard unavailable' }), { status: 503, headers },
-      );
-    }
+    if (!secret) return unavailable();
 
     const shapeFailure = checkReplayShape(body.replay, board);
     if (shapeFailure) return unverified(shapeFailure);
@@ -468,75 +621,66 @@ export default async function handler(request: Request): Promise<Response> {
     const verdict = verifyScore(replay, score);
     if (!verdict.valid) return unverified(verdict.reason ?? 'move');
 
-    const redis = getRedis();
-
-    // One run per ticket. Everything above is a pure function of the request,
-    // so a submission that fails any of it has spent nothing and can be
-    // corrected; from here on the submission consumes state.
-    const tokenId = String(body.token).split('.')[1] ?? String(body.token);
-    const tokensKey = usedTokensKey(ticket.issuedAt);
-    const tokenFresh = await redis.sadd(tokensKey, tokenId);
-    if (tokenFresh === 0) return unverified('token');
-    await redis.expire(tokensKey, USED_TOKEN_TTL_SECONDS);
-
     // One run per solution. A replay is a document: it verifies as well the
     // tenth time as the first, and on a daily — where every player is dealt
     // the same seed — a good one would otherwise be worth passing around.
-    // The fingerprint is over the placements and not their timing, so the
-    // same solution re-timed is still the same solution.
-    const fingerprint = await replayFingerprint(replay);
-    const seenKey = replaysKey(board);
-    const replayFresh = await redis.sadd(seenKey, fingerprint);
-    if (replayFresh === 0) return unverified('replay');
-    if (board.dailyDate) await redis.expire(seenKey, REPLAY_TTL_SECONDS);
+    // The fingerprint is over the placements and not their timing or their
+    // orientation, so neither re-timing a solution nor turning it round the
+    // board makes a second run out of it. `verdict.placed` is the simulation's
+    // record of which piece each move put down, which is what the four turns
+    // of the board are computed from.
+    //
+    // An empty fingerprint switches the check off, for a run too short to be
+    // anybody's in particular: two players who place one piece and quit write
+    // the same solution without ever having met.
+    const placements = replay.moves.filter(m => m.t === 'p').length;
+    const fingerprint = placements >= MIN_FINGERPRINT_PLACEMENTS
+      ? await replayFingerprint(replay, verdict.placed)
+      : '';
 
     const cleanName = name.trim().slice(0, 12) || 'Player';
     const today = new Date().toISOString().split('T')[0];
+    // Everything above is a pure function of the request, so a submission
+    // that fails any of it has spent nothing and can be corrected. From here
+    // on the submission consumes state — all of it, in one step.
+    const tokenId = String(body.token).split('.')[1] ?? String(body.token);
 
-    if (board.dailyDate) {
-      // First submission wins, and "first" means the first submission — not
-      // the first one good enough to rank. The set is the record of who has
-      // played today, so a score outside the top ten still closes the day for
-      // that player instead of leaving them free to grind for a better one.
-      //
-      // The day is really closed a step earlier now, when `api/run-start.ts`
-      // hands over the deal: a second daily ticket for the same id and date
-      // is a practice ticket and is refused above. This set is the second
-      // line of defence, and the one that still works if that write did not.
-      const idsKey = dailyIdsKey(board);
-      const firstToday = await redis.sadd(idsKey, id);
-      await redis.expire(idsKey, DAILY_TTL_SECONDS);
-      if (firstToday === 0) {
-        const standing = await readTop(redis, board);
-        return new Response(JSON.stringify({
-          rank: await rankOf(redis, board, id),
-          entries: publicEntries(standing, id),
-        }), { headers });
+    const redis = getRedis();
+    let entries: Entry[];
+    let rank: number | null;
+    try {
+      const outcome = readVerdict(await redis.eval(SUBMIT_SCRIPT, [
+        spentTicketsKey(ticket.issuedAt),
+        replaysKey(board),
+        dailyIdsKey(board),
+        boardKey(board),
+        metaKey(board),
+      ], [
+        tokenId,
+        fingerprint,
+        id,
+        String(score),
+        JSON.stringify({ name: cleanName, date: today }),
+        board.dailyDate ? '1' : '0',
+        String(USED_TOKEN_TTL_SECONDS),
+        String(board.dailyDate ? REPLAY_TTL_SECONDS : 0),
+        String(DAILY_TTL_SECONDS),
+      ]));
+      if (!outcome) return unavailable();
+      if (outcome.status === 'token' || outcome.status === 'replay') {
+        return unverified(outcome.status);
       }
-
-      // NX: whatever lands first stands, decided by Redis rather than by
-      // which of two concurrent submissions read the board last.
-      await redis.zadd(boardKey(board), { nx: true }, { score, member: id });
-      await redis.hset(metaKey(board), { [id]: JSON.stringify({ name: cleanName, date: today }) });
-      // Refreshed on every write rather than set once, so a board stays alive
-      // for eight days from its last score and never outlives its usefulness.
-      await redis.expire(boardKey(board), DAILY_TTL_SECONDS);
-      await redis.expire(metaKey(board), DAILY_TTL_SECONDS);
-    } else {
-      // GT: the entry moves only if this score beats the one already there,
-      // in one atomic step. CH tells us whether it moved, which is what
-      // decides if the name and date beside it should follow.
-      const changed = await redis.zadd(
-        boardKey(board), { gt: true, ch: true }, { score, member: id },
-      );
-      if (changed) {
-        await redis.hset(metaKey(board), { [id]: JSON.stringify({ name: cleanName, date: today }) });
-      }
+      entries = await readTop(redis, board);
+      rank = await rankOf(redis, board, id);
+    } catch {
+      return unavailable();
     }
 
-    const entries = await readTop(redis, board);
+    // 'already' is a daily's second submission: the first one is the one that
+    // counts, ranked or not, so this answers where the player stands rather
+    // than refusing them.
     return new Response(JSON.stringify({
-      rank: await rankOf(redis, board, id),
+      rank,
       entries: publicEntries(entries, id),
     }), { headers });
   }

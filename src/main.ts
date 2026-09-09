@@ -5,8 +5,9 @@ import { MenuScene } from './scenes/MenuScene';
 import { GameScene } from './scenes/GameScene';
 import { GameOverScene } from './scenes/GameOverScene';
 import { AudioManager } from './audio/AudioManager';
-import { Leaderboard, requestRunTicket } from './core/Leaderboard';
+import { Leaderboard, RunStarter } from './core/Leaderboard';
 import { Difficulty, DIFFICULTY_CONFIGS, GameConfig } from './core/Config';
+import { dailyKey, hasSubmittedDaily } from './core/Daily';
 import { incrementGamesPlayed } from './core/Settings';
 import { RunSummary } from './core/types';
 import { THEME } from './rendering/Theme';
@@ -92,6 +93,15 @@ async function boot() {
    * only place it is used: posting the score.
    */
   let runToken: string | null = null;
+  /**
+   * The mode the current run is being played in. Not the same thing as
+   * `selectedDifficulty`, which is whatever the menu was last left showing:
+   * the run's mode is fixed when Play is pressed and cannot change under it.
+   */
+  let runMode: Difficulty = selectedDifficulty;
+  // One start at a time, and the mode is whatever was selected when Play was
+  // pressed. See RunStarter for the two races this closes.
+  const runStarter = new RunStarter();
 
   async function startGame(skipCountdown: boolean = false) {
     // Recompute the layout on the way in: handedness may have been changed
@@ -102,9 +112,20 @@ async function boot() {
     // before the first piece is dealt. Without one the run still plays — on
     // a local seed, as practice — and the game-over screen says the score
     // stayed here rather than pretending it went out.
-    const ticket = await requestRunTicket(selectedDifficulty);
+    //
+    // On a daily this browser has already posted, ask outright for a practice
+    // ticket: the stored one is spent, and asking for it again would hand
+    // back a token the leaderboard has already taken a score for.
+    const practice = selectedDifficulty === 'daily' && hasSubmittedDaily(dailyKey());
+    const started = await runStarter.start(selectedDifficulty, practice);
+    // A start was already in flight: this press does nothing, rather than
+    // replacing the run the first press started.
+    if (!started) return;
+
+    const { mode, ticket } = started;
     runToken = ticket?.token ?? null;
-    const base = DIFFICULTY_CONFIGS[selectedDifficulty];
+    runMode = mode;
+    const base = DIFFICULTY_CONFIGS[mode];
     const config: GameConfig = ticket
       ? {
         ...base,
@@ -112,13 +133,13 @@ async function boot() {
         ...(ticket.dailyKey ? { dailyDate: ticket.dailyKey } : {}),
       }
       : base;
-    incrementGamesPlayed(selectedDifficulty);
+    incrementGamesPlayed(mode);
     const gameScene = new GameScene(
       app.canvas,
       layoutManager,
       audioManager,
       config,
-      selectedDifficulty,
+      mode,
       skipCountdown,
       (summary) => showGameOver(summary),
       () => showMenu(),
@@ -134,7 +155,9 @@ async function boot() {
       summary,
       leaderboard,
       audioManager,
-      selectedDifficulty,
+      // The run's own mode, not the menu's: a run that started as a Daily is
+      // read as a Daily whatever the menu has been left showing since.
+      runMode,
       runToken,
       () => { void startGame(false); },
       () => showMenu(),

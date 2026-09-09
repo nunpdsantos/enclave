@@ -3,7 +3,7 @@ import { isDailyKey } from './Daily';
 import { GameState } from './GameState';
 import { rotationCount } from './Pieces';
 import { RULES_VERSION } from './Rules';
-import { GRID_SIZE, MAX_REPLAY_MOVES, Replay, RunEndCause } from './types';
+import { GRID_SIZE, MAX_REPLAY_MOVES, PlacedPiece, Replay, RunEndCause } from './types';
 
 /**
  * Re-play a run from its seed and its inputs, with the game's own rules, and
@@ -20,7 +20,7 @@ import { GRID_SIZE, MAX_REPLAY_MOVES, Replay, RunEndCause } from './types';
  */
 
 /** Why a replay was refused. 'score' belongs to the caller that compares. */
-export type SimFailure = 'rules' | 'shape' | 'seed' | 'move' | 'clock' | 'cadence' | 'score';
+export type SimFailure = 'rules' | 'shape' | 'seed' | 'move' | 'clock' | 'score';
 
 export interface SimResult {
   valid: boolean;
@@ -30,6 +30,13 @@ export interface SimResult {
   moves: number;
   /** Set when the engine itself ended the run: 'board_lock' or 'complete' */
   endCause?: RunEndCause;
+  /**
+   * One entry per placement that landed, in move order: the piece the deal
+   * handed over, as the simulation resolved it. Only the fingerprint needs
+   * it — a solution and its rotated copies are one solution, and deciding
+   * that needs the shape a `row, col, rot` triple stood for.
+   */
+  placed: PlacedPiece[];
 }
 
 /**
@@ -83,17 +90,24 @@ const MAX_UNCLOCKED_GAP_SECONDS = 24 * 60 * 60;
  */
 const CLOCK_SLACK_SECONDS = 0.05;
 
-/**
- * The shortest gap allowed between two placements.
+/*
+ * There is no cadence floor here any more.
  *
- * Nothing in the rules says how fast a person can drag a piece onto a board,
- * so a fabricated log used to be free to place six hundred pieces at a
- * millisecond apart and re-play perfectly. Eighty milliseconds is under half
- * of a fast human tap and still refuses the machine-gun log outright. It is
- * a floor on the *inputs*, so it holds in the Daily too, where there is no
- * clock to make haste cost anything.
+ * There used to be one — 0.08 s between placements, on the reasoning that
+ * nobody drags a piece onto a board twelve times a second — and it was a rule
+ * only the server knew. The live engine accepted two placements 79 ms apart
+ * and paid for them; the simulation then refused the whole run as `cadence`,
+ * so a fast player was told their honest score could not be verified and
+ * given no way to find out why. A rule the game does not enforce while you
+ * play cannot be a rule the server enforces afterwards.
+ *
+ * What it was defending against is already covered: the ticket binds the run
+ * to a server clock reading, and `api/leaderboard.ts` refuses a submission
+ * whose last move is later than the wall clock has allowed since the ticket
+ * was issued. A machine-gun log is a *compressed* log, and compressed time is
+ * exactly what that check reads. The non-decreasing timestamp check below
+ * stays: time still runs one way.
  */
-const MIN_PLACEMENT_INTERVAL = 0.08;
 
 /**
  * Move times are recorded to the millisecond, and our clock is advanced by
@@ -131,7 +145,9 @@ export function drainIntegral(timer: TimerConfig, t0: number, t1: number): numbe
 }
 
 function fail(reason: SimFailure, score: number, moves: number, endCause?: RunEndCause): SimResult {
-  return { valid: false, reason, score, moves, ...(endCause ? { endCause } : {}) };
+  // A failed run has no placements worth reporting: the caller has nothing to
+  // fingerprint, because there is no proven solution to fingerprint.
+  return { valid: false, reason, score, moves, placed: [], ...(endCause ? { endCause } : {}) };
 }
 
 /** A cell on the 9×9 board, as an integer */
@@ -184,8 +200,7 @@ export function simulateRun(replay: Replay): SimResult {
   // that ends the run: the engine's own timeout cannot be reproduced here.
   let bank = base.timer.startSeconds;
   let previousAt = 0;
-  /** When the last piece went down, for the cadence floor. */
-  let previousPlacementAt = -Infinity;
+  const placed: PlacedPiece[] = [];
 
   for (let i = 0; i < moves.length; i++) {
     const move = moves[i];
@@ -217,14 +232,6 @@ export function simulateRun(replay: Replay): SimResult {
       continue;
     }
 
-    // Nobody drags a piece onto a board twelve times a second. Checked
-    // before the placement is simulated, so a machine-gun log costs the
-    // server the two moves it takes to spot rather than all six hundred.
-    if (at - previousPlacementAt < MIN_PLACEMENT_INTERVAL - TIME_EPSILON) {
-      return fail('cadence', gs.score, i);
-    }
-    previousPlacementAt = at;
-
     const piece = gs.current;
     if (!piece) return fail('move', gs.score, i);
     // Checked here rather than left to the board: `canPlace` indexes the grid
@@ -242,9 +249,19 @@ export function simulateRun(replay: Replay): SimResult {
     }
     if (!gs.current || gs.current.rotation !== move.rot) return fail('move', gs.score, i);
 
+    // Read before the placement consumes it: this is the piece the deal
+    // actually handed over at this move, which is what the fingerprint needs
+    // to know what a `row, col, rot` triple stood for on the board.
+    const footprint: PlacedPiece = {
+      rows: gs.current.rows,
+      cols: gs.current.cols,
+      turns,
+    };
+
     const events = gs.tryPlace(move.row, move.col);
     // An off-board or occupied placement is refused silently, with no events
     if (events.length === 0 || events[0].type !== 'place') return fail('move', gs.score, i);
+    placed.push(footprint);
     if (clocked) {
       // The engine's own award, so the speed fraction and the claim bonus are
       // already in it — and so is the rounding the client applied.
@@ -256,6 +273,7 @@ export function simulateRun(replay: Replay): SimResult {
     valid: true,
     score: gs.score,
     moves: moves.length,
+    placed,
     ...(gs.deathCause ? { endCause: gs.deathCause } : {}),
   };
 }

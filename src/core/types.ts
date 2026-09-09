@@ -154,12 +154,36 @@ export interface Replay {
 }
 
 /**
- * The longest replay anyone records or the server accepts. Six hundred
- * placements is far past any real run — a 90-second Classic bank cannot fund
- * one — so the cap only ever bites a tab left running or a forged log, and it
- * is what stops a submission from becoming an unbounded upload.
+ * The longest replay anyone records or the server accepts.
+ *
+ * Six hundred was reachable by playing well. A Classic bank is not a fixed
+ * budget — every placement pays time back into it — so a run that keeps
+ * claiming keeps the clock alive, and six hundred inputs is about twenty
+ * minutes of that. A player who got there had the log stop under them and the
+ * score refused, which is a punishment for playing well. Fifteen hundred is
+ * about fifty minutes, past any sitting anyone has had, and still a bound: at
+ * a measured 57 bytes a move it caps a submission at about 86 KB of log.
  */
-export const MAX_REPLAY_MOVES = 600;
+export const MAX_REPLAY_MOVES = 1500;
+
+/**
+ * What a placement put on the board, as the simulation resolved it: the
+ * bounding box of the piece at the rotation it was placed at, and how many
+ * distinct rotations that piece has.
+ *
+ * The replay itself carries none of this — a move is `row, col, rot`, and the
+ * piece behind it comes from the deal — so anything that has to reason about
+ * the *shape* of a placement has to re-play the run to get it. The fingerprint
+ * does, to turn a solution and its rotated copies into one string.
+ */
+export interface PlacedPiece {
+  /** Rows the piece occupied, at the rotation it was placed at */
+  rows: number;
+  /** Columns it occupied, at that same rotation */
+  cols: number;
+  /** Distinct rotations of the piece type: 1, 2 or 4 */
+  turns: number;
+}
 
 export interface RunSummary {
   score: number;
