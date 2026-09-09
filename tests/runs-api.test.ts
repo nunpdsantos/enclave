@@ -62,6 +62,8 @@ const VALID = {
   maxStreak: 3,
   holds: 1,
   placements: 20,
+  surveys: 1,
+  litCells: 20,
   tier: 'BUILDER',
   roomSizes: { '1': 2, '4': 2 },
   pid: '2a1f0b4c-9d3e-4f5a-8b7c-1e2d3f4a5b6c',
@@ -98,6 +100,8 @@ describe('api/runs', () => {
       ['long pid', { ...VALID, pid: 'x'.repeat(65) }],
       ['missing field', { ...VALID, tier: undefined }],
       ['non-integer count', { ...VALID, rooms: 1.5 }],
+      ['missing surveys', { ...VALID, surveys: undefined }],
+      ['negative litCells', { ...VALID, litCells: -1 }],
       ['NaN', { ...VALID, score: 'NaN' }],
       ['bad roomSizes key', { ...VALID, roomSizes: { abc: 1 } }],
       ['array body', [1, 2, 3]],
@@ -118,10 +122,13 @@ describe('api/runs', () => {
     store.clear();
 
     expect((await h(post(VALID))).status).toBe(204);
-    expect((await h(post({ ...VALID, durationS: 20, score: 500, holds: 0, rooms: 2 }))).status).toBe(204);
+    expect((await h(post({
+      ...VALID, durationS: 20, score: 500, holds: 0, rooms: 2, surveys: 0, litCells: 12,
+    }))).status).toBe(204);
     expect((await h(post({
       ...VALID, v: '0.2.0', mode: 'blitz', endCause: 'board_lock',
       durationS: 10, score: 100, holds: 0, rooms: 1, roomSizes: { '1': 1 },
+      surveys: 0, litCells: 5,
     }))).status).toBe(204);
 
     expect(store.get('telemetry:enclave:runs')).toHaveLength(3);
@@ -140,12 +147,16 @@ describe('api/runs', () => {
     expect(body.modes.classic.medianDurationS).toBe(30);   // (40 + 20) / 2
     expect(body.modes.classic.medianScore).toBe(750);
     expect(body.modes.classic.meanRooms).toBe(3);
+    expect(body.modes.classic.meanSurveys).toBe(0.5);      // 1 and 0
+    expect(body.modes.classic.meanLitCells).toBe(16);      // 20 and 12
     expect(body.modes.classic.endCauses).toEqual({ timeout: 2 });
     expect(body.modes.classic.holdUsageRate).toBe(0.5);
     expect(body.modes.classic.roomSizes).toEqual({ '1': 4, '4': 4 });
     expect(body.modes.blitz.count).toBe(1);
     expect(body.modes.blitz.medianDurationS).toBe(10);
     expect(body.modes.blitz.holdUsageRate).toBe(0);
+    expect(body.modes.blitz.meanSurveys).toBe(0);
+    expect(body.modes.blitz.meanLitCells).toBe(5);
   });
 
   it('rejects other methods with 405', async () => {

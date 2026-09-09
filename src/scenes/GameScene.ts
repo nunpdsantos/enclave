@@ -11,6 +11,7 @@ import { AnimationManager } from '../rendering/AnimationManager';
 import { FXManager } from '../rendering/FXManager';
 import { DragController, DragState } from '../input/DragController';
 import { AudioManager } from '../audio/AudioManager';
+import { INNER_CELLS } from '../core/Board';
 import { FeedbackEvent, GridPos, PieceInstance, Region, RunEndCause, RunSummary } from '../core/types';
 import { Difficulty, DIFFICULTY_LABELS, GameConfig } from '../core/Config';
 import { getProgressStatus } from '../core/Progression';
@@ -28,6 +29,11 @@ type Phase = 'tutorial' | 'countdown' | 'playing' | 'gameOver';
 interface ClosePreview {
   regions: Region[];
   points: number;
+}
+
+/** 0.75 → "0.75", 0.5 → "0.5": two decimals, no trailing zeros */
+function formatFactor(factor: number): string {
+  return factor.toFixed(2).replace(/\.?0+$/, '');
 }
 
 export class GameScene implements Scene {
@@ -174,6 +180,10 @@ export class GameScene implements Scene {
     this.dragController.updateBoard(this.gameState.board);
 
     this.gridRenderer.drawBlocks(this.gameState.board.grid);
+    if (this.gameState.config.territory.enabled) {
+      this.gridRenderer.drawFloor(this.gameState.board.lit);
+      this.uiRenderer.updateSurvey(0, INNER_CELLS, 0);
+    }
     this.refreshHand(true);
     this.uiRenderer.updateScore(this.gameState.score);
     this.uiRenderer.updateHighScore(this.gameState.highScore);
@@ -202,7 +212,12 @@ export class GameScene implements Scene {
       (window as unknown as { __enclave: unknown }).__enclave = {
         state: this.gameState,
         makePiece,
-        refresh: () => { this.refreshBoard(); this.refreshHand(false); this.syncInput(); },
+        refresh: () => {
+          this.refreshBoard();
+          this.gridRenderer.drawFloor(this.gameState.board.lit);
+          this.refreshHand(false);
+          this.syncInput();
+        },
       };
     }
 
@@ -816,24 +831,52 @@ export class GameScene implements Scene {
             const ringRadius = layout.cellSize * (1.5 + Math.sqrt(region.area) * 1.1);
             this.animationManager.spawnShockwave(cx, cy, ringRadius, THEME.gold, 5, 0.45 + region.area * 0.02);
             if (region.area >= 9) this.animationManager.spawnShockwave(cx, cy, ringRadius * 1.6, 0xffffff, 3, 0.7);
-            const pts = region.area * region.area * this.gameState.config.scoring.pointsPerAreaSquared;
+            // What this room actually paid at base: relit floor pays less than area² × 10
+            const pts = event.scoreBreakdown?.roomPoints[claim.regions.indexOf(region)]
+              ?? region.area * region.area * this.gameState.config.scoring.pointsPerAreaSquared;
             this.animationManager.showScorePopup(pts, cx, cy, region.area >= 9);
           }
-          if (event.scoreBreakdown && (rooms >= 2 || event.scoreBreakdown.streakMultiplier > 1)) {
-            const parts: string[] = [];
-            if (rooms >= 2) parts.push(`${rooms} ROOMS ×${event.scoreBreakdown.multiCloseMultiplier.toFixed(1)}`);
-            if (event.scoreBreakdown.streakMultiplier > 1) parts.push(`STREAK ×${event.scoreBreakdown.streakMultiplier.toFixed(2)}`);
-            this.animationManager.showStreakPopup(0, parts.join('  ·  '));
-          } else if (biggest >= 9) {
-            this.animationManager.showStreakPopup(0, biggest >= 16 ? 'MASSIVE ROOM' : 'BIG ROOM');
+          // One label for everything that moved the price away from area² × 10:
+          // the multipliers if there were any, the room's size if there were
+          // not, and always the relit floor, which is the only part of the
+          // price the board itself explains.
+          const parts: string[] = [];
+          const breakdown = event.scoreBreakdown;
+          if (breakdown) {
+            if (rooms >= 2) parts.push(`${rooms} ROOMS ×${breakdown.multiCloseMultiplier.toFixed(1)}`);
+            if (breakdown.streakMultiplier > 1) parts.push(`STREAK ×${breakdown.streakMultiplier.toFixed(2)}`);
           }
+          if (parts.length === 0 && biggest >= 9) {
+            parts.push(biggest >= 16 ? 'MASSIVE ROOM' : 'BIG ROOM');
+          }
+          if (breakdown && breakdown.territoryFactor < 1) {
+            parts.push(`RELIT ×${formatFactor(breakdown.territoryFactor)}`);
+          }
+          if (parts.length > 0) this.animationManager.showStreakPopup(0, parts.join('  ·  '));
           if (event.timeBonus) this.showTimeBonusPopup(event.timeBonus, true);
 
           this.refreshBoard();
+          if (this.gameState.config.territory.enabled) {
+            // The claim just lit its floor (and a survey may have wiped it)
+            this.gridRenderer.drawFloor(this.gameState.board.lit);
+            this.uiRenderer.updateSurvey(event.litCount ?? 0, INNER_CELLS, this.gameState.surveys);
+          }
           this.updateProgressPresentation(true);
           this.uiRenderer.updateStreak(this.gameState.streakCount, this.gameState.streakSafeMoves, this.gameState.config.scoring.streakWindow);
           this.fxManager.boostFlow(Math.min(0.9, 0.2 + biggest * 0.06 + (rooms - 1) * 0.2));
           this.fxManager.updateFlowState(this.gameState.streakCount);
+          break;
+        }
+
+        case 'survey': {
+          // The lit map is already wiped, so the floor dissolves off the board
+          // while the flash and the label say what it was worth.
+          this.gridRenderer.surveyFadeOut();
+          this.fxManager.triggerFlash(0.45, 3, THEME.gold);
+          this.animationManager.showStreakPopup(
+            0,
+            `SURVEY COMPLETE  +${(event.surveyBonus ?? 0).toLocaleString()}`,
+          );
           break;
         }
 

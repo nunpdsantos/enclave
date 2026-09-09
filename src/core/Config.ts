@@ -37,9 +37,19 @@ export interface TimerConfig {
   drainCap: number;
 }
 
+export interface TerritoryConfig {
+  /** Off restores the pre-territory game exactly: no lit floor, no survey */
+  enabled: boolean;
+  /** What a room built entirely on already-lit floor pays, as a fraction */
+  relitFloorFactor: number;
+  /** Flat score for lighting all 49 inner cells — multiplied by nothing */
+  surveyBonus: number;
+}
+
 export interface GameConfig {
   scoring: ScoringConfig;
   timer: TimerConfig;
+  territory: TerritoryConfig;
   /** Number of upcoming pieces shown */
   previewCount: number;
 }
@@ -56,6 +66,9 @@ const SHARED_SCORING: ScoringConfig = {
 export const DIFFICULTY_CONFIGS: Record<Difficulty, GameConfig> = {
   classic: {
     scoring: SHARED_SCORING,
+    // A survey takes far longer than a 35 s Blitz run, so Blitz pays less for
+    // one: the reward has to stay in scale with the clock that funds it.
+    territory: { enabled: true, relitFloorFactor: 0.5, surveyBonus: 5000 },
     timer: {
       startSeconds: 60,
       maxSeconds: 90,
@@ -72,6 +85,7 @@ export const DIFFICULTY_CONFIGS: Record<Difficulty, GameConfig> = {
   },
   blitz: {
     scoring: { ...SHARED_SCORING, streakWindow: 2 },
+    territory: { enabled: true, relitFloorFactor: 0.5, surveyBonus: 2500 },
     timer: {
       startSeconds: 35,
       maxSeconds: 50,

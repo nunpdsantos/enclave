@@ -3,6 +3,17 @@ import { GRID_SIZE, Grid, CellColor, GridPos, Region, ShapeMatrix } from './type
 const DIRS: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
 /**
+ * The board edge is never a wall, so an empty cell touching it can always
+ * reach the outside: only the inner ring-less square can ever be room floor.
+ */
+export function isInnerCell(row: number, col: number): boolean {
+  return row >= 1 && col >= 1 && row <= GRID_SIZE - 2 && col <= GRID_SIZE - 2;
+}
+
+/** How many cells a full survey has to light: the inner 7×7 = 49 */
+export const INNER_CELLS = (GRID_SIZE - 2) * (GRID_SIZE - 2);
+
+/**
  * The 9×9 board and the one rule that defines the game:
  *
  *   An empty cell is "outside" if it can reach the board edge by walking
@@ -15,9 +26,15 @@ const DIRS: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
  */
 export class Board {
   grid: Grid;
+  /**
+   * Territory: floor that has been claimed at least once this run. Independent
+   * of `grid` — a lit cell can hold a block and still be lit underneath.
+   */
+  lit: boolean[][];
 
   constructor() {
     this.grid = Board.createEmptyGrid();
+    this.lit = Board.createUnlitMap();
   }
 
   static createEmptyGrid(): Grid {
@@ -26,8 +43,13 @@ export class Board {
     );
   }
 
+  static createUnlitMap(): boolean[][] {
+    return Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(false));
+  }
+
   reset(): void {
     this.grid = Board.createEmptyGrid();
+    this.lit = Board.createUnlitMap();
   }
 
   getCell(row: number, col: number): CellColor | null {
@@ -41,6 +63,38 @@ export class Board {
   occupiedCount(): number {
     let n = 0;
     for (const row of this.grid) for (const c of row) if (c !== null) n++;
+    return n;
+  }
+
+  // ── Territory ──
+
+  /** Only inner cells can be room floor, so only they can ever be lit */
+  isInner(row: number, col: number): boolean {
+    return isInnerCell(row, col);
+  }
+
+  /** Lit inner cells, 0–INNER_CELLS. O(81), so claim-time only, never per frame. */
+  litCount(): number {
+    let n = 0;
+    for (const row of this.lit) for (const c of row) if (c) n++;
+    return n;
+  }
+
+  /** Light claimed floor. Cells outside the inner square are ignored. */
+  markLit(cells: GridPos[]): void {
+    for (const p of cells) {
+      if (this.isInner(p.row, p.col)) this.lit[p.row][p.col] = true;
+    }
+  }
+
+  clearLit(): void {
+    this.lit = Board.createUnlitMap();
+  }
+
+  /** How many of these cells have never been claimed this run */
+  freshCount(cells: GridPos[]): number {
+    let n = 0;
+    for (const p of cells) if (!this.lit[p.row][p.col]) n++;
     return n;
   }
 
@@ -192,6 +246,7 @@ export class Board {
   clone(): Board {
     const b = new Board();
     b.grid = this.grid.map(row => [...row]);
+    b.lit = this.lit.map(row => [...row]);
     return b;
   }
 }

@@ -4,12 +4,17 @@ import { FONT_DISPLAY, FONT_MONO, THEME, drawPanel } from './Theme';
 import { Difficulty } from '../core/Config';
 import { getProgressStatus } from '../core/Progression';
 
+/** Lit floor at which the survey readout turns gold: the home straight */
+const SURVEY_GOLD_AT = 40;
+/** How long "SURVEY ✓ ×N" holds before the readout drops back to the count */
+const SURVEY_FLASH_SECONDS = 2.2;
+
 /**
  * Heads-up display for the game scene.
  *
  * Layout (top → bottom):
  *   ┌ TIER chip + progress ─── SCORE ─── BEST ┐
- *   │            STREAK ×N  ●●○               │
+ *   │ SURVEY 23/49      STREAK ×N  ●●○        │
  *   │ 42s ━━━━━━━━━━━━━━━━━━━━━━━━━━━━ ⚡1.0  │  ← time bank (thick) + speed bonus (thin)
  *   └───────────────── board ─────────────────┘
  */
@@ -28,6 +33,7 @@ export class UIRenderer {
   private tierPanel: Graphics;
   private rankText: Text;
   private goalText: Text;
+  private surveyText: Text;
   private progressBarGfx: Graphics;
   private layout!: Layout;
 
@@ -37,6 +43,12 @@ export class UIRenderer {
 
   // Low-time pulse animation
   private pulsePhase = 0;
+
+  // Survey readout: latest counts, plus the timer on the "✓ ×N" celebration
+  private surveyLit = 0;
+  private surveyTotal = 0;
+  private surveyCount = 0;
+  private surveyFlash = 0;
 
   constructor() {
     this.container = new Container();
@@ -145,6 +157,20 @@ export class UIRenderer {
       }),
     });
 
+    // Hidden until the first updateSurvey, so a run with territory off never
+    // shows a readout for a mechanic it does not have
+    this.surveyText = new Text({
+      text: '',
+      style: new TextStyle({
+        fontFamily: FONT_MONO,
+        fontSize: 10,
+        fontWeight: '400',
+        fill: THEME.textMuted,
+        letterSpacing: 1,
+      }),
+    });
+    this.surveyText.visible = false;
+
     this.timerBarGfx = new Graphics();
     this.speedBarGfx = new Graphics();
     this.progressBarGfx = new Graphics();
@@ -152,6 +178,7 @@ export class UIRenderer {
     this.container.addChild(this.tierPanel);
     this.container.addChild(this.goalText);
     this.container.addChild(this.rankText);
+    this.container.addChild(this.surveyText);
     this.container.addChild(this.progressBarGfx);
     this.container.addChild(this.bestLabelText);
     this.container.addChild(this.bestText);
@@ -200,6 +227,12 @@ export class UIRenderer {
     this.goalText.x = left + 10;
     this.goalText.y = 28;
 
+    // Under the tier chip (which ends at y = 50) and left of the centred
+    // score, which is the only thing at this height on a 360-wide layout
+    this.surveyText.anchor.set(0, 0);
+    this.surveyText.x = left + 10;
+    this.surveyText.y = 52;
+
     // Timer text: left-aligned above the bar
     this.timerText.anchor.set(0, 1);
     this.timerText.x = left;
@@ -211,7 +244,7 @@ export class UIRenderer {
     this.speedText.y = layout.gridOriginY - 27;
   }
 
-  /** Per-frame: score punch decay */
+  /** Per-frame: score punch decay, and the survey celebration timing out */
   update(dt: number): void {
     if (this.scorePunch > 0) {
       this.scorePunch = Math.max(0, this.scorePunch - dt * 5);
@@ -219,6 +252,36 @@ export class UIRenderer {
     } else {
       this.scoreText.scale.set(1);
     }
+
+    if (this.surveyFlash > 0) {
+      this.surveyFlash = Math.max(0, this.surveyFlash - dt);
+      if (this.surveyFlash === 0) this.renderSurvey();
+    }
+  }
+
+  /**
+   * Territory progress: how much of the inner board is lit, and how many
+   * surveys are banked. Call it on every claim; a rise in `surveys` is what
+   * triggers the celebration, so the caller never has to say a survey landed.
+   */
+  updateSurvey(litCount: number, total: number, surveys: number): void {
+    const completed = surveys > this.surveyCount;
+    this.surveyLit = litCount;
+    this.surveyTotal = total;
+    this.surveyCount = surveys;
+    if (completed) this.surveyFlash = SURVEY_FLASH_SECONDS;
+    this.renderSurvey();
+  }
+
+  private renderSurvey(): void {
+    if (this.surveyFlash > 0) {
+      this.surveyText.text = `SURVEY ✓ ×${this.surveyCount}`;
+      this.surveyText.style.fill = THEME.goldGlow;
+    } else {
+      this.surveyText.text = `SURVEY ${this.surveyLit}/${this.surveyTotal}`;
+      this.surveyText.style.fill = this.surveyLit >= SURVEY_GOLD_AT ? THEME.gold : THEME.textMuted;
+    }
+    this.surveyText.visible = true;
   }
 
   updateScore(score: number): void {

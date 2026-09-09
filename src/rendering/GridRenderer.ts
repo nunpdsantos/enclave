@@ -1,11 +1,19 @@
 import { Container, Graphics } from 'pixi.js';
 import { GRID_SIZE, Grid, GridPos, CellColor, Region } from '../core/types';
+import { isInnerCell } from '../core/Board';
 import { Layout } from './LayoutManager';
 import { THEME, drawBeveledBlock, drawWallBlock, darken, getBoardTokens, lerpColor, lighten, luminance, easeOutBack } from './Theme';
 
 const BLOCK_INSET = 3;
 const CELL_RADIUS = 5;
 const CELL_GAP = 1.5;
+
+// Lit floor: a well one notch brighter, ringed in faint gold. Deliberately
+// quiet — it sits under blocks, hints and the ghost, and must not shout.
+const LIT_LIGHTEN = 0.10;
+const LIT_BORDER_ALPHA = 0.28;
+/** A survey wipes the map, so the floor dissolves instead of blinking out */
+const FLOOR_FADE_DURATION = 0.6;
 
 interface PopCell { row: number; col: number; color: number; life: number }
 const POP_DURATION = 0.2;
@@ -25,6 +33,7 @@ const OUTLINE_DURATION = 0.9;
 export class GridRenderer {
   container: Container;
   private bgGraphics: Graphics;
+  private floorGraphics: Graphics;
   private blockGraphics: Graphics;
   private hintGraphics: Graphics;
   private popGraphics: Graphics;
@@ -39,12 +48,17 @@ export class GridRenderer {
   private outlines: RoomOutline[] = [];
   private closingCells: GridPos[] = [];
 
+  /** Last lit map drawn, kept so a resize can repaint the floor from it */
+  private litMap: boolean[][] | null = null;
+  private floorFade = 0;
+
   private glowPhase = 0;
   private hintPhase = 0;
 
   constructor() {
     this.container = new Container();
     this.bgGraphics = new Graphics();
+    this.floorGraphics = new Graphics();
     this.glowGraphics = new Graphics();
     this.blockGraphics = new Graphics();
     this.hintGraphics = new Graphics();
@@ -53,6 +67,7 @@ export class GridRenderer {
     this.claimGraphics = new Graphics();
 
     this.container.addChild(this.bgGraphics);
+    this.container.addChild(this.floorGraphics);
     this.container.addChild(this.glowGraphics);
     this.container.addChild(this.hintGraphics);
     this.container.addChild(this.blockGraphics);
@@ -64,6 +79,14 @@ export class GridRenderer {
   setLayout(layout: Layout): void {
     this.layout = layout;
     this.drawBackground();
+    // The floor is only repainted on a claim, so a resize has to repaint it
+    // here or the surveyed ground would sit at the old cell size. A resize
+    // mid-dissolve keeps dissolving: drawFloor resets the fade, so save it.
+    if (this.litMap) {
+      const fade = this.floorFade;
+      this.drawFloor(this.litMap);
+      this.floorFade = fade;
+    }
   }
 
   private drawBackground(): void {
@@ -91,6 +114,50 @@ export class GridRenderer {
         g.fill({ color: 0x000000, alpha: 0.18 });
       }
     }
+  }
+
+  /**
+   * Surveyed ground: floor already claimed once this run.
+   *
+   * Cheap and rare — one pass over 81 cells, called when a claim changes the
+   * lit map, never per frame. Drawn straight on top of the well and under
+   * everything else, so blocks, hints and the ghost all still read over it.
+   */
+  drawFloor(lit: boolean[][]): void {
+    this.litMap = lit;
+    this.floorFade = 0;
+    const g = this.floorGraphics;
+    g.clear();
+    g.alpha = 1;
+    if (!this.layout) return;
+    const { gridOriginX, gridOriginY, cellSize } = this.layout;
+    const floorColor = lighten(getBoardTokens().cellWell, LIT_LIGHTEN);
+    const s = cellSize - CELL_GAP * 2;
+
+    for (let r = 0; r < GRID_SIZE; r++) {
+      for (let c = 0; c < GRID_SIZE; c++) {
+        if (!lit[r][c]) continue;
+        const x = gridOriginX + c * cellSize + CELL_GAP;
+        const y = gridOriginY + r * cellSize + CELL_GAP;
+        g.roundRect(x, y, s, s, CELL_RADIUS);
+        g.fill({ color: floorColor });
+        g.roundRect(x + 1.5, y + 1.5, s - 3, s - 3, Math.max(1, CELL_RADIUS - 1));
+        g.stroke({ color: THEME.gold, alpha: LIT_BORDER_ALPHA, width: 1 });
+      }
+    }
+  }
+
+  /**
+   * The survey moment: the map is full by definition, so paint the whole
+   * inner square and dissolve it. Fading the layer's alpha rather than
+   * redrawing keeps this free per frame.
+   */
+  surveyFadeOut(): void {
+    const full = Array.from({ length: GRID_SIZE }, (_, r) =>
+      Array.from({ length: GRID_SIZE }, (_, c) => isInnerCell(r, c)),
+    );
+    this.drawFloor(full);
+    this.floorFade = FLOOR_FADE_DURATION;
   }
 
   /**
@@ -216,6 +283,17 @@ export class GridRenderer {
     if (!this.layout) return;
     const { gridOriginX, gridOriginY, cellSize } = this.layout;
     const baseSize = cellSize - BLOCK_INSET * 2;
+
+    // Surveyed floor dissolving after a survey reset
+    if (this.floorFade > 0) {
+      this.floorFade = Math.max(0, this.floorFade - dt);
+      this.floorGraphics.alpha = this.floorFade / FLOOR_FADE_DURATION;
+      if (this.floorFade === 0) {
+        this.floorGraphics.clear();
+        this.floorGraphics.alpha = 1;
+        this.litMap = null;
+      }
+    }
 
     // Placement pops
     const pg = this.popGraphics;

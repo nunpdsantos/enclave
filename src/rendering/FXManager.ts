@@ -41,6 +41,7 @@ export class FXManager {
   private flashGraphics: Graphics;
   private flashAlpha = 0;
   private flashDecay = 0;
+  private flashColor = 0xffffff;
 
   private bgParticles: BgParticle[] = [];
   private bgGfx: Graphics;
@@ -152,10 +153,12 @@ export class FXManager {
     this.impactElapsed = 0;
   }
 
-  triggerFlash(alpha: number = 0.4, decayRate: number = 8): void {
+  /** White by default; a colour is for a moment that has its own identity */
+  triggerFlash(alpha: number = 0.4, decayRate: number = 8, color: number = 0xffffff): void {
     if (this.intensityScale <= 0) return;
     this.flashAlpha = alpha * this.intensityScale;
     this.flashDecay = decayRate;
+    this.flashColor = color;
   }
 
   updateFlowState(streakCount: number): void {
@@ -221,7 +224,7 @@ export class FXManager {
     g.clear();
     if (this.flashAlpha > 0.01) {
       g.rect(0, 0, this.layout.width, this.layout.height);
-      g.fill({ color: 0xffffff, alpha: this.flashAlpha });
+      g.fill({ color: this.flashColor, alpha: this.flashAlpha });
       this.flashAlpha = Math.max(0, this.flashAlpha - this.flashDecay * dt);
     }
   }

@@ -28,6 +28,9 @@ export interface RunReport {
   maxStreak: number;
   holds: number;
   placements: number;
+  surveys: number;
+  /** Inner cells still lit at the end, which says how far into a survey the run got */
+  litCells: number;
   tier: string;
   roomSizes: Record<string, number>;
   pid?: string;
@@ -55,6 +58,8 @@ export function buildRunReport(summary: RunSummary): RunReport {
     maxStreak: summary.maxStreak,
     holds: summary.holds,
     placements: summary.totalTurns,
+    surveys: summary.surveys,
+    litCells: summary.litCells,
     tier: getProgressStatus(summary.difficulty, summary.score).current.label,
     roomSizes,
   };

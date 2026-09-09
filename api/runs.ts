@@ -39,6 +39,8 @@ interface RunRecord {
   maxStreak: number;
   holds: number;
   placements: number;
+  surveys: number;
+  litCells: number;
   tier: string;
   roomSizes: Record<string, number>;
   pid?: string;
@@ -119,6 +121,8 @@ function parseRun(raw: unknown): RunRecord | null {
   if (!isCount(b.maxStreak)) return null;
   if (!isCount(b.holds)) return null;
   if (!isCount(b.placements)) return null;
+  if (!isCount(b.surveys)) return null;
+  if (!isCount(b.litCells)) return null;
   if (!isRoomSizes(b.roomSizes)) return null;
   if (b.seed !== undefined && !isNumber(b.seed, Number.MAX_SAFE_INTEGER)) return null;
   if (b.pid !== undefined && !isString(b.pid, MAX_PID)) return null;
@@ -134,6 +138,8 @@ function parseRun(raw: unknown): RunRecord | null {
     maxStreak: b.maxStreak,
     holds: b.holds,
     placements: b.placements,
+    surveys: b.surveys,
+    litCells: b.litCells,
     tier: b.tier,
     roomSizes: b.roomSizes,
     ts: new Date().toISOString(),
@@ -150,6 +156,9 @@ interface ModeStats {
   medianDurationS: number;
   medianScore: number;
   meanRooms: number;
+  /** Territory: surveys finished per run, and floor still lit when it ended */
+  meanSurveys: number;
+  meanLitCells: number;
   endCauses: Record<string, number>;
   /** Share of runs that used hold at least once, 0–1 */
   holdUsageRate: number;
@@ -174,10 +183,15 @@ function summarise(runs: RunRecord[]): ModeStats {
   const roomSizes: Record<string, number> = {};
   let roomTotal = 0;
   let withHolds = 0;
+  let surveyTotal = 0;
+  let litTotal = 0;
 
   for (const r of runs) {
     endCauses[r.endCause] = (endCauses[r.endCause] ?? 0) + 1;
     roomTotal += r.rooms;
+    // Runs stored before territory shipped carry neither field
+    surveyTotal += r.surveys ?? 0;
+    litTotal += r.litCells ?? 0;
     if (r.holds > 0) withHolds++;
     for (const [area, count] of Object.entries(r.roomSizes)) {
       roomSizes[area] = (roomSizes[area] ?? 0) + count;
@@ -189,6 +203,8 @@ function summarise(runs: RunRecord[]): ModeStats {
     medianDurationS: round(median(durations), 1),
     medianScore: round(median(scores), 1),
     meanRooms: runs.length ? round(roomTotal / runs.length, 2) : 0,
+    meanSurveys: runs.length ? round(surveyTotal / runs.length, 2) : 0,
+    meanLitCells: runs.length ? round(litTotal / runs.length, 2) : 0,
     endCauses,
     holdUsageRate: runs.length ? round(withHolds / runs.length, 3) : 0,
     roomSizes,

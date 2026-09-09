@@ -1,11 +1,32 @@
-import { Board } from './Board';
+import { Board, INNER_CELLS } from './Board';
 import { PieceBag, rotatePiece } from './Pieces';
-import { Difficulty, GameConfig, DEFAULT_CONFIG } from './Config';
+import { Difficulty, GameConfig, TerritoryConfig, DEFAULT_CONFIG } from './Config';
 import { getPersonalBest, recordPersonalBest } from './Settings';
 import {
   PieceInstance, FeedbackEvent, ClaimResult, ClaimPoints, ScoreBreakdown, Region,
   RunEndCause, RunSummary, GridPos,
 } from './types';
+
+/**
+ * What a stretch of floor is worth: full price for ground never claimed,
+ * relitFloorFactor for ground claimed before, pro rata in between.
+ */
+function territoryFactorOf(t: TerritoryConfig, fresh: number, area: number): number {
+  if (!t.enabled || area <= 0) return 1;
+  return t.relitFloorFactor + (1 - t.relitFloorFactor) * (fresh / area);
+}
+
+/**
+ * area² × pointsPerAreaSquared × territoryFactor, with the division by area
+ * cancelled off. Algebraically the same number, but an exact one: written the
+ * obvious way, a 7-cell room on 2 fresh cells lands on 314.99999999999994 and
+ * the floor() at the end of the claim quietly eats the point.
+ */
+function roomBasePoints(t: TerritoryConfig, pointsPerAreaSquared: number, area: number, fresh: number): number {
+  if (!t.enabled) return area * area * pointsPerAreaSquared;
+  const f = t.relitFloorFactor;
+  return area * pointsPerAreaSquared * (f * area + (1 - f) * fresh);
+}
 
 /**
  * The run: board, hand (current piece), next queue, hold slot, clock, score.
@@ -45,6 +66,8 @@ export class GameState {
   maxStreak = 0;
   /** Hold-slot swaps this run */
   holds = 0;
+  /** Times every inner cell was lit, which banks the bonus and wipes the map */
+  surveys = 0;
   newBestReached = false;
 
   private bag = new PieceBag();
@@ -100,6 +123,7 @@ export class GameState {
     this.doubleCloses = 0;
     this.maxStreak = 0;
     this.holds = 0;
+    this.surveys = 0;
     this.newBestReached = false;
     this.held = null;
     this.holdUsed = false;
@@ -183,15 +207,30 @@ export class GameState {
    * What sealing these rooms is worth, at the streak the run is on now.
    *
    * Pure: it reads state but changes none, so the drag preview can ask the
-   * same question the placement will answer and the two cannot drift.
+   * same question the placement will answer and the two cannot drift. That
+   * includes the territory factor — the lit map only moves once the claim is
+   * actually paid, so pricing a hypothesis reads the same floor.
    */
   claimPoints(regions: Region[]): ClaimPoints {
     const s = this.config.scoring;
-    const basePoints = regions.reduce((a, r) => a + r.area * r.area * s.pointsPerAreaSquared, 0);
+    const t = this.config.territory;
+    let basePoints = 0;
+    let totalArea = 0;
+    let totalFresh = 0;
+    const roomPoints: number[] = [];
+    for (const r of regions) {
+      const fresh = t.enabled ? this.board.freshCount(r.cells) : r.area;
+      const pts = roomBasePoints(t, s.pointsPerAreaSquared, r.area, fresh);
+      roomPoints.push(pts);
+      basePoints += pts;
+      totalArea += r.area;
+      totalFresh += fresh;
+    }
+    const territoryFactor = territoryFactorOf(t, totalFresh, totalArea);
     const multiCloseMultiplier = 1 + s.multiCloseBonusPerRoom * (regions.length - 1);
     const streakMultiplier = this.streakMultiplier;
     const turnScore = Math.floor(basePoints * multiCloseMultiplier * streakMultiplier);
-    return { basePoints, multiCloseMultiplier, streakMultiplier, turnScore };
+    return { basePoints, roomPoints, multiCloseMultiplier, streakMultiplier, territoryFactor, turnScore };
   }
 
   /** Attempt to place the current piece at (row, col) */
@@ -255,10 +294,12 @@ export class GameState {
     this.addTime(timeBonus);
     events[0].timeBonus = timeBonus;
 
-    // Claim scoring — same method the drag preview quotes
+    // Claim scoring — same method the drag preview quotes. The territory
+    // factor is read before the floor is lit, so a room is priced against the
+    // map the player was looking at.
     if (claim) {
-      const { basePoints, multiCloseMultiplier, streakMultiplier, turnScore } = this.claimPoints(claim.regions);
-      this.score += turnScore;
+      const points = this.claimPoints(claim.regions);
+      this.score += points.turnScore;
 
       this.streakCount++;
       this.maxStreak = Math.max(this.maxStreak, this.streakCount);
@@ -271,16 +312,25 @@ export class GameState {
       }
       if (claim.regions.length >= 2) this.doubleCloses++;
 
-      const breakdown: ScoreBreakdown = {
-        basePoints, multiCloseMultiplier, streakMultiplier, turnScore, totalScore: this.score,
-      };
+      const surveyed = this.markTerritory(claim.regions);
+
+      const breakdown: ScoreBreakdown = { ...points, totalScore: this.score };
       events.push({
         type: 'claim',
         claim,
         scoreBreakdown: breakdown,
         streakCount: this.streakCount,
         timeBonus,
+        litCount: this.board.litCount(),
       });
+      if (surveyed) {
+        events.push({
+          type: 'survey',
+          surveys: this.surveys,
+          surveyBonus: this.config.territory.surveyBonus,
+          litCount: 0,
+        });
+      }
     }
 
     // Personal best crossed?
@@ -304,6 +354,24 @@ export class GameState {
     }
 
     return events;
+  }
+
+  /**
+   * Light the floor a claim just took, then check the survey.
+   *
+   * Returns whether that claim completed one. The bonus is flat by design: it
+   * rewards covering the whole board, not the streak the player happened to be
+   * on when the last cell fell.
+   */
+  private markTerritory(regions: Region[]): boolean {
+    if (!this.config.territory.enabled) return false;
+    for (const r of regions) this.board.markLit(r.cells);
+    if (this.board.litCount() < INNER_CELLS) return false;
+
+    this.surveys++;
+    this.score += this.config.territory.surveyBonus;
+    this.board.clearLit();
+    return true;
   }
 
   private checkGameOver(): boolean {
@@ -335,6 +403,8 @@ export class GameState {
       doubleCloses: this.doubleCloses,
       maxStreak: this.maxStreak,
       holds: this.holds,
+      surveys: this.surveys,
+      litCells: this.board.litCount(),
       gameElapsed: this.gameElapsed,
       previousBest: this.highScore,
       isNewBest: this.score > this.highScore,

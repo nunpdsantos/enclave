@@ -88,10 +88,13 @@ describe('scoring order', () => {
     expect(gs.streakCount).toBe(1);
     expect(gs.score).toBe(161);
 
+    // Rebuilding the same room lands on floor the first claim lit, so the
+    // streak is riding on half-price ground: see tests/territory.test.ts
     const claim = claimEvent(placeSingle(gs, ROOM_2X2_OPEN, 2, 3));
     expect(claim.scoreBreakdown!.streakMultiplier).toBe(1.25);
-    expect(claim.scoreBreakdown!.turnScore).toBe(200);    // floor(160 × 1.25)
-    expect(gs.score).toBe(362);                           // 161 + 1 + 200
+    expect(claim.scoreBreakdown!.territoryFactor).toBe(0.5);
+    expect(claim.scoreBreakdown!.turnScore).toBe(100);    // floor(160 × 0.5 × 1.25)
+    expect(gs.score).toBe(262);                           // 161 + 1 + 100
     expect(gs.streakCount).toBe(2);
     expect(gs.maxStreak).toBe(2);
   });
@@ -168,10 +171,14 @@ describe('claimPoints — the price the drag preview quotes', () => {
     const regions = previewAt(gs, makePiece('tri_line', 1, WHITE), 2, 4);
     const quoted = gs.claimPoints(regions);
     expect(quoted.streakMultiplier).toBe(1.25);
-    expect(quoted.turnScore).toBe(600);                    // floor(320 × 1.5 × 1.25)
+    // The left room reuses two cells the first claim lit; the right room is
+    // all new, so the pair prices at 6 fresh cells out of 8
+    expect(quoted.territoryFactor).toBe(0.875);
+    expect(quoted.basePoints).toBe(280);                   // 160 × 0.75 + 160
+    expect(quoted.turnScore).toBe(525);                    // floor(280 × 1.5 × 1.25)
 
     gs.current = makePiece('tri_line', 1, WHITE);
-    expect(claimEvent(gs.tryPlace(2, 4)).scoreBreakdown!.turnScore).toBe(600);
+    expect(claimEvent(gs.tryPlace(2, 4)).scoreBreakdown!.turnScore).toBe(525);
   });
 });
 

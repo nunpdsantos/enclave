@@ -27,6 +27,12 @@ Layers on top of the rule:
 
 Two modes: Classic (60 s clock) and Blitz (35 s), each with its own leaderboard and personal best.
 
+## Territory
+
+The board remembers. Every cell you claim stays **lit** for the rest of the run, and relit floor pays half: a room is worth its full `area² × 10` only on new ground, half that if every cell of it has been claimed before, and somewhere in between for a mix. Claiming the same corner over and over gets steadily less profitable, so the run pushes you outward.
+
+Light all 49 inner cells — the board edge is never a wall, so those are the only cells that can ever be floor — and you complete a **Survey**: a flat 5,000 points in Classic, 2,500 in Blitz, paid on top of the claim and multiplied by nothing. The map then goes dark and the next survey starts from an empty one, which is what gives a long run an arc instead of flattening it into the same claim repeated.
+
 ## Tech stack
 
 - Vite + TypeScript

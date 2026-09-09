@@ -1,7 +1,8 @@
 import { Container, Graphics, Text, TextStyle } from 'pixi.js';
 import { Scene } from './SceneManager';
 import { Leaderboard } from '../core/Leaderboard';
-import { Difficulty, DIFFICULTY_LABELS } from '../core/Config';
+import { Difficulty, DIFFICULTY_CONFIGS, DIFFICULTY_LABELS } from '../core/Config';
+import { INNER_CELLS } from '../core/Board';
 import { RunSummary } from '../core/types';
 import { getProgressStatus } from '../core/Progression';
 import { AudioManager } from '../audio/AudioManager';
@@ -159,8 +160,18 @@ export class GameOverScene implements Scene {
       this.container.addChild(createStatChip(caption, value, startX + i * (chipW + gap), statsY, chipW, color));
     });
 
-    const wouldRank = this.leaderboard.wouldRank(summary.score);
+    // Territory gets a line rather than a fifth chip: five chips leave 62px
+    // each at 360 wide, and a tier value like SOVEREIGN already needs 78.
     let nextY = statsY + 34;
+    if (DIFFICULTY_CONFIGS[this.difficulty].territory.enabled) {
+      this.container.addChild(createBodyText(
+        `SURVEYS ×${summary.surveys} · FLOOR ${summary.litCells}/${INNER_CELLS}`,
+        cx, statsY + 32, { fontSize: 10, color: summary.surveys > 0 ? THEME.gold : THEME.textMuted },
+      ));
+      nextY = statsY + 52;
+    }
+
+    const wouldRank = this.leaderboard.wouldRank(summary.score);
 
     if (wouldRank) {
       this.buildNameInput(nextY);

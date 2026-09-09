@@ -59,10 +59,19 @@ export interface ClaimResult {
  * the same code that pays the real one.
  */
 export interface ClaimPoints {
-  /** Sum of area² × pointsPerAreaSquared */
+  /** Sum of area² × pointsPerAreaSquared, each room already scaled by its own territory factor */
   basePoints: number;
+  /** Each room's share of basePoints, in region order, so popups can show what a room actually paid */
+  roomPoints: number[];
   multiCloseMultiplier: number;
   streakMultiplier: number;
+  /**
+   * What the claim as a whole paid per unit of floor, 0.5–1: full for
+   * all-new floor, relitFloorFactor for all-relit, and 1 whenever territory
+   * is off. One number for the HUD; the per-room factors are already in
+   * basePoints.
+   */
+  territoryFactor: number;
   turnScore: number;
 }
 
@@ -89,6 +98,10 @@ export interface RunSummary {
   maxStreak: number;
   /** How many times the hold slot was used */
   holds: number;
+  /** Times the whole inner board was lit and reset */
+  surveys: number;
+  /** Inner cells still lit when the run ended, 0–INNER_CELLS */
+  litCells: number;
   gameElapsed: number;
   previousBest: number;
   isNewBest: boolean;
@@ -102,6 +115,7 @@ export interface FeedbackEvent {
     | 'gameOver'
     | 'newHand'
     | 'newBest'
+    | 'survey'
     | 'hold';
   placedCells?: GridPos[];
   pieceColor?: CellColor;
@@ -112,6 +126,12 @@ export interface FeedbackEvent {
   speedFraction?: number;
   streakBroken?: boolean;
   previousBest?: number;
+  /** Lit inner cells once the event has been applied ('claim' and 'survey') */
+  litCount?: number;
+  /** Surveys completed this run, on 'survey' */
+  surveys?: number;
+  /** Flat score the survey just paid, on 'survey' */
+  surveyBonus?: number;
 }
 
 // ── Palette — bold and saturated ──
