@@ -1,5 +1,5 @@
 import { Container, Graphics, Text, TextStyle } from 'pixi.js';
-import { ShapeMatrix, Region, GRID_SIZE } from '../core/types';
+import { ShapeMatrix, Region } from '../core/types';
 import { Layout } from './LayoutManager';
 import { FONT_DISPLAY, THEME, lighten } from './Theme';
 
@@ -127,14 +127,14 @@ export class GhostRenderer {
   ): void {
     const g = this.graphics;
     g.clear();
-    const { gridOriginX, gridOriginY, cellSize } = this.layout;
+    const { gridOriginX, gridOriginY, cellSize, gridCells } = this.layout;
 
     for (let r = 0; r < shape.length; r++) {
       for (let c = 0; c < shape[0].length; c++) {
         if (!shape[r][c]) continue;
         const gr = row + r;
         const gc = col + c;
-        if (gr < 0 || gr >= GRID_SIZE || gc < 0 || gc >= GRID_SIZE) continue;
+        if (gr < 0 || gr >= gridCells || gc < 0 || gc >= gridCells) continue;
 
         const x = gridOriginX + gc * cellSize + INSET;
         const y = gridOriginY + gr * cellSize + INSET;

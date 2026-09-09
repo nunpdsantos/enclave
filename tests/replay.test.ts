@@ -321,6 +321,8 @@ function replayedBonuses(replay: Replay): number[] {
       gs.hold();
       continue;
     }
+    // Skips belong to the siege, and no Classic bot ever records one
+    if (move.t !== 'p') continue;
     for (let n = 0; n < 4 && gs.current !== null && gs.current.rotation !== move.rot; n++) {
       gs.rotate();
     }

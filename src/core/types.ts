@@ -1,7 +1,24 @@
 import { Difficulty } from './Config';
 
 // ── Grid ──
+
+/**
+ * The board Classic, Blitz and the Daily play on, and the default everywhere
+ * a size is not supplied.
+ *
+ * It is no longer *the* board size: a game carries its own (`GameConfig.
+ * boardSize`, `Board.size`), and everything that measures, draws or simulates
+ * a board reads it from there. This constant is the default that keeps the
+ * three original modes exactly where they were.
+ */
 export const GRID_SIZE = 9;
+
+/**
+ * Hold the Keep plays bigger. A Keep at the centre of a 9×9 is four cells
+ * from every gate, which is not enough board to build a courtyard *and* a
+ * delay; eleven gives the siege somewhere to happen.
+ */
+export const SIEGE_GRID_SIZE = 11;
 
 export type CellColor = number;
 export type Grid = (CellColor | null)[][];
@@ -134,8 +151,8 @@ export interface ScoreBreakdown extends ClaimPoints {
  * 'complete' is the Rationed Daily's happy ending: the budget ran out with
  * the last piece placed. It is not a death, and the score counts in full.
  *
- * 'breach' and 'victory' belong to the siege: an enemy reached the Keep, or
- * the mission's whole piece sequence was survived.
+ * 'breach' and 'victory' belong to the siege: a raider reached the Keep, or
+ * the Keep was held until relief arrived.
  */
 export type RunEndCause =
   | 'timeout' | 'board_lock' | 'quit' | 'complete' | 'breach' | 'victory';
@@ -143,19 +160,20 @@ export type RunEndCause =
 // ── Siege ──
 
 /**
- * Which of the four sieges a run is: a map, an enemy and a goal. The mission
+ * Which siege a run is: a map, a force and how long relief takes. The mission
  * id is `SiegeMissionId` from Missions.ts, kept as a plain string here so
  * types.ts stays the leaf of the import graph it has always been.
  */
 export interface SiegeVariant {
   missionId: string;
   enemy: 'raiders' | 'tide';
-  mission: 'finite' | 'endless';
+  /** How many turns the Keep had to be held for */
+  reliefTurns: number;
 }
 
 /** `variant` as one token, for a storage key, a telemetry field or a label */
 export function siegeVariantKey(v: SiegeVariant): string {
-  return `${v.missionId}-${v.enemy}-${v.mission}`;
+  return `${v.missionId}-${v.enemy}-relief${v.reliefTurns}`;
 }
 
 /**
@@ -169,27 +187,28 @@ export function siegeVariantKey(v: SiegeVariant): string {
  */
 export interface SiegeMetrics {
   variant: SiegeVariant;
-  /** Placement the Keep fell on, or null if it never did */
+  /** Turn the Keep fell on, or null if it never did */
   breachTurn: number | null;
-  /** Player blocks destroyed by the enemy */
+  /** Player walls destroyed by the raiders */
   wallsLost: number;
   enemiesCaptured: number;
+  /** Held floor cells when the run ended */
+  heldAtEnd: number;
+  /** Turns the run lasted: placements plus skips */
+  turnsSurvived: number;
+  /** Pieces discarded rather than placed */
+  skipsUsed: number;
   /**
-   * Placements after which at least one raider's route length changed — or,
-   * for the tide, after which the next cell it would take changed. The share
-   * of placements that are actually tactical.
+   * Turns after which at least one raider's route length changed. The share
+   * of turns that are actually tactical.
    */
   routeChangingPlacements: number;
-  /** Every room sealed, in the order they were sealed */
-  roomAreas: number[];
-  /** Enemies captured in one claim → how many claims took that many */
-  capturesPerClaim: Record<number, number>;
   /**
-   * Seconds between the hand becoming available and the placement, capped at
-   * DECISION_TIME_CAP entries so a long endless run cannot grow unbounded.
+   * Seconds between the hand becoming available and the turn being spent,
+   * capped at DECISION_TIME_CAP entries.
    */
   decisionTimes: number[];
-  /** Enemies still on the board when the run ended */
+  /** Raiders still on the board when the run ended */
   enemiesAtEnd: number;
 }
 
@@ -215,7 +234,13 @@ export const DECISION_TIME_CAP = 100;
  */
 export type Move =
   | { t: 'p'; row: number; col: number; rot: number; at: number }
-  | { t: 'h'; at: number };
+  | { t: 'h'; at: number }
+  /**
+   * A piece discarded rather than placed. It spends the piece and advances
+   * the enemy exactly as a placement does, so it has to be in the log or a
+   * re-simulation would be one turn out from the first skip onward.
+   */
+  | { t: 's'; at: number };
 
 /**
  * A run as a log: the deal it was dealt from, and every input that followed.
@@ -314,9 +339,15 @@ export interface FeedbackEvent {
     | 'newBest'
     | 'survey'
     | 'hold'
+    /** A siege piece was discarded rather than placed */
+    | 'skip'
+    /** Raiders were caught inside a courtyard the turn just sealed */
+    | 'capture'
     /** The enemy moved: raiders stepped, spawned, or broke a wall */
     | 'enemy'
-    /** An enemy stands on the Keep. The run is over. */
+    /** A survived enemy phase paid out for the ground still held */
+    | 'income'
+    /** A raider stands on the Keep. The run is over. */
     | 'breach';
   placedCells?: GridPos[];
   pieceColor?: CellColor;
@@ -333,8 +364,14 @@ export interface FeedbackEvent {
   surveys?: number;
   /** Flat score the survey just paid, on 'survey' */
   surveyBonus?: number;
-  /** Enemies destroyed inside the claimed rooms, on 'claim' */
+  /** Enemies destroyed inside the claimed rooms, on 'claim' and 'capture' */
   enemiesCaptured?: number;
+  /** Where the captured raiders were standing, on 'capture' */
+  capturedCells?: GridPos[];
+  /** Points the surviving courtyards just paid, on 'income' */
+  income?: number;
+  /** Held floor cells the income was counted over, on 'income' */
+  heldCount?: number;
   /** Cells the enemy destroyed a player block on, on 'enemy' */
   wallsBroken?: GridPos[];
   /** Cells the enemy took this phase, on 'enemy' */

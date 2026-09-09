@@ -1,23 +1,23 @@
 import { Board } from './Board';
-import { SiegeConfig } from './Config';
 import { Rng } from './Random';
-import { GRID_SIZE, GridPos, Raider } from './types';
+import { GridPos, Raider } from './types';
 
 /**
  * Hold the Keep: the second force.
  *
  * Everything here is pure and deterministic — a board, a config and a seeded
  * RNG in, the enemy's next state out — because a replay has to reproduce the
- * siege exactly from the seed and the placements. Nothing reads a clock, the
- * DOM or storage.
+ * siege exactly from the placements. Nothing reads a clock, the DOM or
+ * storage, and nothing here knows how big a board is: every function takes
+ * one and reads `board.size`.
  *
- * The one idea underneath both enemies is a **weighted distance field**: a
- * Dijkstra from the Keep where open floor costs 1, a player wall costs 4 and a
- * ruin is impassable. A raider steps to the neighbour with the lowest distance;
- * the tide expands into the frontier cell with the lowest distance. Weighting a
- * wall at 4 rather than infinity is what makes a wall a *delay* rather than a
- * door: it will be walked through when going round costs more than four cells,
- * which is the decision the player is actually making when they build one.
+ * The one idea underneath is a **weighted distance field**: a Dijkstra from
+ * the Keep where open floor costs 1, a player wall costs `wallCost` and a ruin
+ * is impassable. A raider steps to the neighbour with the lowest distance.
+ * Weighting a wall at 4 rather than infinity is what makes a wall a *delay*
+ * rather than a door: it will be walked through when going round costs more
+ * than four cells, which is the decision the player is actually making when
+ * they build one.
  */
 
 /** Cost of entering open floor. The wall's cost is a config knob. */
@@ -35,8 +35,8 @@ const DIRS: [number, number][] = [[-1, 0], [1, 0], [0, -1], [0, 1]];
 /** Unreachable. Kept finite so comparisons never have to special-case it. */
 export const UNREACHABLE = Number.POSITIVE_INFINITY;
 
-export function inBounds(row: number, col: number): boolean {
-  return row >= 0 && col >= 0 && row < GRID_SIZE && col < GRID_SIZE;
+export function inBounds(row: number, col: number, size: number): boolean {
+  return row >= 0 && col >= 0 && row < size && col < size;
 }
 
 export function keyOf(p: GridPos): string {
@@ -64,7 +64,7 @@ export function enterCost(
  *
  * Dijkstra outward from the Keep, so `dist[r][c]` is the cost of the cheapest
  * route from (r, c) *to* the Keep. Costs attach to the cell being entered,
- * and the Keep itself is 0. An 81-cell grid with integer weights, so a plain
+ * and the Keep itself is 0. A 121-cell grid with integer weights, so a plain
  * O(n²) scan is quicker than a heap and has no ordering ambiguity in it.
  *
  * **This is a cost, not a countdown.** A distance of 8 is not eight turns
@@ -76,20 +76,21 @@ export function enterCost(
 export function distanceToKeep(
   board: Board, keep: GridPos, wallCost: number = DEFAULT_WALL_COST,
 ): number[][] {
-  const dist: number[][] = Array.from({ length: GRID_SIZE }, () =>
-    Array(GRID_SIZE).fill(UNREACHABLE),
+  const size = board.size;
+  const dist: number[][] = Array.from({ length: size }, () =>
+    Array(size).fill(UNREACHABLE),
   );
-  const done: boolean[][] = Array.from({ length: GRID_SIZE }, () =>
-    Array(GRID_SIZE).fill(false),
+  const done: boolean[][] = Array.from({ length: size }, () =>
+    Array(size).fill(false),
   );
   dist[keep.row][keep.col] = 0;
 
-  for (let n = 0; n < GRID_SIZE * GRID_SIZE; n++) {
+  for (let n = 0; n < size * size; n++) {
     // Cheapest unsettled cell. Ties fall to reading order, which is fixed.
     let best: GridPos | null = null;
     let bestDist = UNREACHABLE;
-    for (let r = 0; r < GRID_SIZE; r++) {
-      for (let c = 0; c < GRID_SIZE; c++) {
+    for (let r = 0; r < size; r++) {
+      for (let c = 0; c < size; c++) {
         if (done[r][c] || dist[r][c] >= bestDist) continue;
         best = { row: r, col: c };
         bestDist = dist[r][c];
@@ -100,7 +101,7 @@ export function distanceToKeep(
 
     for (const [dr, dc] of DIRS) {
       const nr = best.row + dr, nc = best.col + dc;
-      if (!inBounds(nr, nc) || done[nr][nc]) continue;
+      if (!inBounds(nr, nc, size) || done[nr][nc]) continue;
       // The cost is the neighbour's own: stepping *out of* a cell is free,
       // stepping *into* a wall is what costs `wallCost`.
       const cost = enterCost(board, nr, nc, wallCost);
@@ -116,7 +117,7 @@ export function distanceToKeep(
  * Pick one of several equally good cells.
  *
  * The list is always built in a fixed order, so the draw is reproducible from
- * the seed alone: same seed, same moves, same choice, on any device. A single
+ * the turn alone: same turn, same moves, same choice, on any device. A single
  * candidate takes no draw at all, which keeps the RNG stream stable across the
  * overwhelming majority of turns where there is nothing to break.
  */
@@ -159,7 +160,7 @@ export function raiderTarget(
   let best: GridPos[] = [];
   for (const [dr, dc] of DIRS) {
     const nr = raider.row + dr, nc = raider.col + dc;
-    if (!inBounds(nr, nc)) continue;
+    if (!inBounds(nr, nc, board.size)) continue;
     if (enterCost(board, nr, nc, wallCost) === null) continue;
     if (blocked.has(`${nr},${nc}`)) continue;
     const d = dist[nr][nc];
@@ -256,7 +257,75 @@ export function resolveRaiders(
   return steps;
 }
 
-// ── Tide ──
+// ── Intent: what the enemy will do next, for the player to read ──
+
+export interface SiegeIntent {
+  /** Where each raider will step, by raider id */
+  steps: Map<number, GridPos>;
+  /** Player blocks that will be attacked next */
+  threatenedWalls: GridPos[];
+  /** Weighted route length from each raider to the Keep, by raider id */
+  routeLengths: Map<number, number>;
+}
+
+/**
+ * What the enemy is about to do, computed against the board as it stands.
+ *
+ * Recomputed after every placement as well as after every enemy phase,
+ * because a wall the player just built may have moved the whole route — which
+ * is exactly the feedback the intent layer exists to give.
+ */
+export function readIntent(
+  board: Board,
+  raiders: Raider[],
+  keep: GridPos,
+  rng: Rng,
+  wallCost: number = DEFAULT_WALL_COST,
+): SiegeIntent {
+  const dist = distanceToKeep(board, keep, wallCost);
+  // The same plan pass the phase itself runs, from the same snapshot and the
+  // same seeded draw — so the arrow the player is shown is the step that
+  // happens, not an approximation of it.
+  const steps = planRaiders(board, raiders, keep, rng, wallCost);
+  const routeLengths = new Map<number, number>();
+  const threatenedWalls: GridPos[] = [];
+
+  for (const raider of raiders) {
+    routeLengths.set(raider.id, dist[raider.row][raider.col]);
+    const target = steps.get(raider.id);
+    if (target && board.grid[target.row][target.col] !== null) threatenedWalls.push(target);
+  }
+
+  return { steps, threatenedWalls, routeLengths };
+}
+
+/**
+ * How far the enemy is from the Keep, in *steps* rather than weighted cost —
+ * the number a BREACH warning has to be honest about. Walls count as one step
+ * each, because a raider that has to break one is still only one cell away.
+ */
+export function stepsToKeep(enemies: GridPos[], keep: GridPos): number {
+  let best = UNREACHABLE;
+  for (const e of enemies) {
+    const d = Math.abs(e.row - keep.row) + Math.abs(e.col - keep.col);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+// ── The tide: kept, not wired ──
+
+/**
+ * The second enemy the `enemy` flag still names.
+ *
+ * It is **not** driven by the run loop in this build. The tide expands on
+ * game time, and Hold the Keep is now eighteen turns with no clock in it at
+ * all, so there is no tempo for it to run on: wiring it back means deciding
+ * what a tide tick *is* in a turn-based siege, which is a design question and
+ * not a plumbing one. What survives here is the half that is pure — where the
+ * flood would go, and what it would cost it — so the flag has something to
+ * point at and the answer is still tested rather than rotting.
+ */
 
 /** What the tide does on one tick of its tempo */
 export interface TideStep {
@@ -290,33 +359,33 @@ export function tideTarget(
   wallCost: number = DEFAULT_WALL_COST,
   cooling: ReadonlySet<string> = EMPTY_SET,
 ): GridPos | null {
+  const size = board.size;
   const dist = distanceToKeep(board, keep, wallCost);
   let bestDist = UNREACHABLE;
   let best: GridPos[] = [];
 
-  for (let r = 0; r < GRID_SIZE; r++) {
-    for (let c = 0; c < GRID_SIZE; c++) {
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c < size; c++) {
       if (tide.has(`${r},${c}`)) continue;
-      // Ground a claim just took is off limits for one tick: a room sealed
-      // and immediately re-flooded would read as the capture not having
-      // happened, which is the one thing the player must be able to see.
+      // Ground a claim just took is off limits for one tick: a courtyard
+      // sealed and immediately re-flooded would read as the capture not
+      // having happened, which is the one thing the player must be able to see.
       if (cooling.has(`${r},${c}`)) continue;
-      if (enterCost(board, r, c, wallCost) === null) continue;
+      const entry = enterCost(board, r, c, wallCost);
+      if (entry === null) continue;
       let touches = false;
       for (const [dr, dc] of DIRS) {
         const nr = r + dr, nc = c + dc;
-        if (inBounds(nr, nc) && tide.has(`${nr},${nc}`)) { touches = true; break; }
+        if (inBounds(nr, nc, size) && tide.has(`${nr},${nc}`)) { touches = true; break; }
       }
       if (!touches) continue;
-      const entry = enterCost(board, r, c, wallCost);
-      if (entry === null) continue;
       // The cheapest way onward from this candidate, plus what it costs to be
       // in it. `neighbourDist` excludes the candidate's own cost by
       // construction, so the two terms never double up.
       let neighbourDist = UNREACHABLE;
       for (const [dr, dc] of DIRS) {
         const nr = r + dr, nc = c + dc;
-        if (!inBounds(nr, nc)) continue;
+        if (!inBounds(nr, nc, size)) continue;
         if (dist[nr][nc] < neighbourDist) neighbourDist = dist[nr][nc];
       }
       if (r === keep.row && c === keep.col) neighbourDist = 0;
@@ -355,80 +424,4 @@ export function stepTide(
     return { claimed: null, erodedWall: target };
   }
   return { claimed: target, erodedWall: null };
-}
-
-// ── Intent: what the enemy will do next, for the player to read ──
-
-export interface SiegeIntent {
-  /** Where each raider will step, by raider id */
-  steps: Map<number, GridPos>;
-  /** Player blocks that will be attacked next: raider targets and tide erosion */
-  threatenedWalls: GridPos[];
-  /** The tide's next cell, or the wall it will erode */
-  tideTarget: GridPos | null;
-  /** Weighted route length from each enemy to the Keep, by raider id */
-  routeLengths: Map<number, number>;
-}
-
-/**
- * What the enemy is about to do, computed against the board as it stands.
- *
- * Recomputed after every placement as well as after every enemy phase,
- * because a wall the player just built may have moved the whole route — which
- * is exactly the feedback the arrows exist to give.
- */
-export function readIntent(
-  board: Board,
-  raiders: Raider[],
-  tide: ReadonlySet<string>,
-  keep: GridPos,
-  rng: Rng,
-  wallCost: number = DEFAULT_WALL_COST,
-  cooling: ReadonlySet<string> = EMPTY_SET,
-): SiegeIntent {
-  const dist = distanceToKeep(board, keep, wallCost);
-  // The same plan pass the phase itself runs, from the same snapshot and the
-  // same seeded draw — so the arrow the player is shown is the step that
-  // happens, not an approximation of it.
-  const steps = planRaiders(board, raiders, keep, rng, wallCost);
-  const routeLengths = new Map<number, number>();
-  const threatenedWalls: GridPos[] = [];
-
-  for (const raider of raiders) {
-    routeLengths.set(raider.id, dist[raider.row][raider.col]);
-    const target = steps.get(raider.id);
-    if (target && board.grid[target.row][target.col] !== null) threatenedWalls.push(target);
-  }
-
-  let nextTide: GridPos | null = null;
-  if (tide.size > 0) {
-    nextTide = tideTarget(board, tide, keep, rng, wallCost, cooling);
-    if (nextTide && board.grid[nextTide.row][nextTide.col] !== null) {
-      threatenedWalls.push(nextTide);
-    }
-  }
-
-  return { steps, threatenedWalls, tideTarget: nextTide, routeLengths };
-}
-
-/**
- * How far the enemy is from the Keep, in *steps* rather than weighted cost —
- * the number a BREACH warning has to be honest about. Walls count as one step
- * each, because a raider that has to break one is still only one cell away.
- */
-export function stepsToKeep(enemies: GridPos[], keep: GridPos): number {
-  let best = UNREACHABLE;
-  for (const e of enemies) {
-    const d = Math.abs(e.row - keep.row) + Math.abs(e.col - keep.col);
-    if (d < best) best = d;
-  }
-  return best;
-}
-
-/** The tempo of the nth tide expansion: it tightens, down to a floor. */
-export function tideIntervalAt(config: SiegeConfig, tick: number): number {
-  return Math.max(
-    config.tideMinSeconds,
-    config.tideSeconds - config.tideRampPerTick * tick,
-  );
 }

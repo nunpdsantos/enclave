@@ -14,13 +14,18 @@ export const BLOCK = '#';
 
 const TEST_COLOR = 0x4b7bec;
 
-/** Build a 9×9 grid from rows of strings. Missing rows/cols are empty. */
-export function grid(rows: string[]): Grid {
-  if (rows.length > GRID_SIZE) {
-    throw new Error(`Too many rows: ${rows.length} > ${GRID_SIZE}`);
+/**
+ * Build a grid from rows of strings. Missing rows/cols are empty.
+ *
+ * `size` defaults to the 9×9 the three original modes play on; the siege
+ * passes eleven.
+ */
+export function grid(rows: string[], size: number = GRID_SIZE): Grid {
+  if (rows.length > size) {
+    throw new Error(`Too many rows: ${rows.length} > ${size}`);
   }
-  return Array.from({ length: GRID_SIZE }, (_, r) =>
-    Array.from({ length: GRID_SIZE }, (_, c) => {
+  return Array.from({ length: size }, (_, r) =>
+    Array.from({ length: size }, (_, c) => {
       const ch = rows[r]?.[c] ?? EMPTY;
       return ch === EMPTY ? null : TEST_COLOR;
     }),
@@ -84,13 +89,13 @@ const DIRS: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 /** How close a board is to a claim: cells with three walls around them count most */
 function pressure(b: Board): number {
   let n = 0;
-  for (let r = 1; r < GRID_SIZE - 1; r++) {
-    for (let c = 1; c < GRID_SIZE - 1; c++) {
+  for (let r = 1; r < b.size - 1; r++) {
+    for (let c = 1; c < b.size - 1; c++) {
       if (b.grid[r][c] !== null) continue;
       let walls = 0;
       for (const [dr, dc] of DIRS) {
         const nr = r + dr, nc = c + dc;
-        if (nr < 0 || nc < 0 || nr >= GRID_SIZE || nc >= GRID_SIZE) continue;
+        if (nr < 0 || nc < 0 || nr >= b.size || nc >= b.size) continue;
         if (b.grid[nr][nc] !== null) walls++;
       }
       if (walls >= 3) n += 3;
@@ -107,9 +112,10 @@ function bestPlacement(gs: GameState): BotMove | null {
   if (!piece) return null;
   let best: BotMove | null = null;
   let p: PieceInstance = piece;
+  const size = gs.board.size;
   for (let turn = 0; turn < rotationCount(piece); turn++) {
-    for (let row = 0; row + p.rows <= GRID_SIZE; row++) {
-      for (let col = 0; col + p.cols <= GRID_SIZE; col++) {
+    for (let row = 0; row + p.rows <= size; row++) {
+      for (let col = 0; col + p.cols <= size; col++) {
         if (!gs.board.canPlace(p.shape, row, col)) continue;
         const after = gs.board.clone();
         after.place(p.shape, row, col, p.color);
@@ -206,8 +212,8 @@ export function playFastDump(
     if (gs.isGameOver || !gs.current) break;
     let done = false;
     for (let rot = 0; rot < 4 && !done; rot++) {
-      for (let row = 0; row < GRID_SIZE && !done; row++) {
-        for (let col = 0; col < GRID_SIZE && !done; col++) {
+      for (let row = 0; row < gs.board.size && !done; row++) {
+        for (let col = 0; col < gs.board.size && !done; col++) {
           if (!gs.current || !gs.board.canPlace(gs.current.shape, row, col)) continue;
           done = gs.tryPlace(row, col).length > 0;
         }

@@ -2,12 +2,10 @@ import { Container, Graphics, Text, TextStyle } from 'pixi.js';
 import { Scene } from './SceneManager';
 import { Leaderboard } from '../core/Leaderboard';
 import {
-  Difficulty, DIFFICULTY_LABELS, DIFFICULTY_CONFIGS, SIEGE_FINITE_PIECES,
+  Difficulty, DIFFICULTY_LABELS, DIFFICULTY_CONFIGS, SIEGE_RELIEF_TURNS,
 } from '../core/Config';
 import { dailyKey, dailyNumber, formatCountdown, msUntilNextDaily } from '../core/Daily';
-import {
-  MISSIONS, MISSION_ORDER, SiegeMissionId, isMissionId, missionLabel,
-} from '../core/Missions';
+import { MISSIONS, PICKER_MISSIONS, SiegeMissionId, isMissionId, missionLabel } from '../core/Missions';
 import {
   PaletteSetting, getPersonalBest, getGamesPlayed, getSiegeBest, loadSettings, updateSettings,
 } from '../core/Settings';
@@ -30,14 +28,8 @@ const DIFFICULTY_DESCRIPTIONS: Record<Difficulty, string> = {
   // The daily's line is written at build time: it carries today's number
   daily: '30 pieces · no clock. Same pieces for everyone.',
   // The siege's is written from the picker below it
-  siege: 'Hold the Keep. Fence the enemy in before it reaches you.',
+  siege: 'Hold the Keep until relief arrives.',
 };
-
-// The siege picker's three switches. Index 0 is the default in each.
-const ENEMY_ORDER: ('raiders' | 'tide')[] = ['raiders', 'tide'];
-const ENEMY_LABELS = ['RAIDERS', 'TIDE'];
-const GOAL_ORDER: ('finite' | 'endless')[] = ['finite', 'endless'];
-const GOAL_LABELS = [`${SIEGE_FINITE_PIECES} PIECES`, 'ENDLESS'];
 
 /** How often the RESETS IN readout is rewritten. It only shows hh:mm. */
 const RESET_REFRESH_SECONDS = 60;
@@ -376,9 +368,8 @@ export class MenuScene implements Scene {
   /** Mode blurb. The daily's carries its number, so it changes every day. */
   private describeSelected(): string {
     if (this.selectedDifficulty === 'siege') {
-      const s = loadSettings();
       const mission = MISSIONS[this.pickedMission()];
-      return `${mission.name} · ${s.siegeEnemy === 'tide' ? 'a spreading tide' : 'raiders at the gates'}.`;
+      return `${mission.name} · hold out for ${SIEGE_RELIEF_TURNS} turns.`;
     }
     if (this.selectedDifficulty !== 'daily') return DIFFICULTY_DESCRIPTIONS[this.selectedDifficulty];
     const budget = DIFFICULTY_CONFIGS.daily.pieceBudget ?? 0;
@@ -398,16 +389,14 @@ export class MenuScene implements Scene {
    */
   private statsLine(): string {
     if (this.selectedDifficulty === 'siege') {
-      const s = loadSettings();
       const key = siegeVariantKey({
-        missionId: this.pickedMission(), enemy: s.siegeEnemy, mission: s.siegeGoal,
+        missionId: this.pickedMission(), enemy: 'raiders', reliefTurns: SIEGE_RELIEF_TURNS,
       });
       const best = getSiegeBest(key);
-      // A siege best belongs to one square of the 2x2, so it is labelled with
-      // the square rather than presented as "your best" in general
+      // A siege best belongs to one mission, and stays on this device
       return best > 0
-        ? `BEST HERE ${best.toLocaleString()}   ·   40s COMMAND CLOCK`
-        : `40s COMMAND CLOCK   ·   NO RUNS YET`;
+        ? `BEST ${best.toLocaleString()}   ·   ${SIEGE_RELIEF_TURNS} TURNS · NO CLOCK`
+        : `${SIEGE_RELIEF_TURNS} TURNS · NO CLOCK   ·   NO RUNS YET`;
     }
     if (this.selectedDifficulty === 'daily') {
       const key = dailyKey();
@@ -453,39 +442,37 @@ export class MenuScene implements Scene {
   }
 
   /**
-   * Which siege to play: the map, the enemy, and whether it ends.
+   * Which siege to play.
    *
-   * Three rows rather than a mission list, because the point of the prototype
-   * is the 2×2: enemy and goal have to be switchable independently or a
-   * playtest cannot say which of the two is doing the work. Every choice is
-   * persisted the moment it is made, so PLAY needs no confirmation.
+   * One mission and no switches. It used to be a 2×2 of enemy and goal,
+   * because a playtest that cannot flip them independently cannot say which
+   * is doing the work — but this test has one question in it (is relief in
+   * eighteen a game?), and every switch on this panel is a second answer to
+   * it. The flags are still in `SiegeConfig`; the UI simply does not offer
+   * them. M2 and M3 are still in `Missions.ts` for the same reason.
    */
   private buildSiegePicker(group: Container): void {
     const cx = this.width / 2;
     const top = this.height * 0.47;
     const panelW = Math.min(360, this.width - 32);
-    const rowW = Math.min(240, panelW - 48);
-    const settings = loadSettings();
+    const current = this.pickedMission();
 
     group.addChild(createSectionLabel('HOLD THE KEEP', cx, top + 14, panelW - 60));
 
-    // Mission chips: three short labels in one row, with the map's name under
-    const chipW = Math.min(64, (rowW - 16) / 3);
-    const chipH = 32;
-    const totalW = chipW * MISSION_ORDER.length + 8 * (MISSION_ORDER.length - 1);
+    // A row of mission chips, which is a row of one until M2 is worth asking
+    // about. Left in as a row so adding the second one is data, not layout.
+    const chipW = Math.min(96, (panelW - 64) / Math.max(2, PICKER_MISSIONS.length));
+    const chipH = 34;
+    const totalW = chipW * PICKER_MISSIONS.length + 8 * (PICKER_MISSIONS.length - 1);
     const chipY = top + 44;
-    const current = this.pickedMission();
-    for (let i = 0; i < MISSION_ORDER.length; i++) {
-      const id = MISSION_ORDER[i];
+    for (let i = 0; i < PICKER_MISSIONS.length; i++) {
+      const id = PICKER_MISSIONS[i];
       const x = cx - totalW / 2 + i * (chipW + 8);
       const selected = id === current;
       const chip = new Graphics();
-      if (selected) {
-        chip.roundRect(x, chipY, chipW, chipH, 8);
-        chip.fill({ color: DIFFICULTY_COLORS.siege });
-      } else {
-        chip.roundRect(x, chipY, chipW, chipH, 8);
-        chip.fill({ color: 0x000000, alpha: 0.3 });
+      chip.roundRect(x, chipY, chipW, chipH, 8);
+      chip.fill(selected ? { color: DIFFICULTY_COLORS.siege } : { color: 0x000000, alpha: 0.3 });
+      if (!selected) {
         chip.roundRect(x, chipY, chipW, chipH, 8);
         chip.stroke({ color: 0xffffff, alpha: 0.1, width: 1 });
       }
@@ -517,42 +504,31 @@ export class MenuScene implements Scene {
       group.addChild(hit);
     }
 
-    const name = createBodyText(MISSIONS[current].name, cx, chipY + chipH + 8, {
-      fontSize: 11, color: DIFFICULTY_COLORS.siege, wrapWidth: panelW - 40,
+    const name = createBodyText(MISSIONS[current].name, cx, chipY + chipH + 10, {
+      fontSize: 12, color: DIFFICULTY_COLORS.siege, wrapWidth: panelW - 40,
     });
     name.style.letterSpacing = 2;
     group.addChild(name);
 
-    let y = chipY + chipH + 40;
-    group.addChild(createCycleToggle(
-      'ENEMY', cx, y, ENEMY_LABELS, Math.max(0, ENEMY_ORDER.indexOf(settings.siegeEnemy)),
-      (i) => {
-        updateSettings({ siegeEnemy: ENEMY_ORDER[i] });
-        this.audio.playUiClick();
-        this.buildDifficultySelector();
-      }, rowW,
-    ));
-    group.addChild(createBodyText(
-      'Raiders step after every placement. The tide creeps on the clock.',
-      cx, y + 20, { fontSize: 10, color: THEME.textMuted, wrapWidth: panelW - 56 },
-    ));
+    const rules = [
+      `Raiders come through the gate. Hold the Keep for ${SIEGE_RELIEF_TURNS} turns and relief arrives.`,
+      'Walls stay where you put them. Every courtyard you still hold pays you every turn.',
+      'Enclose a raider to capture it. A piece you cannot use can be skipped.',
+    ];
+    let y = name.y + name.height + 12;
+    for (const line of rules) {
+      const t = createBodyText(line, cx - panelW / 2 + 30, y, {
+        fontSize: 11, color: THEME.textMuted, wrapWidth: panelW - 52, align: 'left',
+      });
+      const bullet = new Graphics();
+      bullet.circle(cx - panelW / 2 + 20, y + 8, 3);
+      bullet.fill({ color: DIFFICULTY_COLORS.siege });
+      group.addChild(bullet);
+      group.addChild(t);
+      y += t.height + 8;
+    }
 
-    y += 62;
-    group.addChild(createCycleToggle(
-      'MISSION', cx, y, GOAL_LABELS, Math.max(0, GOAL_ORDER.indexOf(settings.siegeGoal)),
-      (i) => {
-        updateSettings({ siegeGoal: GOAL_ORDER[i] });
-        this.audio.playUiClick();
-        this.buildDifficultySelector();
-      }, rowW,
-    ));
-    const goalNote = createBodyText(
-      `Survive ${SIEGE_FINITE_PIECES} pieces to win, or hold out as long as you can.`,
-      cx, y + 20, { fontSize: 10, color: THEME.textMuted, wrapWidth: panelW - 56 },
-    );
-    group.addChild(goalNote);
-
-    const bottom = goalNote.y + goalNote.height + 14;
+    const bottom = y + 8;
     const panel = new Graphics();
     drawPanel(panel, cx - panelW / 2, top, panelW, bottom - top, 16, 0.55);
     group.addChildAt(panel, 0);

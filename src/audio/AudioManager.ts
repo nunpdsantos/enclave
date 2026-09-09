@@ -502,7 +502,7 @@ export class AudioManager {
    * Not quantised. Everything else waits for the grid, but a placement has to
    * answer the finger — even 60 ms of latency reads as a dropped frame.
    */
-  playPlace(streak: number = 0, speedFraction: number = 1, col: number = 4): void {
+  playPlace(streak: number = 0, speedFraction: number = 1, col: number = 4, columns?: number): void {
     const ctx = this.sfxReady();
     if (!ctx) return;
     const t = ctx.currentTime;
@@ -511,7 +511,7 @@ export class AudioManager {
     const tones = chordTones(this.chordAtTime(t), 2, true);
     const hz = tones[Math.min(Math.max(streak, 0), tones.length - 1)];
     const bright = 0.5 + speedFraction * 0.5;
-    const pan = panForColumn(col);
+    const pan = panForColumn(col, columns);
     this.tone(this.sfxBus!, 'triangle', hz, null, t, 0.14, 0.16 * bright, 0.003, pan, 0.25);
     this.tone(this.sfxBus!, 'sine', hz * 2, null, t, 0.09, 0.06 * bright, 0.002, pan);
     // The thump stays centred: panned low end is what makes a mix feel lopsided
@@ -525,13 +525,15 @@ export class AudioManager {
    * reverb tail. Multiple rooms add a second, higher run.
    *
    * `col` is the claimed rooms' centre column, so the claim comes from where
-   * it happened on the board.
+   * it happened on the board, and `columns` is how wide that board is — the
+   * siege plays on eleven, and the two rightmost columns would otherwise pan
+   * as if they were the ninth.
    */
-  playClaim(area: number, rooms: number, streak: number, col: number = 4): void {
+  playClaim(area: number, rooms: number, streak: number, col: number = 4, columns?: number): void {
     const ctx = this.sfxReady();
     if (!ctx) return;
     const t = this.stingerTime(ctx);
-    this.claimBody(t, area, rooms, streak, panForColumn(col));
+    this.claimBody(t, area, rooms, streak, panForColumn(col, columns));
     this.duckMusic(DUCK_3DB, CLAIM_DUCK_SECONDS);
   }
 

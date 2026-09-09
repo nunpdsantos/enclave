@@ -1,14 +1,13 @@
-import { Board, INNER_CELLS } from './Board';
-import { PieceBag, rotatePiece } from './Pieces';
+import { Board } from './Board';
+import { PieceBag, makePiece, rotatePiece } from './Pieces';
+import { getPiecePalette } from './Accessibility';
 import { Difficulty, GameConfig, SiegeConfig, TerritoryConfig, DEFAULT_CONFIG } from './Config';
 import { dailyKey, dailySeed } from './Daily';
 import { cellsOfTerrain, terrainOf } from './Missions';
 import { getProgressStatus } from './Progression';
 import { Rng, mulberry32, randomSeed } from './Random';
 import { RULES_VERSION } from './Rules';
-import {
-  SiegeIntent, keyOf, readIntent, stepRaiders, stepTide, tideIntervalAt,
-} from './Siege';
+import { SiegeIntent, keyOf, readIntent, stepRaiders } from './Siege';
 import {
   getPersonalBest, getSiegeBest, recordPbTimeline, recordPersonalBest, recordSiegeBest,
 } from './Settings';
@@ -19,19 +18,25 @@ import {
 } from './types';
 
 /**
- * Everything a candidate placement would do: what it seals, what it catches,
- * what walls it spends, and what the enemy does about it.
+ * Everything a candidate turn would do, run through the same resolution the
+ * real turn runs: what it seals, what it catches, what it earns, and where
+ * the raiders end up because of it.
  */
 export interface SiegePreview {
+  /** Courtyards this turn would seal */
   regions: Region[];
-  /** The claim plus the captures, which is what the ghost quotes */
+  /** Capture bonus plus the income the resulting ground would pay */
   points: number;
-  /** Enemy cells the claim would destroy */
+  /** Raiders the courtyards would catch */
   captured: GridPos[];
-  /** Player blocks the claim would spend */
-  fenceCleared: GridPos[];
-  /** What the enemy does on the board this placement leaves behind */
+  /** Held floor cells the turn would leave, for the courtyard fill */
+  held: GridPos[];
+  /** Walls the raiders would knock down in answer */
+  wallsBroken: GridPos[];
+  /** What the raiders do on the board this turn leaves behind */
   intent: SiegeIntent;
+  /** A raider would stand on the Keep: this drop loses the run */
+  breach: boolean;
 }
 
 /** A cell the echo window is holding, and when it stops holding it */
@@ -50,18 +55,35 @@ function cellKey(p: GridPos): string {
   return `${p.row},${p.col}`;
 }
 
-/**
- * The tide's ticks and the raiders' turns each get their own seeded draw, and
- * this keeps the two streams apart. See `siegeRng`.
- */
-const TIDE_SALT = 0x40000;
+/** The inverse of `cellKey`, for handing a set of held cells back as cells */
+function parseCellKey(key: string): GridPos {
+  const comma = key.indexOf(',');
+  return { row: Number(key.slice(0, comma)), col: Number(key.slice(comma + 1)) };
+}
 
-/**
- * How many tide ticks a board with nowhere to build may sit through before
- * the run is called locked. Only reachable with the clock off: with a clock,
- * running out of time is what ends a stuck run.
- */
-const STUCK_TICK_LIMIT = 3;
+/** What one enemy phase did, so the live turn and the preview read one answer */
+interface SiegeResolution {
+  /** Raiders caught inside the ground this turn sealed */
+  captured: GridPos[];
+  /** Cells a scheduled wave landed on */
+  arrivals: GridPos[];
+  /** Cells a raider stepped into */
+  moved: GridPos[];
+  /** Player walls knocked down this phase */
+  wallsBroken: GridPos[];
+  /** A raider stands on the Keep */
+  breach: boolean;
+  /** The raiders that are left, in their new positions */
+  raiders: Raider[];
+  /** Held floor after the phase, as 'row,col' */
+  held: Set<string>;
+  /** What that ground pays */
+  income: number;
+  /** Arrivals still owed, because their gate was blocked */
+  pendingSpawns: number[];
+  /** The next unused raider id */
+  nextRaiderId: number;
+}
 
 const EMPTY_KEYS: ReadonlySet<string> = new Set<string>();
 
@@ -188,16 +210,31 @@ export class GameState {
 
   /** Raiders on the board, oldest first. Empty outside the siege. */
   raiders: Raider[] = [];
-  /** Cells the tide holds, as 'row,col'. Empty outside the siege. */
-  tide = new Set<string>();
   /** Where the Keep is, read off the mission map */
   keep: GridPos = { row: 4, col: 4 };
   /** Gate cells in map reading order, which is what a spawn index means */
   gates: GridPos[] = [];
-  /** What the enemy will do next, for the intent preview */
+  /** What the raiders will do next, for the intent layer */
   intent: SiegeIntent | null = null;
-  /** Bumped whenever the enemy or the terrain moves, so a view knows to redraw */
+  /** Bumped whenever a raider or a wall moves, so a view knows to redraw */
   siegeVersion = 0;
+  /**
+   * Courtyard floor the player holds, as 'row,col'.
+   *
+   * Ground stays yours for as long as it stays sealed, and pays every turn it
+   * does — which is the whole economy of the mode. It is a set rather than a
+   * count because the board draws it, and because losing a wall has to be
+   * able to take back exactly the cells that just opened.
+   */
+  heldGround = new Set<string>();
+  /**
+   * What was already sealed when this turn's piece went down, so the turn can
+   * tell ground it closed from ground that was standing closed. Read at the
+   * top of a placement and consumed by the phase that follows it.
+   */
+  private enclosedBeforeTurn: ReadonlySet<string> = EMPTY_KEYS;
+  /** Pieces discarded rather than placed */
+  skips = 0;
   private nextRaiderId = 1;
   /**
    * Gates a scheduled wave could not use because a raider was still standing
@@ -206,30 +243,13 @@ export class GameState {
    * a raider from it.
    */
   private pendingSpawns: number[] = [];
-  /** Tide expansions so far — the tempo tightens with it */
-  private tideTicks = 0;
-  /** Game time the next tide expansion is due at */
-  private nextTideAt = 0;
   /**
-   * Ground a claim just took, held against the tide for one tick. Without it
-   * a room sealed on the tide's doorstep floods again immediately and the
-   * capture reads as not having happened.
+   * The mission's authored supply, dealt in order. Not a bag: the same
+   * eighteen pieces in the same order on every attempt is what makes a retry
+   * a better plan rather than a better draw.
    */
-  private tideCooling = new Set<string>();
-  /**
-   * The finite tide mission ran out of pieces but not out of siege: the run
-   * goes on, unplayable, until the survival floor is met or the Keep falls.
-   */
-  private awaitingSurvival = false;
-  /** Consecutive tide ticks with nothing the player could legally place */
-  private stuckTicks = 0;
-
-  /**
-   * Events raised outside a `tryPlace` — the tide expanding on the clock, and
-   * the breach that may follow. Drained by the scene each frame, because the
-   * caller of `tick` has no return value to put them in.
-   */
-  private pending: FeedbackEvent[] = [];
+  private supply: PieceInstance[] = [];
+  private supplyIndex = 0;
 
   private siegeMetrics: SiegeMetrics | null = null;
 
@@ -240,7 +260,9 @@ export class GameState {
   constructor(config: GameConfig = DEFAULT_CONFIG, difficulty: Difficulty = 'classic') {
     this.config = config;
     this.difficulty = difficulty;
-    this.board = new Board();
+    // The board is the size the game says it is, once: everything downstream
+    // reads `board.size` rather than a global.
+    this.board = new Board(config.boardSize);
     this.highScore = getPersonalBest(difficulty);
   }
 
@@ -304,7 +326,9 @@ export class GameState {
    * "PIECES 17/30" means seventeen more placements are possible.
    */
   get piecesRemaining(): number {
-    const undealt = this.bag.remaining;
+    const undealt = this.config.siege
+      ? this.supply.length - this.supplyIndex
+      : this.bag.remaining;
     const inPlay = (this.current ? 1 : 0) + (this.held ? 1 : 0) + this.queue.length;
     return Number.isFinite(undealt) ? undealt + inPlay : Infinity;
   }
@@ -332,20 +356,6 @@ export class GameState {
   }
 
   /**
-   * The rooms a board would pay for right now, echo walls standing. The
-   * placement and the drag preview both come through here, so a preview
-   * cannot quote a room the placement would then refuse.
-   *
-   * Two kinds of region are refused, and neither can exist outside an echo
-   * window. A room with no block at all in its fence is held up by ghosts
-   * alone: the player built nothing and there is nothing to knock down. And a
-   * room bounded by spent floor is closing against something invisible — the
-   * ghost walls can be seen fading, the floor under them cannot.
-   *
-   * Both catch the same shape of accident: the gap a claim leaves behind can
-   * seal itself when a neighbouring claim eats the wall between them.
-   */
-  /**
    * Cells that are already inside a fence on this board.
    *
    * Read before a placement so the placement can tell a room it just closed
@@ -364,20 +374,19 @@ export class GameState {
   }
 
   /**
-   * The rooms a placement would actually pay for: claimable, and not already
-   * enclosed before it. `enclosedBefore` is what `enclosedCells` returned on
-   * the board the player was looking at.
+   * The rooms a board would pay for right now, echo walls standing. The
+   * placement and the drag preview both come through here, so a preview
+   * cannot quote a room the placement would then refuse.
    *
-   * A placement can only ever add walls, so a post-placement room's cells were
-   * all in one pre-placement component: testing a single cell settles the
-   * whole room.
+   * Two kinds of region are refused, and neither can exist outside an echo
+   * window. A room with no block at all in its fence is held up by ghosts
+   * alone: the player built nothing and there is nothing to knock down. And a
+   * room bounded by spent floor is closing against something invisible — the
+   * ghost walls can be seen fading, the floor under them cannot.
+   *
+   * Both catch the same shape of accident: the gap a claim leaves behind can
+   * seal itself when a neighbouring claim eats the wall between them.
    */
-  newlyClaimableRegions(board: Board, enclosedBefore: ReadonlySet<string>): Region[] {
-    const regions = this.claimableRegions(board);
-    if (!this.config.siege) return regions;
-    return regions.filter(r => !enclosedBefore.has(cellKey(r.cells[0])));
-  }
-
   claimableRegions(board: Board): Region[] {
     const regions = board.findEnclosures(this.activeEchoKeys());
     // A room needs at least one block the player put there. Outside the siege
@@ -463,109 +472,97 @@ export class GameState {
     return this.config.siege ?? null;
   }
 
-  /** Which of the four sieges this is, for a key, a label or a log */
+  /** Which siege this is, for a key, a label or a log */
   get siegeVariant(): SiegeVariant | null {
     const s = this.siege;
-    return s ? { missionId: s.missionId, enemy: s.enemy, mission: s.mission } : null;
+    return s ? { missionId: s.missionId, enemy: s.enemy, reliefTurns: s.reliefTurns } : null;
   }
 
-  /** Enemies on the board right now, whichever kind they are */
+  /** Raiders on the board right now */
   enemyCells(): GridPos[] {
-    if (this.raiders.length > 0) {
-      return this.raiders.map(r => ({ row: r.row, col: r.col }));
-    }
-    return [...this.tide].map(k => {
-      const comma = k.indexOf(',');
-      return { row: Number(k.slice(0, comma)), col: Number(k.slice(comma + 1)) };
-    });
+    return this.raiders.map(r => ({ row: r.row, col: r.col }));
   }
 
-  /** Tide expansions so far. The countdown ring reads it for the tempo. */
-  get tideTickCount(): number {
-    return this.tideTicks;
+  /** Turns left before relief arrives. Zero once it has. */
+  get reliefIn(): number {
+    const siege = this.siege;
+    if (!siege) return 0;
+    return Math.max(0, siege.reliefTurns - this.totalTurns);
   }
 
-  /** Game time the next tide expansion is due at */
-  get nextTideDueAt(): number {
-    return this.nextTideAt;
+  /** Held floor cells: what the ground income is counted over */
+  get heldCount(): number {
+    return this.heldGround.size;
   }
 
-  /**
-   * The finite tide mission has spent its pieces and is now only being
-   * survived. The HUD says so; there is nothing to place.
-   */
-  get isAwaitingSurvival(): boolean {
-    return this.awaitingSurvival;
+  /** Raiders captured so far */
+  get capturedCount(): number {
+    return this.siegeMetrics?.enemiesCaptured ?? 0;
   }
-
-  /** Events raised off the clock rather than off an input. Clears the queue. */
-  drainEvents(): FeedbackEvent[] {
-    if (this.pending.length === 0) return [];
-    const out = this.pending;
-    this.pending = [];
-    return out;
-  }
-
 
   // ── The siege ──
 
   /**
-   * A fresh generator for one enemy decision, keyed to which decision it is.
+   * The draw the raider phase of `turn` will make.
    *
-   * Deliberately not a running stream. The intent preview asks the same
-   * question the enemy phase will answer, and it asks it every time the player
-   * moves the piece — so a shared stream would make the preview change the
-   * future it is previewing. Keying the draw to the turn (or the tide tick)
-   * instead means the preview is *the same draw* the phase will make, however
-   * many times it is asked, and a replay reproduces both.
+   * Keyed to the turn alone — not to a run seed, and deliberately not a
+   * running stream. Two things fall out of that. The intent preview asks the
+   * same question the phase will answer, on every pointer move, so a shared
+   * stream would let the preview change the future it was previewing. And a
+   * mission is a puzzle: the same eighteen pieces against the same raiders
+   * doing the same thing, so the second attempt is a better plan rather than
+   * a luckier tie-break.
    */
-  private siegeRng(salt: number): Rng {
-    return mulberry32((this.seed + Math.imul(salt, 0x9e3779b1)) | 0);
-  }
-
-  /** The draw the raider phase of `turn` will make */
   private raiderRng(turn: number): Rng {
-    return this.siegeRng(turn);
+    return mulberry32(Math.imul(turn + 1, 0x9e3779b1) | 0);
   }
 
-  /** The draw the tide's `tick`-th expansion will make */
-  private tideRng(tick: number): Rng {
-    return this.siegeRng(TIDE_SALT + tick);
-  }
-
-  /** Lay the mission out: terrain, the Keep, the gates and the starting enemy. */
+  /** Lay the mission out: terrain, the Keep, the gates and the supply. */
   private startSiege(siege: SiegeConfig): void {
-    const terrain = terrainOf(siege.map);
+    const terrain = terrainOf(siege.map, this.board.size);
     this.board.setTerrain(terrain);
     const keeps = cellsOfTerrain(terrain, 'keep');
-    this.keep = keeps[0] ?? { row: 4, col: 4 };
+    const centre = Math.floor(this.board.size / 2);
+    this.keep = keeps[0] ?? { row: centre, col: centre };
     this.gates = cellsOfTerrain(terrain, 'gate');
     this.raiders = [];
-    this.tide = new Set();
+    this.heldGround = new Set();
+    this.skips = 0;
     this.nextRaiderId = 1;
     this.pendingSpawns = [];
-    this.tideCooling = new Set();
-    this.awaitingSurvival = false;
-    this.stuckTicks = 0;
-    this.tideTicks = 0;
-    this.nextTideAt = 0;
-    if (siege.enemy === 'tide') {
-      // The tide is the gates: it does not arrive, it is already in the doorway
-      for (const g of this.gates) this.tide.add(keyOf(g));
-      this.nextTideAt = tideIntervalAt(siege, 0);
-    }
+    // The supply is authored, so it is built rather than shuffled. Colours
+    // come off the palette by position, which keeps a retry identical and
+    // keeps a colour-blind setting applying to the whole run at once.
+    const palette = getPiecePalette();
+    this.supply = siege.supply.map((entry, i) =>
+      makePiece(entry.id, entry.rot, palette[i % palette.length]),
+    );
+    this.supplyIndex = 0;
     this.siegeMetrics = {
-      variant: { missionId: siege.missionId, enemy: siege.enemy, mission: siege.mission },
+      variant: {
+        missionId: siege.missionId, enemy: siege.enemy, reliefTurns: siege.reliefTurns,
+      },
       breachTurn: null,
       wallsLost: 0,
       enemiesCaptured: 0,
+      heldAtEnd: 0,
+      turnsSurvived: 0,
+      skipsUsed: 0,
       routeChangingPlacements: 0,
-      roomAreas: [],
-      capturesPerClaim: {},
       decisionTimes: [],
       enemiesAtEnd: 0,
     };
     this.syncEnemies();
+  }
+
+  /** The next piece of the authored supply, or null when it is spent */
+  private nextSupplyPiece(): PieceInstance | null {
+    return this.supplyIndex < this.supply.length ? this.supply[this.supplyIndex++] : null;
+  }
+
+  /** One piece off whichever dealer this mode uses */
+  private dealPiece(): PieceInstance | null {
+    return this.config.siege ? this.nextSupplyPiece() : this.bag.next();
   }
 
   /**
@@ -574,15 +571,11 @@ export class GameState {
    * change to the enemy or to the walls.
    */
   private syncEnemies(): void {
-    const cells = this.enemyCells();
-    this.board.setOccupied(cells);
+    this.board.setOccupied(this.enemyCells());
     const siege = this.siege;
     if (!siege) { this.intent = null; return; }
-    const rng = siege.enemy === 'tide'
-      ? this.tideRng(this.tideTicks)
-      : this.raiderRng(this.totalTurns + 1);
     this.intent = readIntent(
-      this.board, this.raiders, this.tide, this.keep, rng, siege.wallCost, this.tideCooling,
+      this.board, this.raiders, this.keep, this.raiderRng(this.totalTurns + 1), siege.wallCost,
     );
     this.siegeVersion++;
   }
@@ -598,108 +591,213 @@ export class GameState {
    * bug that only shows up as a raider mysteriously not moving.
    */
   placeEnemies(cells: GridPos[]): void {
-    const siege = this.siege;
-    if (!siege) return;
-    if (siege.enemy === 'tide') {
-      this.tide = new Set(cells.map(keyOf));
-    } else {
-      this.raiders = cells.map(c => ({ id: this.nextRaiderId++, row: c.row, col: c.col }));
-    }
+    if (!this.siege) return;
+    this.raiders = cells.map(c => ({ id: this.nextRaiderId++, row: c.row, col: c.col }));
     this.syncEnemies();
   }
 
+  // ── One siege turn ──
+
   /**
-   * The whole resolution of a candidate placement, without committing to it.
+   * The courtyards a turn just sealed.
    *
-   * The player is being asked to weigh a claim against what the siege does
-   * next, so a preview that shows only the claim is asking them to guess the
-   * half that matters. This runs the real sequence on a clone — place, find
-   * the rooms this placement newly closed, capture what is inside them, drop
-   * the fences — and then reads the enemy's intent off the board that leaves.
-   * An attack aimed at a wall the claim is about to remove therefore previews
-   * as what it will actually be: a step into the gap.
+   * Enclosed now, not enclosed before, and held up by at least one wall the
+   * player built — a pocket the ruins had already closed is free ground
+   * nobody fenced, and it must not pay like a courtyard. A placement can only
+   * ever *add* walls, so every cell of a post-placement region was in one
+   * pre-placement component: testing a single cell settles the whole region.
+   */
+  courtyardsClosedBy(board: Board, enclosedBefore: ReadonlySet<string>): Region[] {
+    return board.findEnclosures()
+      .filter(r => r.fence.length > 0 && !enclosedBefore.has(cellKey(r.cells[0])));
+  }
+
+  /** Floor cells of a set of regions. The Keep, its gates and ruins never earn. */
+  private floorOf(board: Board, regions: Region[]): GridPos[] {
+    const out: GridPos[] = [];
+    for (const region of regions) {
+      for (const cell of region.cells) {
+        if (board.terrain[cell.row][cell.col] === 'floor') out.push(cell);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Ground still yours after the board moved.
+   *
+   * Held cells that are still inside a fence stay held; anything a raider has
+   * opened a way into is connected to the outside now, and stops paying. The
+   * test is enclosure and nothing else — a courtyard whose last player wall
+   * came down but which the ruins still seal is still sealed.
+   */
+  private stillHeld(board: Board, claimed: ReadonlySet<string>): Set<string> {
+    const out = new Set<string>();
+    for (const region of board.findEnclosures()) {
+      for (const cell of region.cells) {
+        const key = cellKey(cell);
+        if (claimed.has(key)) out.add(key);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * The enemy phase, against explicit state, in the order the rules give:
+   *
+   *   capture → arrivals → the raiders act → breach → held ground → income
+   *
+   * Explicit state rather than `this`, because the drag preview runs the very
+   * same routine on a cloned board and a cloned raider list. A preview that
+   * re-implemented any of this would be a preview that could lie, and the
+   * whole mode rests on it telling the truth.
+   *
+   * Mutates `board` (the walls a raider knocks down) and `raiders`; every
+   * other input is read.
+   */
+  private resolveSiegePhase(
+    board: Board,
+    raiders: Raider[],
+    pendingSpawns: readonly number[],
+    held: ReadonlySet<string>,
+    courtyards: Region[],
+    turn: number,
+    firstRaiderId: number,
+  ): SiegeResolution {
+    const siege = this.siege!;
+
+    // 1. Capture. Everything standing inside the ground this turn just sealed
+    // is taken; the walls that sealed it stay exactly where they are.
+    const sealed = new Set<string>();
+    for (const region of courtyards) for (const cell of region.cells) sealed.add(cellKey(cell));
+    const captured = raiders.filter(r => sealed.has(keyOf(r))).map(r => ({ row: r.row, col: r.col }));
+    const live = raiders.filter(r => !sealed.has(keyOf(r)));
+
+    // 2. Arrivals, oldest debt first. A gate with a raider still standing in
+    // it cannot take another, and the arrival waits rather than being dropped:
+    // blocking a door should delay the siege, not thin it out.
+    const owed = [...pendingSpawns];
+    for (const spawn of siege.spawns) if (spawn.turn === turn) owed.push(spawn.gate);
+    const occupied = new Set(live.map(keyOf));
+    const arrivals: Raider[] = [];
+    const stillWaiting: number[] = [];
+    let nextId = firstRaiderId;
+    for (const gateIndex of owed) {
+      const gate = this.gates[gateIndex];
+      if (!gate) continue;
+      if (occupied.has(keyOf(gate))) { stillWaiting.push(gateIndex); continue; }
+      const raider: Raider = { id: nextId++, row: gate.row, col: gate.col };
+      arrivals.push(raider);
+      live.push(raider);
+      occupied.add(keyOf(gate));
+    }
+
+    // 3. The raiders already here act, all from one snapshot. A newborn does
+    // not act on the phase it appears in — a raider that walked out of the
+    // gate the instant it was placed would give the player no turn in which
+    // to answer it — but its cell is in the snapshot, so the one behind it
+    // plans around it.
+    board.setOccupied(live.map(r => ({ row: r.row, col: r.col })));
+    const newborn = new Set(arrivals.map(r => r.id));
+    const actors = live.filter(r => !newborn.has(r.id));
+    const steps = stepRaiders(board, actors, this.keep, this.raiderRng(turn), siege.wallCost);
+    const wallsBroken: GridPos[] = [];
+    const moved: GridPos[] = [];
+    for (const step of steps) {
+      const raider = live.find(r => r.id === step.id);
+      if (!raider) continue;
+      if (step.brokeWall) { wallsBroken.push(step.brokeWall); continue; }
+      raider.row = step.to.row;
+      raider.col = step.to.col;
+      moved.push({ row: step.to.row, col: step.to.col });
+    }
+    board.setOccupied(live.map(r => ({ row: r.row, col: r.col })));
+
+    // 4. Breach: nothing after this matters, so nothing after this pays.
+    const breach = live.some(r => r.row === this.keep.row && r.col === this.keep.col);
+
+    // 5. Held ground, recomputed against the board the phase left behind.
+    const claimed = new Set<string>(held);
+    for (const cell of this.floorOf(board, courtyards)) claimed.add(cellKey(cell));
+    const nextHeld = breach ? new Set<string>() : this.stillHeld(board, claimed);
+
+    return {
+      captured,
+      arrivals: arrivals.map(r => ({ row: r.row, col: r.col })),
+      moved,
+      wallsBroken,
+      breach,
+      raiders: live,
+      held: nextHeld,
+      income: breach ? 0 : nextHeld.size * siege.groundIncome,
+      pendingSpawns: stillWaiting,
+      nextRaiderId: nextId,
+    };
+  }
+
+  /**
+   * The whole resolution of a candidate turn, without committing to it.
+   *
+   * The player is being asked to weigh a courtyard against what the siege
+   * does next, so a preview that showed only the courtyard would be asking
+   * them to guess the half that matters. This runs the real sequence on a
+   * clone — place, find what the placement newly sealed, capture what is
+   * inside it, then the whole enemy phase — and reports the board it leaves.
+   * An attack aimed at a wall is therefore previewed as the attack it will be.
    */
   previewPlacement(piece: PieceInstance, row: number, col: number): SiegePreview | null {
     const siege = this.siege;
+    if (!siege) return null;
     const probe = this.board.clone();
     if (!probe.canPlace(piece.shape, row, col)) return null;
     const enclosedBefore = this.enclosedCells(this.board);
     probe.place(piece.shape, row, col, piece.color);
 
-    const regions = this.newlyClaimableRegions(probe, enclosedBefore);
-    const inside = new Set<string>();
-    for (const r of regions) for (const c of r.cells) inside.add(cellKey(c));
-
-    const captured = this.enemyCells().filter(c => inside.has(cellKey(c)));
-    const fenceCleared: GridPos[] = [];
-    if (regions.length > 0) {
-      const seen = new Set<string>();
-      for (const r of regions) {
-        for (const f of r.fence) {
-          if (seen.has(cellKey(f))) continue;
-          seen.add(cellKey(f));
-          fenceCleared.push(f);
-        }
-      }
-      probe.clearCells(fenceCleared);
-    }
-
-    // The enemy answers the board the claim leaves behind, not the one the
-    // piece landed on
-    const survivors = this.raiders.filter(r => !inside.has(keyOf(r)));
-    const tide = new Set([...this.tide].filter(k => !inside.has(k)));
-    probe.setOccupied(
-      siege && siege.enemy === 'tide'
-        ? [...tide].map(k => ({ row: Number(k.slice(0, k.indexOf(','))), col: Number(k.slice(k.indexOf(',') + 1)) }))
-        : survivors.map(r => ({ row: r.row, col: r.col })),
-    );
-    const rng = siege && siege.enemy === 'tide'
-      ? this.tideRng(this.tideTicks)
-      : this.raiderRng(this.totalTurns + 1);
-    const intent = readIntent(
-      probe, survivors, tide, this.keep, rng,
-      siege?.wallCost ?? 4,
-      siege && siege.enemy === 'tide' ? inside : new Set<string>(),
+    const courtyards = this.courtyardsClosedBy(probe, enclosedBefore);
+    const resolution = this.resolveSiegePhase(
+      probe,
+      this.raiders.map(r => ({ ...r })),
+      this.pendingSpawns,
+      this.heldGround,
+      courtyards,
+      this.totalTurns + 1,
+      this.nextRaiderId,
     );
 
-    const points = regions.length > 0 ? this.claimPoints(regions) : null;
-    const enemyBonus = captured.length * (siege?.enemyBonus ?? 0);
     return {
-      regions,
-      points: (points?.turnScore ?? 0) + enemyBonus,
-      captured,
-      fenceCleared,
-      intent,
+      regions: courtyards,
+      points: resolution.captured.length * siege.enemyBonus + resolution.income,
+      captured: resolution.captured,
+      held: [...resolution.held].map(parseCellKey),
+      wallsBroken: resolution.wallsBroken,
+      intent: readIntent(
+        probe, resolution.raiders, this.keep,
+        this.raiderRng(this.totalTurns + 2), siege.wallCost,
+      ),
+      breach: resolution.breach,
     };
   }
 
-  /** Weighted route length per raider, or the tide's next cell — what a placement can change */
-  private routeSignature(): Map<number, number> | string {
+  /** Weighted route length per raider — what a turn can change */
+  private routeSignature(): Map<number, number> {
     const siege = this.siege;
-    if (!siege) return '';
-    if (siege.enemy === 'tide') {
-      const rng = this.tideRng(this.tideTicks);
-      const target = readIntent(
-        this.board, [], this.tide, this.keep, rng, siege.wallCost, this.tideCooling,
-      ).tideTarget;
-      return target ? keyOf(target) : 'none';
-    }
-    const rng = this.raiderRng(this.totalTurns + 1);
+    if (!siege) return new Map();
     return readIntent(
-      this.board, this.raiders, this.tide, this.keep, rng, siege.wallCost,
+      this.board, this.raiders, this.keep,
+      this.raiderRng(this.totalTurns + 1), siege.wallCost,
     ).routeLengths;
   }
 
   /**
-   * Did this placement change what the enemy is going to do?
+   * Did this turn change what the raiders are going to do?
    *
    * The go-gate number: a mode where most placements leave the siege's plan
-   * untouched is a mode where the second force is scenery.
+   * untouched is a mode where the second force is scenery. Only a placement
+   * can move it — a skip changes no walls — so only a placement is counted.
    */
   private routeChanged(
-    before: Map<number, number> | string, after: Map<number, number> | string,
+    before: ReadonlyMap<number, number>, after: ReadonlyMap<number, number>,
   ): boolean {
-    if (typeof before === 'string' || typeof after === 'string') return before !== after;
     for (const [id, length] of before) {
       if (!after.has(id)) continue; // captured, which is a different thing
       if (after.get(id) !== length) return true;
@@ -707,206 +805,159 @@ export class GameState {
     return false;
   }
 
-  /** An enemy stands on the Keep. Nothing after this matters. */
-  private breach(): void {
-    if (this.isGameOver) return;
-    this.isGameOver = true;
-    this.deathCause = 'breach';
-    if (this.siegeMetrics) this.siegeMetrics.breachTurn = this.totalTurns;
-    this.finalizeBest();
-  }
-
-  private keepHeldByEnemy(): boolean {
-    if (this.tide.has(keyOf(this.keep))) return true;
-    return this.raiders.some(r => r.row === this.keep.row && r.col === this.keep.col);
-  }
-
-  /**
-   * The raiders' turn: every raider steps toward the Keep or breaks the wall
-   * in its way, then the schedule lands whoever is due at the gates.
-   *
-   * Run from inside `tryPlace`, which is what makes a replay reproduce it: the
-   * simulation drives the same method with the same inputs and never has to
-   * know a siege is being played.
-   */
-  private raiderPhase(): FeedbackEvent[] {
+  /** The next arrival the schedule owes, as the turn it lands on */
+  nextSpawnTurn(): number | null {
     const siege = this.siege;
-    if (!siege || siege.enemy !== 'raiders') return [];
-    const turn = this.totalTurns;
-    const moved: GridPos[] = [];
-
-    // Arrivals first, and a newborn does not act on the phase it appears in:
-    // a raider that walked out of the gate the instant it was placed would
-    // give the player no turn at all in which to answer it. Its cell is part
-    // of the snapshot, though, so the raider behind it plans around it.
-    const arrivals = this.spawnRaiders(turn);
-    for (const a of arrivals) moved.push({ row: a.row, col: a.col });
-    const newborn = new Set(arrivals.map(r => r.id));
-
-    const actors = this.raiders.filter(r => !newborn.has(r.id));
-    const steps = stepRaiders(this.board, actors, this.keep, this.raiderRng(turn), siege.wallCost);
-    const broken: GridPos[] = [];
-    for (const step of steps) {
-      const raider = this.raiders.find(r => r.id === step.id);
-      if (!raider) continue;
-      if (step.brokeWall) {
-        broken.push(step.brokeWall);
-        if (this.siegeMetrics) this.siegeMetrics.wallsLost++;
-        continue;
-      }
-      raider.row = step.to.row;
-      raider.col = step.to.col;
-      moved.push({ row: step.to.row, col: step.to.col });
-    }
-
-    this.syncEnemies();
-    const events: FeedbackEvent[] = [
-      { type: 'enemy', wallsBroken: broken, enemyMoved: moved },
-    ];
-    if (this.keepHeldByEnemy()) {
-      this.breach();
-      events.push({ type: 'breach' });
-    }
-    return events;
-  }
-
-  /**
-   * Land whatever the schedule owes, oldest debt first.
-   *
-   * A gate with a raider still standing in it cannot take another, and the
-   * arrival waits rather than being dropped: blocking a door should delay the
-   * siege, not thin it out.
-   */
-  private spawnRaiders(turn: number): Raider[] {
-    const siege = this.siege;
-    if (!siege) return [];
-    for (const spawn of siege.spawns) {
-      if (spawn.turn === turn) this.pendingSpawns.push(spawn.gate);
-    }
-    if (this.pendingSpawns.length === 0) return [];
-
-    const held = new Set(this.raiders.map(keyOf));
-    const arrivals: Raider[] = [];
-    const stillWaiting: number[] = [];
-    for (const gateIndex of this.pendingSpawns) {
-      const gate = this.gates[gateIndex];
-      if (!gate) continue;
-      if (held.has(keyOf(gate))) { stillWaiting.push(gateIndex); continue; }
-      const raider: Raider = { id: this.nextRaiderId++, row: gate.row, col: gate.col };
-      this.raiders.push(raider);
-      arrivals.push(raider);
-      held.add(keyOf(gate));
-    }
-    this.pendingSpawns = stillWaiting;
-    return arrivals;
-  }
-
-  /** The next arrival the schedule owes: which gate, and how many placements away */
-  nextSpawn(): { gate: number; inTurns: number } | null {
-    const siege = this.siege;
-    if (!siege || siege.enemy !== 'raiders') return null;
+    if (!siege) return null;
     // A debt already owed is due on the very next phase
-    if (this.pendingSpawns.length > 0) return { gate: this.pendingSpawns[0], inTurns: 1 };
+    if (this.pendingSpawns.length > 0) return this.totalTurns + 1;
     for (const spawn of siege.spawns) {
-      if (spawn.turn > this.totalTurns) {
-        return { gate: spawn.gate, inTurns: spawn.turn - this.totalTurns };
-      }
+      if (spawn.turn > this.totalTurns) return spawn.turn;
     }
     return null;
   }
 
   /**
-   * The tide, on the clock rather than on placements.
+   * Spend one turn: place the piece, or discard it.
    *
-   * Driven from `advanceClock` and `advanceClockTo` alike, and off absolute
-   * times rather than deltas, so sixty small frames and one big jump to the
-   * same instant produce exactly the same expansions — which is the whole
-   * reason a replay of a tide run lands on the same board.
+   * Both spend a piece and both advance the enemy one phase, which is why
+   * they share everything after the placement itself. Rotating, dragging and
+   * HOLD do none of it.
    */
-  private runTide(): void {
-    const siege = this.siege;
-    if (!siege || siege.enemy !== 'tide' || this.isGameOver) return;
-    while (this.gameElapsed >= this.nextTideAt && !this.isGameOver) {
-      const step = stepTide(
-        this.board, this.tide, this.keep, this.tideRng(this.tideTicks),
-        siege.wallCost, this.tideCooling,
-      );
-      // The cooldown buys exactly one tick, and this is it
-      this.tideCooling = new Set();
-      const broken: GridPos[] = [];
-      const moved: GridPos[] = [];
-      if (step.erodedWall) {
-        broken.push(step.erodedWall);
-        if (this.siegeMetrics) this.siegeMetrics.wallsLost++;
-      } else if (step.claimed) {
-        this.tide.add(keyOf(step.claimed));
-        moved.push(step.claimed);
-      }
-      this.tideTicks++;
-      this.nextTideAt += tideIntervalAt(siege, this.tideTicks);
-      this.syncEnemies();
-      this.pending.push({ type: 'enemy', wallsBroken: broken, enemyMoved: moved });
-      if (this.keepHeldByEnemy()) {
-        this.breach();
-        this.pending.push({ type: 'breach' });
-        this.pending.push({ type: 'gameOver' });
-        return;
-      }
-      // With no clock to end a stuck board, three ticks of nowhere to build is
-      // the honest bound: the tide has had its chance to open something up.
-      if (!this.config.clock.enabled && this.current !== null) {
-        this.stuckTicks = this.canAct() ? 0 : this.stuckTicks + 1;
-        if (this.stuckTicks >= STUCK_TICK_LIMIT) {
-          this.isGameOver = true;
-          this.deathCause = 'board_lock';
-          this.finalizeBest();
-          this.pending.push({ type: 'gameOver' });
-          return;
-        }
-      }
+  private takeSiegeTurn(placed: GridPos[] | null, events: FeedbackEvent[]): FeedbackEvent[] {
+    const siege = this.siege!;
+    const turn = this.totalTurns;
+
+    // What the placement sealed. A skip seals nothing, and asking the flood
+    // fill about a board that did not change would only ever say so.
+    const courtyards = placed
+      ? this.courtyardsClosedBy(this.board, this.enclosedBeforeTurn)
+      : [];
+
+    const r = this.resolveSiegePhase(
+      this.board, this.raiders, this.pendingSpawns, this.heldGround, courtyards, turn, this.nextRaiderId,
+    );
+    this.raiders = r.raiders;
+    this.pendingSpawns = r.pendingSpawns;
+    this.nextRaiderId = r.nextRaiderId;
+    this.heldGround = r.held;
+
+    const metrics = this.siegeMetrics;
+    if (r.captured.length > 0) {
+      this.score += r.captured.length * siege.enemyBonus;
+      if (metrics) metrics.enemiesCaptured += r.captured.length;
+      events.push({
+        type: 'capture',
+        enemiesCaptured: r.captured.length,
+        capturedCells: r.captured,
+      });
     }
+    if (metrics) metrics.wallsLost += r.wallsBroken.length;
+
+    this.syncEnemies();
+    events.push({ type: 'enemy', wallsBroken: r.wallsBroken, enemyMoved: [...r.arrivals, ...r.moved] });
+
+    if (r.breach) {
+      this.isGameOver = true;
+      this.deathCause = 'breach';
+      if (metrics) metrics.breachTurn = turn;
+      this.finalizeBest();
+      events.push({ type: 'breach' });
+      events.push({ type: 'gameOver' });
+      return events;
+    }
+
+    // Ground pays for being held, once per enemy phase survived. This is the
+    // whole reason a courtyard is worth building rather than worth closing.
+    if (r.income > 0) {
+      this.score += r.income;
+      events.push({ type: 'income', income: r.income, heldCount: this.heldGround.size });
+    }
+
+    // Personal best crossed?
+    if (!this.newBestReached && this.highScore > 0 && this.score > this.highScore) {
+      this.newBestReached = true;
+      events.push({ type: 'newBest', previousBest: this.highScore });
+    }
+
+    // Relief. Surviving the last phase is the win, even with raiders still
+    // standing on the board — holding the Keep is the mission, not clearing
+    // the field.
+    if (turn >= siege.reliefTurns) {
+      this.isGameOver = true;
+      this.deathCause = 'victory';
+      this.finalizeBest();
+      events.push({ type: 'gameOver' });
+      return events;
+    }
+
+    // Deal the next piece. The hold slot is the last place one can come from,
+    // so a piece parked early always comes back out.
+    this.current = this.queue.shift() ?? null;
+    if (!this.current && this.held) {
+      this.current = this.held;
+      this.held = null;
+    }
+    const dealt = this.dealPiece();
+    if (dealt) this.queue.push(dealt);
+    this.holdUsed = false;
+    events.push({ type: 'newHand' });
+    return events;
+  }
+
+  /** Place the current piece and spend the turn on it */
+  private siegePlace(row: number, col: number): FeedbackEvent[] {
+    const piece = this.current;
+    if (!piece || this.isGameOver) return [];
+    if (!this.board.canPlace(piece.shape, row, col)) return [];
+
+    this.totalTurns++;
+    // Both read before the piece lands. A turn pays for ground it closed,
+    // never for ground that was standing closed already; and what the raiders
+    // were going to do has to be judged against the board the player was
+    // looking at, not the one the phase leaves behind.
+    this.enclosedBeforeTurn = this.enclosedCells(this.board);
+    const routeBefore = this.routeSignature();
+    this.record({ t: 'p', row, col, rot: piece.rotation, at: this.gameElapsed });
+    this.recordDecisionTime();
+    const placedCells = this.board.place(piece.shape, row, col, piece.color);
+    this.lastPlacementAt = this.gameElapsed;
+    // Did this wall move the plan? Compared before the raiders act, so what
+    // is being measured is the placement and not the walking.
+    this.board.setOccupied(this.enemyCells());
+    if (this.routeChanged(routeBefore, this.routeSignature()) && this.siegeMetrics) {
+      this.siegeMetrics.routeChangingPlacements++;
+    }
+    const events: FeedbackEvent[] = [
+      { type: 'place', placedCells, pieceColor: piece.color, speedFraction: 1, timeBonus: 0 },
+    ];
+    return this.takeSiegeTurn(placedCells, events);
   }
 
   /**
-   * A finite tide mission that has run out of pieces but not out of time.
-   * Checked off the clock, because there is no placement left to check it on.
+   * Discard the piece in hand.
+   *
+   * It costs the piece and it costs the turn — the raiders answer a skip
+   * exactly as they answer a placement. It exists because a supply is
+   * authored: a board with nowhere useful to put a BAR 4 used to be a loss
+   * (`board_lock`), and a loss for having been dealt the wrong shape is not a
+   * decision, it is an accident.
    */
-  private checkSurvival(): void {
-    if (!this.awaitingSurvival || this.isGameOver) return;
-    if (this.gameElapsed < this.survivalFloor()) return;
-    this.awaitingSurvival = false;
-    this.isGameOver = true;
-    this.deathCause = 'victory';
-    this.finalizeBest();
-    this.pending.push({ type: 'gameOver' });
+  skipPiece(): FeedbackEvent[] {
+    if (!this.siege || !this.current || this.isGameOver) return [];
+    this.totalTurns++;
+    this.skips++;
+    if (this.siegeMetrics) this.siegeMetrics.skipsUsed = this.skips;
+    this.record({ t: 's', at: this.gameElapsed });
+    this.recordDecisionTime();
+    this.lastPlacementAt = this.gameElapsed;
+    return this.takeSiegeTurn(null, [{ type: 'skip' }]);
   }
 
-  /**
-   * Enemies caught inside the rooms a claim just sealed. They are removed and
-   * paid for; the floor they stood on is claimed like any other.
-   */
-  private captureEnemies(regions: Region[]): number {
-    const siege = this.siege;
-    if (!siege) return 0;
-    const inside = new Set<string>();
-    for (const r of regions) for (const c of r.cells) inside.add(keyOf(c));
-    if (inside.size === 0) return 0;
-
-    const before = this.raiders.length + this.tide.size;
-    this.raiders = this.raiders.filter(r => !inside.has(keyOf(r)));
-    for (const key of [...this.tide]) if (inside.has(key)) this.tide.delete(key);
-    const captured = before - (this.raiders.length + this.tide.size);
-    // Ground a claim just took is held against the tide for one tick, so a
-    // capture on the flood's doorstep is visibly a capture
-    if (siege.enemy === 'tide') this.tideCooling = inside;
-    if (captured > 0 && this.siegeMetrics) {
-      this.siegeMetrics.enemiesCaptured += captured;
-    }
-    if (this.siegeMetrics) {
-      const m = this.siegeMetrics.capturesPerClaim;
-      m[captured] = (m[captured] ?? 0) + 1;
-    }
-    return captured;
+  /** How long the player looked at this piece before spending it. Capped. */
+  private recordDecisionTime(): void {
+    const m = this.siegeMetrics;
+    if (m && m.decisionTimes.length < DECISION_TIME_CAP) m.decisionTimes.push(this.pieceElapsed);
   }
 
   start(): FeedbackEvent {
@@ -954,7 +1005,6 @@ export class GameState {
     this.echoVersion++;
     this.moves = [];
     this.movesTruncated = false;
-    this.pending = [];
     // The siege has one best per variant: the same score means four different
     // things across the 2×2, so one lifetime number would compare nothing.
     const variant = this.siegeVariant;
@@ -966,13 +1016,14 @@ export class GameState {
     // Before the bag is dealt, because a piece is offered against this board.
     if (this.config.siege) this.startSiege(this.config.siege);
 
-    // Deal the hand plus up to previewCount upcoming pieces. Under a budget
-    // the bag can run dry, and the queue is simply shorter than the preview.
+    // Deal the hand plus up to previewCount upcoming pieces, off the bag or
+    // off the mission's authored supply. Under a budget the dealer can run
+    // dry, and the queue is simply shorter than the preview.
     this.syncBagTier();
-    this.current = this.bag.next();
+    this.current = this.dealPiece();
     this.queue = [];
     for (let i = 0; i < this.config.previewCount; i++) {
-      const piece = this.bag.next();
+      const piece = this.dealPiece();
       if (!piece) break;
       this.queue.push(piece);
     }
@@ -996,8 +1047,6 @@ export class GameState {
     // Echo walls run on the game clock, not on placements, so this is the one
     // place they can fade out.
     this.filterEchoes(c => c.expiresAt > this.gameElapsed);
-    this.runTide();
-    this.checkSurvival();
   }
 
   /**
@@ -1025,17 +1074,12 @@ export class GameState {
     this.gameElapsed = elapsed;
     this.sampleTimeline();
     this.filterEchoes(c => c.expiresAt > this.gameElapsed);
-    this.runTide();
-    this.checkSurvival();
   }
 
   /** Tick the clock. Returns true if time ran out. */
   tick(dt: number): boolean {
     if (this.isGameOver) return false;
     this.advanceClock(dt);
-    // The tide runs on the clock, so it can end the run inside advanceClock.
-    // Report that as a finished run and leave the cause it set alone.
-    if (this.isGameOver) return true;
     // No clock: the run still ages (telemetry wants a duration) but nothing
     // drains and nothing can time out.
     if (!this.config.clock.enabled) return false;
@@ -1091,7 +1135,7 @@ export class GameState {
       this.current = this.held;
     } else {
       this.current = this.queue.shift()!;
-      const dealt = this.bag.next();
+      const dealt = this.dealPiece();
       if (dealt) this.queue.push(dealt);
     }
     this.held = outgoing;
@@ -1176,25 +1220,21 @@ export class GameState {
     this.bag.setTier(getProgressStatus(this.difficulty, this.score).tierIndex);
   }
 
-  /** Attempt to place the current piece at (row, col) */
+  /**
+   * Attempt to place the current piece at (row, col).
+   *
+   * The siege is a different game after this point — no claim, no clock, no
+   * streak, and an enemy phase on every turn — so it takes its own path
+   * rather than threading branches through this one.
+   */
   tryPlace(row: number, col: number): FeedbackEvent[] {
+    if (this.config.siege) return this.siegePlace(row, col);
     const events: FeedbackEvent[] = [];
     const piece = this.current;
     if (!piece || this.isGameOver) return events;
     if (!this.board.canPlace(piece.shape, row, col)) return events;
 
     this.totalTurns++;
-    // What the enemy was going to do, judged against the board the player was
-    // looking at — so it has to be read before the piece lands. Compared again
-    // once the placement and its claim have resolved.
-    const routeBefore = this.routeSignature();
-    // What was already sealed before this piece: a claim pays for rooms this
-    // placement closed, never for ground that was standing closed already.
-    // Only the siege can tell the two apart, so only the siege pays for the
-    // extra flood fill.
-    const enclosedBefore = this.config.siege
-      ? this.enclosedCells(this.board)
-      : EMPTY_KEYS;
     // Recorded before anything is scored: what the log has to carry is the
     // input, and the rules turn that into a score on both sides.
     this.record({ t: 'p', row, col, rot: piece.rotation, at: this.gameElapsed });
@@ -1204,11 +1244,6 @@ export class GameState {
     const covered = new Set(placedCells.map(cellKey));
     this.filterEchoes(c => !covered.has(cellKey(c)));
     const speedFraction = this.currentSpeedFraction;
-    // How long the player looked at this piece before committing, recorded
-    // before the clock is reset. Capped, so an endless run cannot grow it.
-    if (this.siegeMetrics && this.siegeMetrics.decisionTimes.length < DECISION_TIME_CAP) {
-      this.siegeMetrics.decisionTimes.push(this.pieceElapsed);
-    }
     // The new piece's clock starts here, at the same double this placement
     // was recorded at — which is what the simulation reads it back as.
     this.lastPlacementAt = this.gameElapsed;
@@ -1220,12 +1255,9 @@ export class GameState {
     // Detect and resolve enclosures, echo walls counting as walls. One
     // snapshot for the whole placement: every room at once, every occupant of
     // every room captured, then the union of their fences removed.
-    const siegeCfg = this.siege;
-    const regions = this.newlyClaimableRegions(this.board, enclosedBefore);
+    const regions = this.claimableRegions(this.board);
     let claim: ClaimResult | null = null;
-    let enemiesCaptured = 0;
     if (regions.length > 0) {
-      enemiesCaptured = this.captureEnemies(regions);
       const fenceSet = new Set<string>();
       const fenceCleared: GridPos[] = [];
       for (const r of regions) {
@@ -1237,11 +1269,7 @@ export class GameState {
           }
         }
       }
-      // The gatehouse question: total removal by default, so a claim is a
-      // sacrifice. With the flag on the fence stands and only the room is paid.
-      const fenceColors = siegeCfg?.fenceSurvivesEnemyPhase
-        ? fenceCleared.map(f => this.board.getCell(f.row, f.col) ?? 0xffffff)
-        : this.board.clearCells(fenceCleared);
+      const fenceColors = this.board.clearCells(fenceCleared);
       claim = {
         regions,
         totalArea: regions.reduce((a, r) => a + r.area, 0),
@@ -1268,12 +1296,10 @@ export class GameState {
     // One refund per placement, not per room — and in the siege, only for a
     // claim that actually caught something. An empty room still scores; it
     // just does not buy the time to build the next one.
-    if (claim && !(t.claimRefundNeedsCapture && enemiesCaptured === 0)) {
+    if (claim) {
       bonus += Math.min(
         t.claimBonusCap,
-        t.claimBaseBonus
-        + t.claimPerCellBonus * claim.totalArea
-        + t.claimPerEnemyBonus * enemiesCaptured,
+        t.claimBaseBonus + t.claimPerCellBonus * claim.totalArea,
       );
     }
     const timeBonus = this.config.clock.enabled ? Math.round(bonus * speedFraction * 10) / 10 : 0;
@@ -1286,18 +1312,6 @@ export class GameState {
     if (claim) {
       const points = this.claimPoints(claim.regions);
       this.score += points.turnScore;
-      // 'flat' pays the same for a capture whatever room it happened in, which
-      // is the easier of the two to tune. 'squared' folds the captures into
-      // the area instead, so catching three in one big room is worth far more
-      // than three small rooms — a different game, and one worth measuring.
-      if (siegeCfg?.captureScoring === 'squared') {
-        const area = claim.totalArea;
-        const withCaptures = area + enemiesCaptured;
-        this.score += (withCaptures * withCaptures - area * area)
-          * this.config.scoring.pointsPerAreaSquared;
-      } else {
-        this.score += enemiesCaptured * (siegeCfg?.enemyBonus ?? 0);
-      }
 
       if (this.config.scoring.streakEnabled) {
         this.streakCount++;
@@ -1309,7 +1323,6 @@ export class GameState {
       for (const r of claim.regions) {
         this.biggestRoom = Math.max(this.biggestRoom, r.area);
         this.roomSizes[r.area] = (this.roomSizes[r.area] ?? 0) + 1;
-        this.siegeMetrics?.roomAreas.push(r.area);
       }
       if (claim.regions.length >= 2) this.doubleCloses++;
 
@@ -1323,7 +1336,6 @@ export class GameState {
         streakCount: this.streakCount,
         timeBonus,
         litCount: this.board.litCount(),
-        enemiesCaptured,
       });
       if (surveyed) {
         events.push({
@@ -1339,20 +1351,6 @@ export class GameState {
     if (!this.newBestReached && this.highScore > 0 && this.score > this.highScore) {
       this.newBestReached = true;
       events.push({ type: 'newBest', previousBest: this.highScore });
-    }
-
-    // The enemy answers. Inside tryPlace on purpose: the replay simulation
-    // drives this same method, so the siege re-plays with no special casing.
-    if (this.config.siege) {
-      this.syncEnemies();
-      if (this.routeChanged(routeBefore, this.routeSignature())) {
-        if (this.siegeMetrics) this.siegeMetrics.routeChangingPlacements++;
-      }
-      for (const e of this.raiderPhase()) events.push(e);
-      if (this.isGameOver) {
-        events.push({ type: 'gameOver' });
-        return events;
-      }
     }
 
     // Every score change this placement could make — the blocks, the claim
@@ -1375,18 +1373,8 @@ export class GameState {
     events.push({ type: 'newHand' });
 
     if (!this.current) {
-      // A finite tide mission is won by *outlasting* the siege, not by
-      // emptying the bag into a corner: eighteen pieces placed in twenty
-      // seconds have not held anything. The run goes on, unplayable, until
-      // the floor is met or the Keep falls.
-      if (siegeCfg && this.survivalFloor() > this.gameElapsed) {
-        this.awaitingSurvival = true;
-        events.push({ type: 'newHand' });
-        return events;
-      }
       this.isGameOver = true;
-      // Surviving all eighteen is the mission, not merely the end of the bag
-      this.deathCause = siegeCfg?.mission === 'finite' ? 'victory' : 'complete';
+      this.deathCause = 'complete';
       this.finalizeBest();
       events.push({ type: 'gameOver' });
       return events;
@@ -1416,7 +1404,7 @@ export class GameState {
     // Freshness pricing without the objective: the siege wants relit ground
     // to be worth less, not a second thing to be winning.
     if (!this.config.territory.surveyEnabled) return false;
-    if (this.board.litCount() < INNER_CELLS) return false;
+    if (this.board.litCount() < this.board.innerCells) return false;
 
     this.surveys++;
     this.score += this.config.territory.surveyBonus;
@@ -1428,12 +1416,9 @@ export class GameState {
     // An empty hand under a budget means the run is complete, not locked.
     // Callers decide that before asking, so never report a lock for it.
     if (!this.current) return false;
+    // The siege has SKIP: a piece that fits nowhere is discarded, not fatal.
+    if (this.config.siege) return false;
     if (this.canAct()) return false;
-    // The tide erodes: a board with nowhere to build may have somewhere to
-    // build two seconds from now, so a locked board is a wait rather than a
-    // death — the clock is what ends the run. Without a clock to end it,
-    // `runTide` calls it after three ticks of nothing.
-    if (this.siege?.enemy === 'tide' && this.config.clock.enabled) return false;
     return true;
   }
 
@@ -1446,13 +1431,6 @@ export class GameState {
       if (alt && this.fitsAnyRotation(alt)) return true;
     }
     return false;
-  }
-
-  /** When a finite tide mission may first be won, in game seconds */
-  private survivalFloor(): number {
-    const siege = this.siege;
-    if (!siege || siege.mission !== 'finite') return 0;
-    return siege.tideMinSurvivalSeconds;
   }
 
   finalizeBest(): void {
@@ -1519,10 +1497,11 @@ export class GameState {
         ? {
           siege: {
             ...this.siegeMetrics,
-            roomAreas: [...this.siegeMetrics.roomAreas],
-            capturesPerClaim: { ...this.siegeMetrics.capturesPerClaim },
             decisionTimes: [...this.siegeMetrics.decisionTimes],
-            enemiesAtEnd: this.raiders.length + this.tide.size,
+            heldAtEnd: this.heldGround.size,
+            turnsSurvived: this.totalTurns,
+            skipsUsed: this.skips,
+            enemiesAtEnd: this.raiders.length,
           },
         }
         : {}),

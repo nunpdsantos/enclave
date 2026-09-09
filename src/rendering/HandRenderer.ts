@@ -22,12 +22,22 @@ export class HandRenderer {
   private currentGfx: Graphics;
   private nextGfx: Graphics;
   private rotateGfx: Graphics;
+  /** SKIP, beside ROTATE. Drawn only where the layout gives it a rectangle. */
+  private skipGfx: Graphics;
   private dragGfx: Graphics;
   private trailGfx: Graphics;
   private holdLabel: Text;
   private nextLabel: Text;
   private rotateLabel: Text;
+  private skipLabel: Text;
   private layout!: Layout;
+  /**
+   * SKIP has been tapped once and is waiting for the confirming tap.
+   *
+   * A skip spends a piece and hands the raiders a free turn, which is far too
+   * expensive to lose to a fat thumb landing next to ROTATE.
+   */
+  private skipArmed = false;
 
   private current: PieceInstance | null = null;
   private currentUnplaceable = false;
@@ -49,6 +59,7 @@ export class HandRenderer {
     this.currentGfx = new Graphics();
     this.nextGfx = new Graphics();
     this.rotateGfx = new Graphics();
+    this.skipGfx = new Graphics();
     this.trailGfx = new Graphics();
     this.dragGfx = new Graphics();
 
@@ -61,14 +72,21 @@ export class HandRenderer {
       text: '⟳  ROTATE',
       style: new TextStyle({ fontFamily: FONT_DISPLAY, fontSize: 12, fontWeight: '700', fill: THEME.textPrimary, letterSpacing: 2 }),
     });
+    this.skipLabel = new Text({
+      text: 'SKIP',
+      style: new TextStyle({ fontFamily: FONT_DISPLAY, fontSize: 12, fontWeight: '700', fill: THEME.textSecondary, letterSpacing: 2 }),
+    });
+    this.skipLabel.visible = false;
 
     this.container.addChild(this.panelGfx);
     this.container.addChild(this.holdGfx);
     this.container.addChild(this.nextGfx);
     this.container.addChild(this.rotateGfx);
+    this.container.addChild(this.skipGfx);
     this.container.addChild(this.holdLabel);
     this.container.addChild(this.nextLabel);
     this.container.addChild(this.rotateLabel);
+    this.container.addChild(this.skipLabel);
     this.container.addChild(this.currentGfx);
     this.container.addChild(this.trailGfx);
     this.container.addChild(this.dragGfx);
@@ -99,6 +117,37 @@ export class HandRenderer {
     r.fill({ color: 0x000000, alpha: 0.3 });
     r.roundRect(rotateRect.x, rotateRect.y, rotateRect.w, rotateRect.h, 12);
     r.stroke({ color: 0xffffff, alpha: 0.12, width: 1 });
+
+    this.drawSkip();
+  }
+
+  /**
+   * Arm or disarm SKIP. Armed it reads DISCARD? in warning colours, so the
+   * second tap is a decision and the first one is a question.
+   */
+  setSkipArmed(armed: boolean): void {
+    if (this.skipArmed === armed) return;
+    this.skipArmed = armed;
+    this.drawSkip();
+  }
+
+  private drawSkip(): void {
+    const g = this.skipGfx;
+    g.clear();
+    const rect = this.layout?.skipRect;
+    if (!rect || rect.w <= 0) { this.skipLabel.visible = false; return; }
+    const armed = this.skipArmed;
+    g.roundRect(rect.x, rect.y, rect.w, rect.h, 12);
+    g.fill({ color: armed ? THEME.warning : 0x000000, alpha: armed ? 0.28 : 0.3 });
+    g.roundRect(rect.x, rect.y, rect.w, rect.h, 12);
+    g.stroke({ color: armed ? THEME.warning : 0xffffff, alpha: armed ? 0.9 : 0.12, width: armed ? 2 : 1 });
+
+    this.skipLabel.text = armed ? 'DISCARD?' : 'SKIP';
+    this.skipLabel.style.fill = armed ? THEME.warning : THEME.textSecondary;
+    this.skipLabel.anchor.set(0.5);
+    this.skipLabel.x = rect.x + rect.w / 2;
+    this.skipLabel.y = rect.y + rect.h / 2;
+    this.skipLabel.visible = true;
   }
 
   /**

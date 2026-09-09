@@ -6,15 +6,23 @@ const DIRS: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
  * The board edge is never a wall, so an empty cell touching it can always
  * reach the outside: only the inner ring-less square can ever be room floor.
  */
-export function isInnerCell(row: number, col: number): boolean {
-  return row >= 1 && col >= 1 && row <= GRID_SIZE - 2 && col <= GRID_SIZE - 2;
+export function isInnerCell(row: number, col: number, size: number = GRID_SIZE): boolean {
+  return row >= 1 && col >= 1 && row <= size - 2 && col <= size - 2;
 }
 
-/** How many cells a full survey has to light: the inner 7×7 = 49 */
-export const INNER_CELLS = (GRID_SIZE - 2) * (GRID_SIZE - 2);
+/** How many cells a full survey has to light on a board of this size */
+export function innerCellsOf(size: number): number {
+  return (size - 2) * (size - 2);
+}
 
 /**
- * The 9×9 board and the one rule that defines the game:
+ * The inner cells of a 9×9: the survey's target, and the only board size any
+ * mode with territory switched on is played at.
+ */
+export const INNER_CELLS = innerCellsOf(GRID_SIZE);
+
+/**
+ * The board and the one rule that defines the game:
  *
  *   An empty cell is "outside" if it can reach the board edge by walking
  *   through empty cells. Everything else is enclosed.
@@ -25,6 +33,12 @@ export const INNER_CELLS = (GRID_SIZE - 2) * (GRID_SIZE - 2);
  * components gives the individual rooms.
  */
 export class Board {
+  /**
+   * How many cells on a side. Fixed for the life of the board, because a
+   * grid, a lit map, a terrain map and an occupancy map all have to agree on
+   * it — a board that could be resized is four arrays that could disagree.
+   */
+  readonly size: number;
   grid: Grid;
   /**
    * Territory: floor that has been claimed at least once this run. Independent
@@ -44,26 +58,27 @@ export class Board {
    */
   occupied: boolean[][];
 
-  constructor() {
-    this.grid = Board.createEmptyGrid();
-    this.lit = Board.createUnlitMap();
-    this.terrain = Board.createFloorTerrain();
-    this.occupied = Board.createUnlitMap();
+  constructor(size: number = GRID_SIZE) {
+    this.size = size;
+    this.grid = Board.createEmptyGrid(size);
+    this.lit = Board.createUnlitMap(size);
+    this.terrain = Board.createFloorTerrain(size);
+    this.occupied = Board.createUnlitMap(size);
   }
 
-  static createEmptyGrid(): Grid {
-    return Array.from({ length: GRID_SIZE }, () =>
-      Array.from({ length: GRID_SIZE }, () => null),
+  static createEmptyGrid(size: number = GRID_SIZE): Grid {
+    return Array.from({ length: size }, () =>
+      Array.from({ length: size }, () => null),
     );
   }
 
-  static createUnlitMap(): boolean[][] {
-    return Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(false));
+  static createUnlitMap(size: number = GRID_SIZE): boolean[][] {
+    return Array.from({ length: size }, () => Array(size).fill(false));
   }
 
-  static createFloorTerrain(): TerrainGrid {
-    return Array.from({ length: GRID_SIZE }, () =>
-      Array.from({ length: GRID_SIZE }, (): Terrain => 'floor'),
+  static createFloorTerrain(size: number = GRID_SIZE): TerrainGrid {
+    return Array.from({ length: size }, () =>
+      Array.from({ length: size }, (): Terrain => 'floor'),
     );
   }
 
@@ -73,9 +88,9 @@ export class Board {
    * the siege on an open field. GameState re-applies it on `start`.
    */
   reset(): void {
-    this.grid = Board.createEmptyGrid();
-    this.lit = Board.createUnlitMap();
-    this.occupied = Board.createUnlitMap();
+    this.grid = Board.createEmptyGrid(this.size);
+    this.lit = Board.createUnlitMap(this.size);
+    this.occupied = Board.createUnlitMap(this.size);
   }
 
   // ── Terrain ──
@@ -104,7 +119,7 @@ export class Board {
 
   /** Where the enemy is standing right now. Replaces the whole set. */
   setOccupied(cells: GridPos[]): void {
-    this.occupied = Board.createUnlitMap();
+    this.occupied = Board.createUnlitMap(this.size);
     for (const p of cells) this.occupied[p.row][p.col] = true;
   }
 
@@ -126,10 +141,15 @@ export class Board {
 
   /** Only inner cells can be room floor, so only they can ever be lit */
   isInner(row: number, col: number): boolean {
-    return isInnerCell(row, col);
+    return isInnerCell(row, col, this.size);
   }
 
-  /** Lit inner cells, 0–INNER_CELLS. O(81), so claim-time only, never per frame. */
+  /** How many cells a full survey of this board would have to light */
+  get innerCells(): number {
+    return innerCellsOf(this.size);
+  }
+
+  /** Lit inner cells. One pass over the board, so claim-time only, never per frame. */
   litCount(): number {
     let n = 0;
     for (const row of this.lit) for (const c of row) if (c) n++;
@@ -144,7 +164,7 @@ export class Board {
   }
 
   clearLit(): void {
-    this.lit = Board.createUnlitMap();
+    this.lit = Board.createUnlitMap(this.size);
   }
 
   /** How many of these cells have never been claimed this run */
@@ -158,7 +178,7 @@ export class Board {
   canPlace(shape: ShapeMatrix, row: number, col: number): boolean {
     const shapeRows = shape.length;
     const shapeCols = shape[0].length;
-    if (row < 0 || col < 0 || row + shapeRows > GRID_SIZE || col + shapeCols > GRID_SIZE) {
+    if (row < 0 || col < 0 || row + shapeRows > this.size || col + shapeCols > this.size) {
       return false;
     }
     for (let r = 0; r < shapeRows; r++) {
@@ -173,8 +193,8 @@ export class Board {
 
   /** Check if a shape fits anywhere on the board */
   canPlaceAnywhere(shape: ShapeMatrix): boolean {
-    for (let row = 0; row <= GRID_SIZE - shape.length; row++) {
-      for (let col = 0; col <= GRID_SIZE - shape[0].length; col++) {
+    for (let row = 0; row <= this.size - shape.length; row++) {
+      for (let col = 0; col <= this.size - shape[0].length; col++) {
         if (this.canPlace(shape, row, col)) return true;
       }
     }
@@ -211,7 +231,7 @@ export class Board {
         const comma = key.indexOf(',');
         const r = Number(key.slice(0, comma));
         const c = Number(key.slice(comma + 1));
-        if (r >= 0 && c >= 0 && r < GRID_SIZE && c < GRID_SIZE) wall[r][c] = true;
+        if (r >= 0 && c >= 0 && r < this.size && c < this.size) wall[r][c] = true;
       }
     }
     return wall;
@@ -229,11 +249,11 @@ export class Board {
   findEnclosures(extraWalls?: ReadonlySet<string>): Region[] {
     const wall = this.wallMap(extraWalls);
     const outside = this.floodFromEdges(wall);
-    const visited: boolean[][] = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(false));
+    const visited: boolean[][] = Array.from({ length: this.size }, () => Array(this.size).fill(false));
     const regions: Region[] = [];
 
-    for (let r = 0; r < GRID_SIZE; r++) {
-      for (let c = 0; c < GRID_SIZE; c++) {
+    for (let r = 0; r < this.size; r++) {
+      for (let c = 0; c < this.size; c++) {
         if (wall[r][c] || outside[r][c] || visited[r][c]) continue;
 
         // Collect this enclosed component
@@ -245,7 +265,7 @@ export class Board {
           cells.push(p);
           for (const [dr, dc] of DIRS) {
             const nr = p.row + dr, nc = p.col + dc;
-            if (nr < 0 || nc < 0 || nr >= GRID_SIZE || nc >= GRID_SIZE) continue;
+            if (nr < 0 || nc < 0 || nr >= this.size || nc >= this.size) continue;
             if (visited[nr][nc] || wall[nr][nc]) continue;
             visited[nr][nc] = true;
             stack.push({ row: nr, col: nc });
@@ -261,7 +281,7 @@ export class Board {
         for (const p of cells) {
           for (const [dr, dc] of DIRS) {
             const nr = p.row + dr, nc = p.col + dc;
-            if (nr < 0 || nc < 0 || nr >= GRID_SIZE || nc >= GRID_SIZE) continue;
+            if (nr < 0 || nc < 0 || nr >= this.size || nc >= this.size) continue;
             if (!wall[nr][nc]) continue;
             const key = `${nr},${nc}`;
             if (seen.has(key)) continue;
@@ -280,7 +300,7 @@ export class Board {
 
   /** Flood fill from border empties: true = reachable from the edge */
   private floodFromEdges(wall: boolean[][]): boolean[][] {
-    const outside: boolean[][] = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(false));
+    const outside: boolean[][] = Array.from({ length: this.size }, () => Array(this.size).fill(false));
     const stack: GridPos[] = [];
     const seed = (r: number, c: number) => {
       if (!wall[r][c] && !outside[r][c]) {
@@ -288,14 +308,14 @@ export class Board {
         stack.push({ row: r, col: c });
       }
     };
-    for (let i = 0; i < GRID_SIZE; i++) {
-      seed(0, i); seed(GRID_SIZE - 1, i); seed(i, 0); seed(i, GRID_SIZE - 1);
+    for (let i = 0; i < this.size; i++) {
+      seed(0, i); seed(this.size - 1, i); seed(i, 0); seed(i, this.size - 1);
     }
     while (stack.length) {
       const p = stack.pop()!;
       for (const [dr, dc] of DIRS) {
         const nr = p.row + dr, nc = p.col + dc;
-        if (nr < 0 || nc < 0 || nr >= GRID_SIZE || nc >= GRID_SIZE) continue;
+        if (nr < 0 || nc < 0 || nr >= this.size || nc >= this.size) continue;
         if (outside[nr][nc] || wall[nr][nc]) continue;
         outside[nr][nc] = true;
         stack.push({ row: nr, col: nc });
@@ -324,8 +344,8 @@ export class Board {
   findClosingCells(extraWalls?: ReadonlySet<string>): GridPos[] {
     const before = this.findEnclosures(extraWalls).length;
     const out: GridPos[] = [];
-    for (let r = 0; r < GRID_SIZE; r++) {
-      for (let c = 0; c < GRID_SIZE; c++) {
+    for (let r = 0; r < this.size; r++) {
+      for (let c = 0; c < this.size; c++) {
         if (this.grid[r][c] !== null) continue;
         // A hint has to promise a placement the board would actually accept
         if (!this.isBuildable(r, c)) continue;
@@ -339,7 +359,7 @@ export class Board {
   }
 
   clone(): Board {
-    const b = new Board();
+    const b = new Board(this.size);
     b.grid = this.grid.map(row => [...row]);
     b.lit = this.lit.map(row => [...row]);
     b.terrain = this.terrain.map(row => [...row]);

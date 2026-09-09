@@ -1,4 +1,4 @@
-import { PieceInstance, GridPos, GRID_SIZE } from '../core/types';
+import { PieceInstance, GridPos } from '../core/types';
 import { Board } from '../core/Board';
 import { LayoutManager } from '../rendering/LayoutManager';
 
@@ -31,7 +31,7 @@ export class DragController {
   private dragging: DragState | null = null;
   private active = false;
   private pointerDownPos: { x: number; y: number } | null = null;
-  private downOn: 'current' | 'hold' | 'rotate' | 'none' = 'none';
+  private downOn: 'current' | 'hold' | 'rotate' | 'skip' | 'none' = 'none';
 
   private lastSnappedRow = 0;
   private lastSnappedCol = 0;
@@ -43,6 +43,8 @@ export class DragController {
   onDragCancel: () => void = () => {};
   onRotate: () => void = () => {};
   onHold: () => void = () => {};
+  /** SKIP: siege only, and the layout gives it no rectangle anywhere else */
+  onSkip: () => void = () => {};
 
   constructor(layoutManager: LayoutManager, board: Board) {
     this.layoutManager = layoutManager;
@@ -105,6 +107,8 @@ export class DragController {
       this.downOn = 'hold';
     } else if (LayoutManager.inRect(layout.rotateRect, px, py)) {
       this.downOn = 'rotate';
+    } else if (LayoutManager.inRect(layout.skipRect, px, py)) {
+      this.downOn = 'skip';
     } else if (this.current && LayoutManager.inRect(layout.currentRect, px, py)) {
       this.downOn = 'current';
       this.dragging = {
@@ -144,6 +148,8 @@ export class DragController {
       this.onHold();
     } else if (isTap && this.downOn === 'rotate') {
       this.onRotate();
+    } else if (isTap && this.downOn === 'skip') {
+      this.onSkip();
     } else if (isTap && this.downOn === 'current' && this.dragging) {
       // Tap on the piece in hand: rotate instead of dropping
       this.dragging = null;
@@ -200,8 +206,8 @@ export class DragController {
     this.lastSnappedRow = row;
     this.lastSnappedCol = col;
 
-    const clampedRow = Math.max(-piece.rows + 1, Math.min(GRID_SIZE - 1, row));
-    const clampedCol = Math.max(-piece.cols + 1, Math.min(GRID_SIZE - 1, col));
+    const clampedRow = Math.max(-piece.rows + 1, Math.min(layout.gridCells - 1, row));
+    const clampedCol = Math.max(-piece.cols + 1, Math.min(layout.gridCells - 1, col));
     this.dragging.gridPos = { row: clampedRow, col: clampedCol };
     this.dragging.isValid = this.board.canPlace(piece.shape, clampedRow, clampedCol);
   }

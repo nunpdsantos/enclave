@@ -31,12 +31,8 @@ function readLastDifficulty(): Difficulty {
  * be a run that does not match the screen the player pressed PLAY on.
  */
 function currentSiegeConfig(): GameConfig {
-  const s = loadSettings();
-  return siegeConfig(
-    isMissionId(s.siegeMission) ? s.siegeMission : 'm1',
-    s.siegeEnemy,
-    s.siegeGoal,
-  );
+  const stored = loadSettings().siegeMission;
+  return siegeConfig(isMissionId(stored) ? stored : 'm1');
 }
 
 function saveLastDifficulty(d: Difficulty): void {
@@ -131,8 +127,7 @@ async function boot() {
     // The siege asks for none: nothing about it is posted, so a ticket would
     // only be a round trip spent to be told what this client already knows.
     // Its config comes from the menu's picker instead of from the mode table,
-    // because the mode alone does not name a run — the map, the enemy and the
-    // goal all change what the same eighteen pieces do.
+    // because the mode alone does not name a run: the mission does.
     const isSiege = selectedDifficulty === 'siege';
     const ticket = isSiege ? null : await requestRunTicket(selectedDifficulty);
     runToken = ticket?.token ?? null;

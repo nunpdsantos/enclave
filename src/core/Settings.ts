@@ -36,10 +36,14 @@ export interface GameSettings {
   palette: PaletteSetting;
   /** Mirror the HOLD slot and NEXT column for left-thumb play */
   leftHanded: boolean;
-  /** Last siege picked in the menu — mission, enemy and goal */
+  /**
+   * The siege has its own first-run card: Classic's is about a clock and an
+   * area² claim, and neither is in the mode. Its own flag too, so meeting one
+   * does not silently spend the other.
+   */
+  siegeTutorialSeen: boolean;
+  /** Last mission picked in the siege picker */
   siegeMission: string;
-  siegeEnemy: 'raiders' | 'tide';
-  siegeGoal: 'finite' | 'endless';
 }
 
 const SETTINGS_KEY = 'enclave_settings_v1';
@@ -63,11 +67,9 @@ const DEFAULT_SETTINGS: GameSettings = {
   motion: 'system',
   palette: 'standard',
   leftHanded: false,
-  // The first siege anyone should meet: one gate, discrete raiders, a win
-  // state at eighteen pieces.
+  siegeTutorialSeen: false,
+  // The one mission the picker offers: one gate, no cover, relief in eighteen
   siegeMission: 'm1',
-  siegeEnemy: 'raiders',
-  siegeGoal: 'finite',
 };
 
 function bestKey(difficulty: Difficulty): string {

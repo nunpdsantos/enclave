@@ -14,6 +14,9 @@ const SURVEY_FLASH_SECONDS = 2.2;
 /** Steps from the Keep at which the siege HUD starts shouting */
 export const BREACH_WARNING_STEPS = 2;
 
+/** Turns left at which the relief countdown turns gold: the home straight */
+const RELIEF_GOLD_AT = 5;
+
 /**
  * Heads-up display for the game scene.
  *
@@ -41,13 +44,23 @@ export class UIRenderer {
   private goalText: Text;
   private surveyText: Text;
   private paceText: Text;
-  /** Siege: pieces left or turn number, above the clock bar */
-  private siegeCountText: Text;
-  /** Siege: enemies still on the board */
-  private siegeEnemyText: Text;
-  /** Siege: an enemy is within two steps of the Keep */
+  /** Siege: the countdown the whole mode is about */
+  private siegeReliefText: Text;
+  /** Siege: raiders taken, and the ground still held */
+  private siegeCapturedText: Text;
+  private siegeHeldText: Text;
+  /** Siege: which turn the next wave lands on */
+  private siegeForecastText: Text;
+  /** Siege: a raider is within two steps of the Keep */
   private siegeBreachText: Text;
   private breachPhase = 0;
+  /**
+   * The siege HUD replaces the Classic one rather than sitting beside it: a
+   * tier chip, a streak and a clock bar are three readouts for rules this
+   * mode does not have, and leaving them on screen is what made it read as
+   * two games at once.
+   */
+  private siegeMode = false;
   private progressBarGfx: Graphics;
   private layout!: Layout;
 
@@ -198,23 +211,40 @@ export class UIRenderer {
     });
     this.paceText.visible = false;
 
-    // The siege HUD. All three start hidden, so a Classic run never shows a
+    // The siege HUD. All of it starts hidden, so a Classic run never shows a
     // readout for a mode it is not in.
-    this.siegeCountText = new Text({
+    this.siegeReliefText = new Text({
       text: '',
       style: new TextStyle({
-        fontFamily: FONT_MONO, fontSize: 13, fill: THEME.textPrimary, letterSpacing: 1,
+        fontFamily: FONT_DISPLAY, fontSize: 16, fontWeight: '800',
+        fill: THEME.textPrimary, letterSpacing: 3,
       }),
     });
-    this.siegeCountText.visible = false;
+    this.siegeReliefText.visible = false;
 
-    this.siegeEnemyText = new Text({
+    this.siegeCapturedText = new Text({
+      text: '',
+      style: new TextStyle({
+        fontFamily: FONT_MONO, fontSize: 12, fill: THEME.textSecondary, letterSpacing: 1,
+      }),
+    });
+    this.siegeCapturedText.visible = false;
+
+    this.siegeHeldText = new Text({
+      text: '',
+      style: new TextStyle({
+        fontFamily: FONT_MONO, fontSize: 12, fill: SIEGE.heldEdge, letterSpacing: 1,
+      }),
+    });
+    this.siegeHeldText.visible = false;
+
+    this.siegeForecastText = new Text({
       text: '',
       style: new TextStyle({
         fontFamily: FONT_MONO, fontSize: 10, fill: THEME.textMuted, letterSpacing: 1,
       }),
     });
-    this.siegeEnemyText.visible = false;
+    this.siegeForecastText.visible = false;
 
     this.siegeBreachText = new Text({
       text: 'BREACH',
@@ -246,15 +276,42 @@ export class UIRenderer {
     this.container.addChild(this.timerText);
     this.container.addChild(this.speedText);
     this.container.addChild(this.paceText);
-    this.container.addChild(this.siegeCountText);
-    this.container.addChild(this.siegeEnemyText);
+    this.container.addChild(this.siegeReliefText);
+    this.container.addChild(this.siegeCapturedText);
+    this.container.addChild(this.siegeHeldText);
+    this.container.addChild(this.siegeForecastText);
     this.container.addChild(this.siegeBreachText);
+  }
+
+  /**
+   * Switch the HUD to the siege's three lines, once, when the run starts.
+   *
+   * Everything Classic shows about scoring — the tier chip and its bar, the
+   * streak, the survey, the pace ghost, the clock and the speed bar — is
+   * turned off here rather than left to each update call to remember.
+   */
+  setSiegeMode(on: boolean): void {
+    this.siegeMode = on;
+    if (!on) return;
+    for (const node of [
+      this.tierPanel, this.rankText, this.goalText, this.progressBarGfx,
+      this.streakText, this.streakPips, this.surveyText, this.paceText,
+      this.speedText, this.speedBarGfx, this.timerText, this.timerBarGfx,
+      this.scoreLabelText,
+    ]) {
+      node.visible = false;
+    }
+    // The score is mastery here, not the headline: relief is.
+    this.scoreText.style.fontSize = 13;
+    this.scoreText.style.dropShadow = false;
+    if (this.layout) this.setLayout(this.layout);
   }
 
   setLayout(layout: Layout): void {
     this.layout = layout;
     const left = layout.gridOriginX;
     const right = layout.gridOriginX + layout.gridSize;
+    if (this.siegeMode) { this.layoutSiegeHud(layout, left, right); return; }
 
     this.scoreLabelText.anchor.set(0.5, 0);
     this.scoreLabelText.x = layout.width / 2;
@@ -310,20 +367,48 @@ export class UIRenderer {
     this.paceText.x = layout.width / 2;
     this.paceText.y = layout.gridOriginY - 28;
 
-    // The siege takes the same three slots the other modes use: the count
-    // where the speed readout sits, the enemy tally under the tier chip, and
-    // the warning in the free band down the middle.
-    this.siegeCountText.anchor.set(1, 1);
-    this.siegeCountText.x = right;
-    this.siegeCountText.y = layout.gridOriginY - 27;
+  }
 
-    this.siegeEnemyText.anchor.set(0, 0);
-    this.siegeEnemyText.x = left + 10;
-    this.siegeEnemyText.y = 52;
+  /**
+   * Three lines in sixty-four pixels, and the order is the argument:
+   *
+   *   RELIEF IN 12 TURNS          ← what the run is
+   *   CAPTURED 3      HELD 12     ← the two things that pay
+   *   SCORE 940  BEST 1,200   NEXT RAIDERS: TURN 5
+   *
+   * The right of the second line stays empty because the pause button lives
+   * there; the third clears it.
+   */
+  private layoutSiegeHud(layout: Layout, left: number, right: number): void {
+    this.siegeReliefText.anchor.set(0.5, 0);
+    this.siegeReliefText.x = layout.width / 2;
+    this.siegeReliefText.y = 6;
 
+    this.siegeCapturedText.anchor.set(0, 0);
+    this.siegeCapturedText.x = left;
+    this.siegeCapturedText.y = 28;
+
+    this.siegeHeldText.anchor.set(0.5, 0);
+    this.siegeHeldText.x = layout.width / 2;
+    this.siegeHeldText.y = 28;
+
+    this.scoreText.anchor.set(0, 0);
+    this.scoreText.x = left;
+    this.scoreText.y = 46;
+
+    this.bestLabelText.visible = false;
+    this.bestText.anchor.set(0.5, 0);
+    this.bestText.x = layout.width / 2;
+    this.bestText.y = 46;
+
+    this.siegeForecastText.anchor.set(1, 0);
+    this.siegeForecastText.x = right;
+    this.siegeForecastText.y = 46;
+
+    // The breach warning takes the strip between the HUD and the board
     this.siegeBreachText.anchor.set(0.5, 1);
     this.siegeBreachText.x = layout.width / 2;
-    this.siegeBreachText.y = layout.gridOriginY - 28;
+    this.siegeBreachText.y = layout.gridOriginY - 4;
   }
 
   /** Per-frame: score punch decay, and the survey celebration timing out */
@@ -349,50 +434,44 @@ export class UIRenderer {
   }
 
   /**
-   * The siege readouts: how much of the mission is left, how many enemies are
-   * on the board, and whether one of them is about to be inside the Keep.
-   *
-   * `pieces` is null in an endless siege, where `turn` is the number that
-   * means something instead.
+   * The siege readouts: how long the Keep has to hold, what holding it has
+   * earned so far, and when the next wave lands.
    */
   updateSiege(opts: {
-    pieces: number | null;
-    budget: number;
-    turn: number;
+    /** Turns until relief arrives */
+    reliefIn: number;
+    captured: number;
+    /** Held floor cells — what the ground pays per turn */
+    held: number;
     enemies: number;
     stepsToKeep: number;
-    /** Which gate the next wave uses and how many placements away it is */
-    nextSpawn: { gate: number; inTurns: number } | null;
-    /** Seconds until the tide's next expansion, or null for the raiders */
-    nextTideIn: number | null;
-    /** The pieces are spent and the mission is now only being outlasted */
-    holdingOut: boolean;
+    /** The turn the next wave lands on, or null when there are none left */
+    nextRaidersTurn: number | null;
   }): void {
-    // Once the pieces are gone the count means nothing and the only question
-    // left is whether the Keep outlasts the flood
-    this.siegeCountText.text = opts.holdingOut
-      ? 'HOLD OUT'
-      : opts.pieces !== null
-        ? `PIECES ${opts.pieces}/${opts.budget}`
-        : `TURN ${opts.turn}`;
-    this.siegeCountText.style.fill = opts.holdingOut
+    this.siegeReliefText.text = opts.reliefIn === 1
+      ? 'RELIEF IN 1 TURN'
+      : `RELIEF IN ${opts.reliefIn} TURNS`;
+    this.siegeReliefText.style.fill = opts.reliefIn <= RELIEF_GOLD_AT
       ? THEME.gold
-      : opts.pieces !== null && opts.pieces <= PIECES_LOW_AT
-        ? THEME.gold
-        : THEME.textPrimary;
-    this.siegeCountText.visible = true;
+      : THEME.textPrimary;
+    this.siegeReliefText.visible = true;
 
-    // Enemies on the board, and what is coming. A player who cannot see the
-    // next wave has no way to spend a placement on preparing for it, which is
-    // most of what the mode is supposed to be about.
-    const forecast = opts.nextSpawn
-      ? `  ·  GATE ${opts.nextSpawn.gate + 1} IN ${opts.nextSpawn.inTurns}`
-      : opts.nextTideIn !== null
-        ? `  ·  TIDE ${opts.nextTideIn.toFixed(1)}s`
-        : '';
-    this.siegeEnemyText.text = `ENEMIES ${opts.enemies}${forecast}`;
-    this.siegeEnemyText.style.fill = opts.enemies > 0 ? SIEGE.threat : THEME.textMuted;
-    this.siegeEnemyText.visible = true;
+    this.siegeCapturedText.text = `CAPTURED ${opts.captured}`;
+    this.siegeCapturedText.visible = true;
+
+    this.siegeHeldText.text = `HELD ${opts.held}`;
+    this.siegeHeldText.style.fill = opts.held > 0 ? SIEGE.heldEdge : THEME.textMuted;
+    this.siegeHeldText.visible = true;
+
+    // A player who cannot see the next wave has no way to spend a turn
+    // preparing for it, which is most of what the mode is supposed to be about.
+    this.siegeForecastText.text = opts.nextRaidersTurn !== null
+      ? `NEXT RAIDERS: TURN ${opts.nextRaidersTurn}`
+      : 'NO MORE WAVES';
+    this.siegeForecastText.style.fill = opts.nextRaidersTurn !== null
+      ? THEME.textMuted
+      : SIEGE.heldEdge;
+    this.siegeForecastText.visible = true;
 
     const warn = opts.enemies > 0 && opts.stepsToKeep <= BREACH_WARNING_STEPS;
     if (warn) {
@@ -402,10 +481,6 @@ export class UIRenderer {
       this.siegeBreachText.alpha = 1;
     }
     this.siegeBreachText.visible = warn;
-
-    // The siege has no speed bonus and no streak, so nothing of either shows
-    this.speedBarGfx.clear();
-    this.speedText.visible = false;
   }
 
   /**
@@ -456,8 +531,12 @@ export class UIRenderer {
       this.scorePunch = Math.min(1, 0.35 + Math.min(delta / 400, 0.65));
       this.lastScore = score;
     }
-    this.scoreText.text = score.toLocaleString();
-    this.updateScoreColor(score);
+    this.scoreText.text = this.siegeMode
+      ? `SCORE ${score.toLocaleString()}`
+      : score.toLocaleString();
+    // Score tiers are Classic's ladder; the siege's number is mastery, and it
+    // does not change colour to tell you which band of it you are in.
+    if (!this.siegeMode) this.updateScoreColor(score);
   }
 
   /**
@@ -496,9 +575,12 @@ export class UIRenderer {
 
   updateHighScore(highScore: number): void {
     if (highScore > 0) {
-      this.bestText.text = highScore.toLocaleString();
+      // The siege has no room for a label above the number, so it carries one
+      this.bestText.text = this.siegeMode
+        ? `BEST ${highScore.toLocaleString()}`
+        : highScore.toLocaleString();
       this.bestText.visible = true;
-      this.bestLabelText.visible = true;
+      this.bestLabelText.visible = !this.siegeMode;
     } else {
       this.bestText.visible = false;
       this.bestLabelText.visible = false;
@@ -507,15 +589,20 @@ export class UIRenderer {
 
   /** Flash the BEST readout gold once the player passes it */
   markNewBest(score: number): void {
-    this.bestText.text = score.toLocaleString();
+    this.bestText.text = this.siegeMode
+      ? `BEST ${score.toLocaleString()}`
+      : score.toLocaleString();
     this.bestText.style.fill = THEME.gold;
     this.bestLabelText.text = 'NEW BEST';
     this.bestLabelText.style.fill = THEME.gold;
     this.bestText.visible = true;
-    this.bestLabelText.visible = true;
+    this.bestLabelText.visible = !this.siegeMode;
   }
 
   updateProgress(difficulty: Difficulty, score: number): void {
+    // No tiers in the siege: one ladder is a Classic idea, and a siege that
+    // announced ARCHITECT halfway through a wave would be the other game.
+    if (this.siegeMode) return;
     const status = getProgressStatus(difficulty, score);
     this.rankText.text = status.current.label;
     this.rankText.style.fill = status.current.color;

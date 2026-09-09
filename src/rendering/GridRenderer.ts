@@ -1,5 +1,5 @@
 import { Container, Graphics } from 'pixi.js';
-import { GRID_SIZE, Grid, GridPos, CellColor, EchoWall, Region, TerrainGrid } from '../core/types';
+import { Grid, GridPos, CellColor, EchoWall, Region, TerrainGrid } from '../core/types';
 import { isInnerCell } from '../core/Board';
 import { SiegeIntent } from '../core/Siege';
 import { Layout } from './LayoutManager';
@@ -34,10 +34,21 @@ const OUTLINE_DURATION = 0.9;
 /** How solid an echo wall looks at the instant the claim removes it */
 const ECHO_MAX_ALPHA = 0.55;
 
-/** How much of a cell the tide fills, and how solid it is */
-const TIDE_ALPHA = 0.45;
 /** A raider's circle, as a fraction of the cell */
 const RAIDER_RADIUS = 0.30;
+
+/** How solid a held courtyard reads. Quiet: it is under everything. */
+const HELD_ALPHA = 0.30;
+/** Seconds a courtyard takes to fill in, and to drain back out */
+const HELD_FILL_SECONDS = 0.35;
+/** How long a capture burst and a wall shatter last */
+const CAPTURE_SECONDS = 0.45;
+const WALL_BREAK_SECONDS = 0.4;
+
+/** One held cell, mid-fill or mid-drain */
+interface HeldCell { row: number; col: number; t: number; target: 0 | 1 }
+/** A raider that was just taken, or a wall that was just knocked down */
+interface Burst { row: number; col: number; life: number }
 
 export class GridRenderer {
   container: Container;
@@ -45,6 +56,8 @@ export class GridRenderer {
   /** The mission map, under everything: keep, gates, ruins */
   private terrainGraphics: Graphics;
   private floorGraphics: Graphics;
+  /** Courtyards the player holds: persistent, above the map, under the walls */
+  private heldGraphics: Graphics;
   private echoGraphics: Graphics;
   private blockGraphics: Graphics;
   private hintGraphics: Graphics;
@@ -78,20 +91,22 @@ export class GridRenderer {
   // ── Siege ──
   private terrain: TerrainGrid | null = null;
   private raiderCells: GridPos[] = [];
-  private tideCells: GridPos[] = [];
   private intent: SiegeIntent | null = null;
   /** What the enemy would do if the piece under the finger were dropped */
   private previewIntent: SiegeIntent | null = null;
   private previewCaptured: GridPos[] = [];
-  /** 0–1 through the tide's current interval, for the countdown ring */
-  private tideProgress = 0;
   private intentPhase = 0;
+  /** Held courtyards, keyed 'row,col', each on its own fill or drain */
+  private heldCells = new Map<string, HeldCell>();
+  private captureBursts: Burst[] = [];
+  private wallBreaks: Burst[] = [];
 
   constructor() {
     this.container = new Container();
     this.bgGraphics = new Graphics();
     this.terrainGraphics = new Graphics();
     this.floorGraphics = new Graphics();
+    this.heldGraphics = new Graphics();
     this.echoGraphics = new Graphics();
     this.glowGraphics = new Graphics();
     this.blockGraphics = new Graphics();
@@ -107,6 +122,8 @@ export class GridRenderer {
     // under everything the run puts on top of it
     this.container.addChild(this.terrainGraphics);
     this.container.addChild(this.floorGraphics);
+    // Held ground sits on the map and under everything that moves
+    this.container.addChild(this.heldGraphics);
     // Above the floor it stands on, below the blocks it used to be one of
     this.container.addChild(this.echoGraphics);
     this.container.addChild(this.glowGraphics);
@@ -133,6 +150,7 @@ export class GridRenderer {
     }
     this.drawEcho();
     if (this.terrain) this.drawTerrain(this.terrain);
+    this.drawHeld();
     this.drawEnemies();
     this.drawIntent();
   }
@@ -151,8 +169,8 @@ export class GridRenderer {
     g.roundRect(gridOriginX - pad, gridOriginY - pad, gridSize + pad * 2, gridSize + pad * 2, 14);
     g.stroke({ width: 1.5, color: cellWellBorder, alpha: 0.6 });
 
-    for (let r = 0; r < GRID_SIZE; r++) {
-      for (let c = 0; c < GRID_SIZE; c++) {
+    for (let r = 0; r < this.layout.gridCells; r++) {
+      for (let c = 0; c < this.layout.gridCells; c++) {
         const x = gridOriginX + c * cellSize + CELL_GAP;
         const y = gridOriginY + r * cellSize + CELL_GAP;
         const s = cellSize - CELL_GAP * 2;
@@ -182,8 +200,8 @@ export class GridRenderer {
     const floorColor = lighten(getBoardTokens().cellWell, LIT_LIGHTEN);
     const s = cellSize - CELL_GAP * 2;
 
-    for (let r = 0; r < GRID_SIZE; r++) {
-      for (let c = 0; c < GRID_SIZE; c++) {
+    for (let r = 0; r < this.layout.gridCells; r++) {
+      for (let c = 0; c < this.layout.gridCells; c++) {
         if (!lit[r][c]) continue;
         const x = gridOriginX + c * cellSize + CELL_GAP;
         const y = gridOriginY + r * cellSize + CELL_GAP;
@@ -201,8 +219,9 @@ export class GridRenderer {
    * redrawing keeps this free per frame.
    */
   surveyFadeOut(): void {
-    const full = Array.from({ length: GRID_SIZE }, (_, r) =>
-      Array.from({ length: GRID_SIZE }, (_, c) => isInnerCell(r, c)),
+    const cells = this.layout.gridCells;
+    const full = Array.from({ length: cells }, (_, r) =>
+      Array.from({ length: cells }, (_, c) => isInnerCell(r, c, cells)),
     );
     this.drawFloor(full);
     this.floorFade = FLOOR_FADE_DURATION;
@@ -219,10 +238,10 @@ export class GridRenderer {
     g.clear();
     const { gridOriginX, gridOriginY, cellSize } = this.layout;
     const filled = (r: number, c: number): boolean =>
-      r >= 0 && c >= 0 && r < GRID_SIZE && c < GRID_SIZE && grid[r][c] !== null;
+      r >= 0 && c >= 0 && r < this.layout.gridCells && c < this.layout.gridCells && grid[r][c] !== null;
 
-    for (let r = 0; r < GRID_SIZE; r++) {
-      for (let c = 0; c < GRID_SIZE; c++) {
+    for (let r = 0; r < this.layout.gridCells; r++) {
+      for (let c = 0; c < this.layout.gridCells; c++) {
         const color = grid[r][c];
         if (color === null) continue;
         drawWallBlock(
@@ -257,21 +276,21 @@ export class GridRenderer {
       byColor.set(mortar, segments);
     };
 
-    for (let r = 0; r < GRID_SIZE; r++) {
-      for (let c = 0; c < GRID_SIZE; c++) {
+    for (let r = 0; r < this.layout.gridCells; r++) {
+      for (let c = 0; c < this.layout.gridCells; c++) {
         const color = grid[r][c];
         if (color === null) continue;
         const x = gridOriginX + c * cellSize;
         const y = gridOriginY + r * cellSize;
         // Each shared edge is visited once, from the cell above/left of it.
         // The seam spans only where both tiles are painted, hence the insets.
-        const right = c + 1 < GRID_SIZE ? grid[r][c + 1] : null;
+        const right = c + 1 < this.layout.gridCells ? grid[r][c + 1] : null;
         if (right !== null) {
           const top = y + (filled(r - 1, c) && filled(r - 1, c + 1) ? 0 : BLOCK_INSET);
           const bottom = y + cellSize - (filled(r + 1, c) && filled(r + 1, c + 1) ? 0 : BLOCK_INSET);
           seam(color, right, x + cellSize, top, x + cellSize, bottom);
         }
-        const below = r + 1 < GRID_SIZE ? grid[r + 1][c] : null;
+        const below = r + 1 < this.layout.gridCells ? grid[r + 1][c] : null;
         if (below !== null) {
           const left = x + (filled(r, c - 1) && filled(r + 1, c - 1) ? 0 : BLOCK_INSET);
           const rightX = x + cellSize - (filled(r, c + 1) && filled(r + 1, c + 1) ? 0 : BLOCK_INSET);
@@ -312,7 +331,7 @@ export class GridRenderer {
     const grid = this.blockGrid;
     const ghosts = new Set(this.echoes.map(e => `${e.row},${e.col}`));
     const walled = (r: number, c: number): boolean =>
-      r >= 0 && c >= 0 && r < GRID_SIZE && c < GRID_SIZE
+      r >= 0 && c >= 0 && r < this.layout.gridCells && c < this.layout.gridCells
       && ((grid !== null && grid[r][c] !== null) || ghosts.has(`${r},${c}`));
 
     for (const e of this.echoes) {
@@ -355,8 +374,8 @@ export class GridRenderer {
     const { gridOriginX, gridOriginY, cellSize } = this.layout;
     const s = cellSize - CELL_GAP * 2;
 
-    for (let r = 0; r < GRID_SIZE; r++) {
-      for (let c = 0; c < GRID_SIZE; c++) {
+    for (let r = 0; r < this.layout.gridCells; r++) {
+      for (let c = 0; c < this.layout.gridCells; c++) {
         const kind = terrain[r][c];
         if (kind === 'floor') continue;
         const x = gridOriginX + c * cellSize + CELL_GAP;
@@ -404,10 +423,59 @@ export class GridRenderer {
     g.stroke({ color: SIEGE.keepMark, width: Math.max(1.5, s * 0.1) });
   }
 
-  /** Where the enemy is. Raiders are circles, the tide is a flood. */
-  setEnemies(raiders: GridPos[], tide: GridPos[]): void {
+  /**
+   * The courtyards the player holds.
+   *
+   * Persistent, not a celebration: ground that is yours stays filled for as
+   * long as it is sealed, because it is paying you every turn. Cells fade in
+   * when they become held and drain back out when a wall comes down and lets
+   * the outside in — which is the only feedback that says what a broken wall
+   * actually cost.
+   */
+  setHeld(cells: GridPos[]): void {
+    const wanted = new Set(cells.map(c => `${c.row},${c.col}`));
+    for (const cell of cells) {
+      const key = `${cell.row},${cell.col}`;
+      const existing = this.heldCells.get(key);
+      if (existing) existing.target = 1;
+      else this.heldCells.set(key, { row: cell.row, col: cell.col, t: 0, target: 1 });
+    }
+    for (const [key, cell] of this.heldCells) {
+      if (!wanted.has(key)) cell.target = 0;
+    }
+    this.drawHeld();
+  }
+
+  private drawHeld(): void {
+    const g = this.heldGraphics;
+    g.clear();
+    if (!this.layout || this.heldCells.size === 0) return;
+    const { gridOriginX, gridOriginY, cellSize } = this.layout;
+    const s = cellSize - CELL_GAP * 2;
+    for (const cell of this.heldCells.values()) {
+      if (cell.t <= 0.01) continue;
+      const x = gridOriginX + cell.col * cellSize + CELL_GAP;
+      const y = gridOriginY + cell.row * cellSize + CELL_GAP;
+      g.roundRect(x, y, s, s, CELL_RADIUS);
+      g.fill({ color: SIEGE.held, alpha: HELD_ALPHA * cell.t });
+      g.roundRect(x + 1.5, y + 1.5, s - 3, s - 3, Math.max(1, CELL_RADIUS - 1));
+      g.stroke({ color: SIEGE.heldEdge, alpha: 0.45 * cell.t, width: 1 });
+    }
+  }
+
+  /** A raider was taken. Distinct from a wall coming down, deliberately. */
+  captureCells(cells: GridPos[]): void {
+    for (const cell of cells) this.captureBursts.push({ row: cell.row, col: cell.col, life: 0 });
+  }
+
+  /** A raider knocked a wall down. Grey shards, not a gold burst. */
+  breakCells(cells: GridPos[]): void {
+    for (const cell of cells) this.wallBreaks.push({ row: cell.row, col: cell.col, life: 0 });
+  }
+
+  /** Where the raiders are */
+  setEnemies(raiders: GridPos[]): void {
     this.raiderCells = raiders;
-    this.tideCells = tide;
     this.drawEnemies();
   }
 
@@ -416,16 +484,6 @@ export class GridRenderer {
     g.clear();
     if (!this.layout) return;
     const { gridOriginX, gridOriginY, cellSize } = this.layout;
-    const s = cellSize - CELL_GAP * 2;
-
-    for (const cell of this.tideCells) {
-      const x = gridOriginX + cell.col * cellSize + CELL_GAP;
-      const y = gridOriginY + cell.row * cellSize + CELL_GAP;
-      g.roundRect(x, y, s, s, CELL_RADIUS);
-      g.fill({ color: SIEGE.enemy, alpha: TIDE_ALPHA });
-      g.roundRect(x + 1, y + 1, s - 2, s - 2, CELL_RADIUS - 1);
-      g.stroke({ color: SIEGE.enemy, alpha: 0.55, width: 1 });
-    }
 
     const radius = cellSize * RAIDER_RADIUS;
     for (const cell of this.raiderCells) {
@@ -443,14 +501,13 @@ export class GridRenderer {
   /**
    * What the enemy does next, drawn before the player commits.
    *
-   * The make-or-break feature of the mode: an arrow into the cell each raider
-   * will step to, a red outline round any wall that will be attacked, and a
-   * countdown ring on the tide's next cell. Redrawn whenever the placement
-   * might have changed the answer, which is on every snapped drag position.
+   * The make-or-break feature of the mode: a ring on the cell each raider
+   * will step into, and a red outline round any wall that will be attacked.
+   * Redrawn whenever the placement might have changed the answer, which is on
+   * every snapped drag position.
    */
-  setIntent(intent: SiegeIntent | null, tideProgress: number = 0): void {
+  setIntent(intent: SiegeIntent | null): void {
     this.intent = intent;
-    this.tideProgress = Math.max(0, Math.min(1, tideProgress));
     this.drawIntent();
   }
 
@@ -501,9 +558,7 @@ export class GridRenderer {
       g.stroke({ color: SIEGE.threat, alpha: 0.55 + pulse * 0.4, width: 2.5 });
     }
 
-    // The tide has no turn to count down to, so it counts down in seconds:
-    // the ring closes as its next expansion comes due.
-    // Enemies the drop would destroy: struck out, because their next move is
+    // Raiders the drop would destroy: struck out, because their next move is
     // not going to happen
     for (const cell of this.previewCaptured) {
       const [cx, cy] = centre(cell);
@@ -513,21 +568,6 @@ export class GridRenderer {
       g.moveTo(cx + r, cy - r);
       g.lineTo(cx - r, cy + r);
       g.stroke({ color: THEME.gold, alpha: 0.95, width: 3 });
-    }
-
-    const next = intent.tideTarget;
-    if (next) {
-      const [cx, cy] = centre(next);
-      const r = cellSize * 0.32;
-      g.circle(cx, cy, r);
-      g.stroke({ color: SIEGE.intent, alpha: 0.28, width: 2 });
-      const sweep = Math.PI * 2 * this.tideProgress;
-      if (sweep > 0.01) {
-        const start = -Math.PI / 2;
-        g.moveTo(cx + Math.cos(start) * r, cy + Math.sin(start) * r);
-        g.arc(cx, cy, r, start, start + sweep);
-        g.stroke({ color: SIEGE.threat, alpha: 0.95, width: 3 });
-      }
     }
   }
 
@@ -687,6 +727,60 @@ export class GridRenderer {
       dg.fill({ color: lighten(d.color, 0.7), alpha: flash * 0.85 * alpha });
     }
 
+    // Held ground fills in and drains out. Only redrawn while something is
+    // actually moving; a settled courtyard costs nothing per frame.
+    if (this.heldCells.size > 0) {
+      let moving = false;
+      for (const [key, cell] of this.heldCells) {
+        const step = dt / HELD_FILL_SECONDS;
+        if (cell.target === 1 && cell.t < 1) { cell.t = Math.min(1, cell.t + step); moving = true; }
+        else if (cell.target === 0) {
+          cell.t = Math.max(0, cell.t - step);
+          moving = true;
+          if (cell.t === 0) this.heldCells.delete(key);
+        }
+      }
+      if (moving) this.drawHeld();
+    }
+
+    // A capture: a ring off the cell the raider stood on, gold, quick
+    for (let i = this.captureBursts.length - 1; i >= 0; i--) {
+      const b = this.captureBursts[i];
+      b.life += dt;
+      const t = b.life / CAPTURE_SECONDS;
+      if (t >= 1) { this.captureBursts.splice(i, 1); continue; }
+      const cx = gridOriginX + b.col * cellSize + cellSize / 2;
+      const cy = gridOriginY + b.row * cellSize + cellSize / 2;
+      const r = cellSize * (0.2 + easeOutBack(Math.min(1, t * 1.6)) * 0.55);
+      cg.circle(cx, cy, r);
+      cg.stroke({ color: THEME.gold, alpha: (1 - t) * 0.9, width: 3 });
+      cg.circle(cx, cy, r * 0.45);
+      cg.fill({ color: THEME.goldGlow, alpha: (1 - t) * 0.5 });
+    }
+
+    // A wall coming down: grey shards falling out of the gap, no gold in it
+    for (let i = this.wallBreaks.length - 1; i >= 0; i--) {
+      const b = this.wallBreaks[i];
+      b.life += dt;
+      const t = b.life / WALL_BREAK_SECONDS;
+      if (t >= 1) { this.wallBreaks.splice(i, 1); continue; }
+      const cx = gridOriginX + b.col * cellSize + cellSize / 2;
+      const cy = gridOriginY + b.row * cellSize + cellSize / 2;
+      const spread = cellSize * (0.15 + t * 0.5);
+      const shard = Math.max(2, cellSize * 0.18 * (1 - t));
+      for (let k = 0; k < 4; k++) {
+        const a = (k / 4) * Math.PI * 2 + 0.6;
+        dg.rect(
+          cx + Math.cos(a) * spread - shard / 2,
+          cy + Math.sin(a) * spread - shard / 2 + t * cellSize * 0.3,
+          shard, shard,
+        );
+      }
+      dg.fill({ color: SIEGE.rubble, alpha: (1 - t) * 0.85 });
+      dg.roundRect(cx - cellSize * 0.34, cy - cellSize * 0.34, cellSize * 0.68, cellSize * 0.68, CELL_RADIUS);
+      dg.stroke({ color: SIEGE.threat, alpha: (1 - t) * 0.7, width: 2 });
+    }
+
     // The intent layer breathes, so an arrow reads as live rather than painted
     if (this.intent || this.previewIntent) {
       this.intentPhase += dt * 3;
@@ -711,7 +805,8 @@ export class GridRenderer {
   }
 
   get isAnimating(): boolean {
-    return this.dying.length > 0 || this.claiming.length > 0;
+    return this.dying.length > 0 || this.claiming.length > 0
+      || this.captureBursts.length > 0 || this.wallBreaks.length > 0;
   }
 
   /** Board border heartbeat: clock drives color/rate; crowding tints it orange */

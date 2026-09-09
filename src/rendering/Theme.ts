@@ -61,6 +61,15 @@ export const SIEGE = {
   /** The intent overlay: where it is going, and what it will hit */
   intent: 0xff8a8a,
   threat: 0xff4d4d,
+  /**
+   * A courtyard you hold. Cool and quiet against the oxblood of the raiders,
+   * because it is on screen for the whole run and pays every turn — it is the
+   * board's resting state, not an event.
+   */
+  held: 0x2f7f8f,
+  heldEdge: 0x7fdbe8,
+  /** What is left of a wall a raider knocked down */
+  rubble: 0x8d93a3,
 } as const;
 
 export interface BoardTokens {

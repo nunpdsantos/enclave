@@ -4,7 +4,7 @@ import { isDailyKey } from './Daily';
 import { GameState } from './GameState';
 import { rotationCount } from './Pieces';
 import { RULES_VERSION } from './Rules';
-import { GRID_SIZE, MAX_REPLAY_MOVES, Replay, RunEndCause } from './types';
+import { MAX_REPLAY_MOVES, Replay, RunEndCause } from './types';
 
 /**
  * Re-play a run from its seed and its inputs, with the game's own rules, and
@@ -135,9 +135,9 @@ function fail(reason: SimFailure, score: number, moves: number, endCause?: RunEn
   return { valid: false, reason, score, moves, ...(endCause ? { endCause } : {}) };
 }
 
-/** A cell on the 9×9 board, as an integer */
-function isBoardIndex(v: unknown): v is number {
-  return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < GRID_SIZE;
+/** A cell on a board of `size` cells a side, as an integer */
+function isBoardIndex(v: unknown, size: number): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v < size;
 }
 
 /**
@@ -186,9 +186,11 @@ export function simulateRun(replay: Replay): SimResult {
     const v = replay.siege;
     if (!v || !isMissionId(v.missionId)) return fail('shape', 0, 0);
     if (v.enemy !== 'raiders' && v.enemy !== 'tide') return fail('shape', 0, 0);
-    if (v.mission !== 'finite' && v.mission !== 'endless') return fail('shape', 0, 0);
-    config = siegeConfig(v.missionId, v.enemy, v.mission, replay.seed);
+    config = siegeConfig(v.missionId, replay.seed);
   }
+  // The board a move is judged against is the game's, not a global: a siege
+  // coordinate of 10 is on the board and a Classic one is not.
+  const boardSize = config.boardSize;
 
   const gs = new GameState(config, replay.mode);
   gs.start();
@@ -204,7 +206,9 @@ export function simulateRun(replay: Replay): SimResult {
 
   for (let i = 0; i < moves.length; i++) {
     const move = moves[i];
-    if (!move || (move.t !== 'p' && move.t !== 'h')) return fail('shape', gs.score, i);
+    if (!move || (move.t !== 'p' && move.t !== 'h' && move.t !== 's')) {
+      return fail('shape', gs.score, i);
+    }
 
     const at = move.at;
     if (typeof at !== 'number' || !Number.isFinite(at) || at < 0) return fail('shape', gs.score, i);
@@ -232,6 +236,17 @@ export function simulateRun(replay: Replay): SimResult {
       continue;
     }
 
+    // A skip spends the piece and advances the enemy exactly as a placement
+    // does, so it is subject to the same cadence floor and nothing else.
+    if (move.t === 's') {
+      if (at - previousPlacementAt < MIN_PLACEMENT_INTERVAL - TIME_EPSILON) {
+        return fail('cadence', gs.score, i);
+      }
+      previousPlacementAt = at;
+      if (gs.skipPiece().length === 0) return fail('move', gs.score, i);
+      continue;
+    }
+
     // Nobody drags a piece onto a board twelve times a second. Checked
     // before the placement is simulated, so a machine-gun log costs the
     // server the two moves it takes to spot rather than all six hundred.
@@ -245,7 +260,9 @@ export function simulateRun(replay: Replay): SimResult {
     // Checked here rather than left to the board: `canPlace` indexes the grid
     // directly, so a fractional row would throw rather than be refused. The
     // handler screens these too; the core must not depend on it having done so.
-    if (!isBoardIndex(move.row) || !isBoardIndex(move.col)) return fail('move', gs.score, i);
+    if (!isBoardIndex(move.row, boardSize) || !isBoardIndex(move.col, boardSize)) {
+      return fail('move', gs.score, i);
+    }
     const turns = rotationCount(piece);
     if (!Number.isInteger(move.rot) || move.rot < 0 || move.rot >= turns) {
       return fail('move', gs.score, i);

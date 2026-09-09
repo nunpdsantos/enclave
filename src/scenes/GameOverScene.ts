@@ -163,7 +163,7 @@ export class GameOverScene implements Scene {
       ? 'VICTORY'
       : summary.endCause === 'breach'
         ? 'BREACHED'
-        : "TIME'S UP";
+        : 'RUN ENDED';
     const won = summary.endCause === 'victory';
     const title = new Text({
       text: siege ? siegeTitle : (isBest ? 'NEW BEST!' : 'GAME OVER'),
@@ -192,9 +192,9 @@ export class GameOverScene implements Scene {
         : summary.endCause === 'complete'
           ? 'ALL PIECES PLACED'
           : summary.endCause === 'victory'
-            ? 'THE KEEP HELD'
+            ? (siege ? 'RELIEF ARRIVED — THE KEEP HELD' : 'THE KEEP HELD')
             : summary.endCause === 'breach'
-              ? 'AN ENEMY REACHED THE KEEP'
+              ? 'A RAIDER REACHED THE KEEP'
               : 'RUN ENDED EARLY';
     const cause = createBodyText(`${this.boardLabel} · ${causeLabel}`, cx, h * 0.055 + 22, {
       fontSize: 10,
@@ -247,12 +247,14 @@ export class GameOverScene implements Scene {
     const totalW = chipW * 4 + gap * 3;
     const startX = cx - totalW / 2 + chipW / 2;
     // The siege is measured on the siege, not on the streak it does not have
+    // The siege is measured on the siege: what it caught, what it still held
+    // when it ended, how long it lasted, and what that cost in walls.
     const stats: [string, string, number][] = siege
       ? [
         ['CAPTURED', String(siege.enemiesCaptured), THEME.danger],
+        ['HELD', String(siege.heldAtEnd), THEME.cyan],
+        ['TURNS', `${siege.turnsSurvived}/${siege.variant.reliefTurns}`, THEME.gold],
         ['WALLS LOST', String(siege.wallsLost), THEME.warning],
-        ['BIGGEST', summary.biggestRoom > 0 ? `${summary.biggestRoom}` : '—', THEME.gold],
-        ['PIECES', String(summary.totalTurns), THEME.textPrimary],
       ]
       : [
         ['ROOMS', String(summary.roomsClaimed), THEME.textPrimary],
@@ -279,13 +281,14 @@ export class GameOverScene implements Scene {
         : 0;
       const mission = MISSIONS[siege.variant.missionId as keyof typeof MISSIONS];
       this.container.addChild(createBodyText(
-        `${mission?.name ?? siege.variant.missionId} · ${siege.variant.enemy.toUpperCase()}`
-        + ` · ${siege.variant.mission === 'finite' ? `${summary.totalTurns} PLACED` : 'ENDLESS'}`,
+        `${mission?.name ?? siege.variant.missionId}`
+        + ` · ${siege.turnsSurvived}/${siege.variant.reliefTurns} TURNS`
+        + (siege.skipsUsed > 0 ? ` · ${siege.skipsUsed} SKIPPED` : ''),
         cx, statsY + 32, { fontSize: 10, color: DIFFICULTY_COLORS.siege },
       ));
       this.container.addChild(createBodyText(
-        `${routes}% of placements changed a route · ${decisions.toFixed(1)}s a decision`
-        + (siege.breachTurn !== null ? ` · breached on ${siege.breachTurn}` : ''),
+        `${routes}% of turns changed a route · ${decisions.toFixed(1)}s a decision`
+        + (siege.breachTurn !== null ? ` · breached on turn ${siege.breachTurn}` : ''),
         cx, statsY + 48, { fontSize: 10, color: THEME.textMuted, wrapWidth: this.width - 48 },
       ));
       nextY = statsY + 70;
@@ -306,10 +309,14 @@ export class GameOverScene implements Scene {
     // Insights get whatever the rows under them do not need: the name entry
     // or the practice label, the playbook link, and the leaderboard's floor.
     const nameBlock = wouldRank ? 92 : this.isPracticeRun ? 26 : 0;
-    const playbook = getGamesPlayed(this.difficulty) <= PLAYBOOK_RUNS;
-    nextY = this.buildInsights(
-      nextY, nameBlock + LEADERBOARD_MIN_HEIGHT + (playbook ? PLAYBOOK_HEIGHT : 0),
-    );
+    const playbook = !siege && getGamesPlayed(this.difficulty) <= PLAYBOOK_RUNS;
+    // The siege is a graybox being playtested, so the space Classic gives to
+    // insights goes to the two questions the playtest is actually asking.
+    nextY = siege
+      ? this.buildPlaytestQuestions(nextY)
+      : this.buildInsights(
+        nextY, nameBlock + LEADERBOARD_MIN_HEIGHT + (playbook ? PLAYBOOK_HEIGHT : 0),
+      );
     if (playbook) nextY = this.buildPlaybookLink(nextY);
 
     if (wouldRank) {
@@ -344,6 +351,30 @@ export class GameOverScene implements Scene {
   }
 
   // ── Insights ──
+
+  /**
+   * The two questions this playtest exists to answer, on the screen the
+   * player is looking at when they have just finished a run. Written out
+   * rather than implied, because "how did that feel" gets a shrug and these
+   * two get an answer.
+   */
+  private buildPlaytestQuestions(top: number): number {
+    const cx = this.width / 2;
+    const wrapWidth = Math.min(320, this.width - 48);
+    this.container.addChild(createSectionLabel('PLAYTEST', cx, top, Math.min(200, this.width - 80)));
+    let y = top + 30;
+    for (const question of [
+      'Could you read the threats and place what you intended?',
+      'What would you build differently?',
+    ]) {
+      const t = createBodyText(question, cx, y, {
+        fontSize: 11.5, color: THEME.textSecondary, wrapWidth,
+      });
+      this.container.addChild(t);
+      y += t.height + 6;
+    }
+    return y + 8;
+  }
 
   /**
    * Up to three lines of what to do differently, between the stats and the
