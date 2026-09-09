@@ -1,6 +1,6 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { Difficulty } from '../src/core/Config';
-import { Leaderboard, RunStarter, RunTicket } from '../src/core/Leaderboard';
+import { Leaderboard, LeaderboardEntry, RunStarter, RunTicket } from '../src/core/Leaderboard';
 import { signTicket, TICKET_VERSION } from '../src/core/Ticket';
 import { emptyReplay } from './helpers';
 
@@ -8,10 +8,17 @@ import { emptyReplay } from './helpers';
  * The client half of the leaderboard: the board it reads and the run it
  * starts. Both of them are races, and both of them shipped.
  *
- * Nothing here touches the network or the DOM. `fetch` is replaced with a
- * function the test resolves by hand, because the bug in each case is *when*
- * an answer arrives rather than what it says — and a test that cannot hold a
- * response open cannot see either of them.
+ * Nothing here touches the network. `fetch` is replaced with a function the
+ * test resolves by hand, because the bug in each case is *when* an answer
+ * arrives rather than what it says — and a test that cannot hold a response
+ * open cannot see either of them.
+ *
+ * There is no DOM either, so `localStorage` is a Map behind the methods the
+ * client actually calls, installed fresh for every test. Without one, every
+ * cache operation in the client takes its `catch` branch and a test can only
+ * ever see an empty cache — which is not the behaviour any of this is for:
+ * the cache is what carries a board across a switch and a submission across
+ * a refusal. The one test that wants storage gone says so in its name.
  */
 
 // ── A fetch a test can hold open ──
@@ -26,6 +33,26 @@ interface Pending {
   resolve: (body: unknown) => void;
   /** Answer it with a failure, as an offline device would */
   reject: () => void;
+}
+
+class MemoryStorage {
+  private data = new Map<string, string>();
+  getItem(key: string): string | null { return this.data.get(key) ?? null; }
+  setItem(key: string, value: string): void { this.data.set(key, value); }
+  removeItem(key: string): void { this.data.delete(key); }
+}
+
+let storage: MemoryStorage;
+
+beforeEach(() => {
+  storage = new MemoryStorage();
+  (globalThis as { localStorage?: unknown }).localStorage = storage;
+});
+
+/** The names a board has in the cache, which is a different thing from the screen. */
+function cached(board: string): string[] {
+  const raw = storage.getItem(`enclave_${board}_top10`);
+  return raw ? (JSON.parse(raw) as LeaderboardEntry[]).map(e => e.name) : [];
 }
 
 const realFetch = globalThis.fetch;
@@ -75,6 +102,7 @@ function settle(): Promise<void> {
 afterEach(() => {
   globalThis.fetch = realFetch;
   pending = [];
+  delete (globalThis as { localStorage?: unknown }).localStorage;
 });
 
 function row(name: string, score: number): unknown {
@@ -328,12 +356,19 @@ describe('review 5, finding 3 — the menu\'s heading and its entries name one b
     // and tapping the already-selected Blitz chip did nothing about it.
     const read = board.showBoard('blitz');
     expect(board.getBoardId()).toBe('blitz');
-    // Blitz's own cache, empty here — never Classic's ten under Blitz's name
-    expect(board.getEntries()).toEqual([]);
-
-    only('GET', 'difficulty=blitz').resolve([row('Blitz player', 4000)]);
-    await read;
+    // Blitz's own cached rows, back on screen before the network has said
+    // anything — never Classic's ten under Blitz's name. This assertion used
+    // to read `toEqual([])`, which was the empty board a client with no
+    // storage falls back to rather than the restoration it claimed to check.
     expect(board.getEntries().map(e => e.name)).toEqual(['Blitz player']);
+    expect(cached('classic')).toEqual(['Classic player']);
+
+    // And the read replaces them with the server's, for Blitz alone
+    only('GET', 'difficulty=blitz').resolve([row('Blitz player', 4000), row('Newcomer', 3000)]);
+    await read;
+    expect(board.getEntries().map(e => e.name)).toEqual(['Blitz player', 'Newcomer']);
+    expect(cached('blitz')).toEqual(['Blitz player', 'Newcomer']);
+    expect(cached('classic')).toEqual(['Classic player']);
   });
 });
 
@@ -433,6 +468,42 @@ describe('review 4, finding 1 — a score goes to the board its run was played i
     // And Classic's answer is kept for Classic rather than drawn over the
     // board the player is now looking at.
     expect(board.getEntries().map(e => e.name)).toEqual(['Daily player']);
+    // Each board's own key holds its own rows. The cache is what the next
+    // switch draws from, so a submission filed into the wrong one is not one
+    // redraw away from being right — it is wrong until the server is read
+    // again, which on a board nobody opens is never.
+    expect(cached('classic')).toEqual(['Ann']);
+    expect(cached('daily-2026-09-09')).toEqual(['Daily player']);
+  });
+
+  it('keeps a refused score in the run\'s cache after the same switch', async () => {
+    deferredFetch();
+    const board = new Leaderboard('blitz');
+    only('GET', 'difficulty=blitz').resolve([row('Blitz player', 4000)]);
+    await board.waitForRemote();
+
+    const posted = board.submit(1200, 'Ann', emptyReplay('classic'), 'signed-token');
+    await settle();
+    const corrective = only('GET', 'difficulty=classic');
+
+    const switched = board.showBoard('daily', '2026-09-09');
+    await settle();
+    only('GET', 'difficulty=daily-2026-09-09').resolve([row('Daily player', 500)]);
+    await switched;
+    corrective.resolve([]);
+    await settle();
+
+    // The device drops off the network with the POST in the air, which is
+    // the case the local board exists for.
+    only('POST').reject();
+    expect(await posted).toEqual({ rank: 1, verified: false });
+
+    // The score is kept — in the board it was played in, under that board's
+    // key, and nowhere near the two the player has been looking at.
+    expect(cached('classic')).toEqual(['Ann']);
+    expect(cached('daily-2026-09-09')).toEqual(['Daily player']);
+    expect(cached('blitz')).toEqual(['Blitz player']);
+    expect(board.getEntries().map(e => e.name)).toEqual(['Daily player']);
   });
 
   it('keeps a daily on the day it was dealt from', async () => {
@@ -453,5 +524,33 @@ describe('review 4, finding 1 — a score goes to the board its run was played i
     expect(post.url).toContain('difficulty=daily-2026-09-08');
     post.resolve({ rank: 1, entries: [row('Ann', 700)] });
     await posted;
+  });
+});
+
+describe('with no storage at all — a private window, an embedded webview', () => {
+  it('reads, submits and switches with every cache operation throwing', async () => {
+    // Deliberately without the memory storage every other test installs, so
+    // each `localStorage` access in the client raises a ReferenceError and
+    // takes its `catch` branch. Nothing may escape, and the panel is only
+    // ever as good as the last read.
+    delete (globalThis as { localStorage?: unknown }).localStorage;
+    deferredFetch();
+    const board = new Leaderboard('classic');
+    only('GET', 'difficulty=classic').resolve([row('Old timer', 500)]);
+    await board.waitForRemote();
+    expect(board.getEntries().map(e => e.name)).toEqual(['Old timer']);
+
+    // An unticketed run: nothing is sent, and the score goes to the board in
+    // memory that is all this browser has.
+    const posted = await board.submit(1200, 'Ann', emptyReplay('classic'), null);
+    expect(posted).toEqual({ rank: 1, verified: false, reason: 'unticketed' });
+    expect(board.getEntries().map(e => e.name)).toEqual(['Ann', 'Old timer']);
+
+    // And a switch has nothing to restore from: an unread board is empty
+    // until the server answers, every time.
+    void board.showBoard('blitz');
+    expect(board.getEntries()).toEqual([]);
+    void board.showBoard('classic');
+    expect(board.getEntries()).toEqual([]);
   });
 });
