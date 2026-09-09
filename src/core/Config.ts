@@ -1,9 +1,14 @@
-export type Difficulty = 'classic' | 'blitz' | 'daily';
+import {
+  MISSIONS, SiegeMission, SiegeMissionId, SpawnEvent, buildSpawnSchedule,
+} from './Missions';
+
+export type Difficulty = 'classic' | 'blitz' | 'daily' | 'siege';
 
 export const DIFFICULTY_LABELS: Record<Difficulty, string> = {
   classic: 'CLASSIC',
   blitz: 'BLITZ',
   daily: 'DAILY',
+  siege: 'SIEGE',
 };
 
 export interface ScoringConfig {
@@ -18,6 +23,14 @@ export interface ScoringConfig {
   streakCap: number;
   /** How many non-claiming placements a streak survives */
   streakWindow: number;
+  /**
+   * Off pins the streak multiplier at 1 and stops counting. The siege has a
+   * second force to think about; a bonus for claiming *fast* would only pull
+   * against it, and it would hide whether the siege itself is the fun part.
+   */
+  streakEnabled: boolean;
+  /** Points a captured enemy pays, flat. Zero outside the siege. */
+  pointsPerEnemy: number;
 }
 
 export interface TimerConfig {
@@ -25,9 +38,11 @@ export interface TimerConfig {
   maxSeconds: number;
   /** Time added per placement (scaled by speed) */
   placeBonus: number;
-  /** Time added per claim: base + perCell × area, capped */
+  /** Time added per claim: base + perCell × area + perEnemy × captures, capped */
   claimBaseBonus: number;
   claimPerCellBonus: number;
+  /** Seconds a captured enemy is worth on top of the floor it stood on */
+  claimPerEnemyBonus: number;
   claimBonusCap: number;
   /** Placing within this window after the last placement earns the full bonus */
   speedWindowSeconds: number;
@@ -36,6 +51,12 @@ export interface TimerConfig {
   /** Drain rate grows by this much per minute played */
   drainAccelPerMinute: number;
   drainCap: number;
+  /**
+   * Off makes every bonus pay in full however long the player took. The siege
+   * clock is a command budget, not a metronome: hurrying is already punished
+   * by walking a raider into a wall you had not finished.
+   */
+  speedScaling: boolean;
 }
 
 export interface TerritoryConfig {
@@ -45,6 +66,12 @@ export interface TerritoryConfig {
   relitFloorFactor: number;
   /** Flat score for lighting all 49 inner cells — multiplied by nothing */
   surveyBonus: number;
+  /**
+   * Off keeps the freshness pricing but removes the objective: no bonus, no
+   * map wipe, no readout. The siege wants relit floor to be worth less; it
+   * does not want a second thing to be winning.
+   */
+  surveyEnabled: boolean;
 }
 
 export interface ClockConfig {
@@ -68,12 +95,36 @@ export interface EchoConfig {
   multiplier: number;
 }
 
+/**
+ * Hold the Keep. Present only on a siege config, and its presence is what the
+ * engine reads to know a siege is being played at all.
+ */
+export interface SiegeConfig {
+  /** Which enemy is besieging: discrete raiders, or a spreading tide */
+  enemy: 'raiders' | 'tide';
+  /** 18 fixed pieces and a win state, or pieces until something ends it */
+  mission: 'finite' | 'endless';
+  missionId: SiegeMissionId;
+  /** Rows of strings: '.' floor, 'K' keep, 'G' gate, '#' ruin */
+  map: string[];
+  /** When raiders arrive, and at which gate */
+  spawns: SpawnEvent[];
+  /** Seconds between the tide's first expansions */
+  tideSeconds: number;
+  /** Each expansion comes this much sooner than the last... */
+  tideRampPerTick: number;
+  /** ...down to here, and no faster */
+  tideMinSeconds: number;
+}
+
 export interface GameConfig {
   scoring: ScoringConfig;
   timer: TimerConfig;
   territory: TerritoryConfig;
   clock: ClockConfig;
   echo: EchoConfig;
+  /** Set only in the siege; everything siege-specific hangs off it */
+  siege?: SiegeConfig;
   /**
    * Whether the bag composition tightens as the player climbs the tiers. Off
    * keeps the base bag for the whole run.
@@ -106,25 +157,62 @@ const SHARED_SCORING: ScoringConfig = {
   streakIncrement: 0.25,
   streakCap: 3,
   streakWindow: 3,
+  streakEnabled: true,
+  pointsPerEnemy: 0,
 };
+
+/** What one captured enemy pays. Flat, so it is one number to tune. */
+export const SIEGE_POINTS_PER_ENEMY = 75;
+
+/** The command clock: it starts here and it caps here */
+export const SIEGE_CLOCK_SECONDS = 40;
+
+/** A finite mission is exactly this many pieces */
+export const SIEGE_FINITE_PIECES = 18;
+
+/** The tide's tempo tightens by this much per expansion, down to the floor */
+const TIDE_RAMP_PER_TICK = 0.05;
+const TIDE_MIN_SECONDS = 1.2;
+
+/** One variant's map and schedule, resolved from the mission table */
+function siegeVariant(
+  missionId: SiegeMissionId,
+  enemy: 'raiders' | 'tide',
+  mission: 'finite' | 'endless',
+): SiegeConfig {
+  const m: SiegeMission = MISSIONS[missionId];
+  const endless = mission === 'endless';
+  return {
+    enemy,
+    mission,
+    missionId,
+    map: m.map,
+    spawns: buildSpawnSchedule(m, endless, endless ? Infinity : SIEGE_FINITE_PIECES),
+    tideSeconds: m.tideSeconds,
+    tideRampPerTick: TIDE_RAMP_PER_TICK,
+    tideMinSeconds: TIDE_MIN_SECONDS,
+  };
+}
 
 export const DIFFICULTY_CONFIGS: Record<Difficulty, GameConfig> = {
   classic: {
     scoring: SHARED_SCORING,
     // A survey takes far longer than a 35 s Blitz run, so Blitz pays less for
     // one: the reward has to stay in scale with the clock that funds it.
-    territory: { enabled: true, relitFloorFactor: 0.5, surveyBonus: 5000 },
+    territory: { enabled: true, relitFloorFactor: 0.5, surveyBonus: 5000, surveyEnabled: true },
     timer: {
       startSeconds: 60,
       maxSeconds: 90,
       placeBonus: 1.8,
       claimBaseBonus: 2.0,
       claimPerCellBonus: 0.8,
+      claimPerEnemyBonus: 0,
       claimBonusCap: 16,
       speedWindowSeconds: 8,
       minSpeedFraction: 0.45,
       drainAccelPerMinute: 0.16,
       drainCap: 1.7,
+      speedScaling: true,
     },
     clock: { enabled: true },
     // Two seconds is about one considered placement: long enough to plan the
@@ -135,18 +223,20 @@ export const DIFFICULTY_CONFIGS: Record<Difficulty, GameConfig> = {
   },
   blitz: {
     scoring: { ...SHARED_SCORING, streakWindow: 2 },
-    territory: { enabled: true, relitFloorFactor: 0.5, surveyBonus: 2500 },
+    territory: { enabled: true, relitFloorFactor: 0.5, surveyBonus: 2500, surveyEnabled: true },
     timer: {
       startSeconds: 35,
       maxSeconds: 50,
       placeBonus: 1.2,
       claimBaseBonus: 1.5,
       claimPerCellBonus: 0.6,
+      claimPerEnemyBonus: 0,
       claimBonusCap: 10,
       speedWindowSeconds: 5,
       minSpeedFraction: 0.3,
       drainAccelPerMinute: 0.3,
       drainCap: 2.0,
+      speedScaling: true,
     },
     clock: { enabled: true },
     // Shorter, because everything in Blitz is: the window has to stay inside
@@ -161,7 +251,7 @@ export const DIFFICULTY_CONFIGS: Record<Difficulty, GameConfig> = {
   // short run, and a survey inside one should not dwarf everything else.
   daily: {
     scoring: SHARED_SCORING,
-    territory: { enabled: true, relitFloorFactor: 0.5, surveyBonus: 2000 },
+    territory: { enabled: true, relitFloorFactor: 0.5, surveyBonus: 2000, surveyEnabled: true },
     // Inert: kept so the shape of a GameConfig stays uniform and nothing has
     // to branch on whether a timer block exists.
     timer: {
@@ -170,11 +260,13 @@ export const DIFFICULTY_CONFIGS: Record<Difficulty, GameConfig> = {
       placeBonus: 0,
       claimBaseBonus: 0,
       claimPerCellBonus: 0,
+      claimPerEnemyBonus: 0,
       claimBonusCap: 0,
       speedWindowSeconds: 8,
       minSpeedFraction: 1,
       drainAccelPerMinute: 0,
       drainCap: 1,
+      speedScaling: true,
     },
     clock: { enabled: false },
     // No clock, so a window measured in seconds would reward whoever happens
@@ -186,6 +278,72 @@ export const DIFFICULTY_CONFIGS: Record<Difficulty, GameConfig> = {
     previewCount: 2,
     pieceBudget: 30,
   },
+  // Hold the Keep. The base config the four variants are cut from — the map,
+  // the enemy and the goal are filled in by `siegeConfig` — and the one place
+  // the meta-systems are switched off: no streak, no echo, no survey, no tier
+  // bags, no speed scaling. They all modify the efficiency of the same action,
+  // and the point of this prototype is to find out whether the *action* is
+  // worth doing while something is walking at your Keep.
+  siege: {
+    scoring: {
+      ...SHARED_SCORING,
+      // Nothing for laying a block: the siege has to make a claim the reward
+      // and a wall the cost, not pay a little for every move either way.
+      pointsPerBlockPlaced: 0,
+      streakEnabled: false,
+      pointsPerEnemy: SIEGE_POINTS_PER_ENEMY,
+    },
+    // Freshness pricing stays: taking the same ground twice should pay less,
+    // which is what stops the answer being one small room round the Keep
+    // forever. The survey does not — it is a second objective.
+    territory: { enabled: true, relitFloorFactor: 0.5, surveyBonus: 0, surveyEnabled: false },
+    timer: {
+      // A command clock, not a metronome: it starts full, caps where it
+      // starts, drains at a flat rate, and only a claim refills it.
+      startSeconds: SIEGE_CLOCK_SECONDS,
+      maxSeconds: SIEGE_CLOCK_SECONDS,
+      placeBonus: 0,
+      claimBaseBonus: 1,
+      claimPerCellBonus: 0.6,
+      claimPerEnemyBonus: 1.5,
+      claimBonusCap: 8,
+      speedWindowSeconds: 8,
+      minSpeedFraction: 1,
+      drainAccelPerMinute: 0,
+      drainCap: 1,
+      speedScaling: false,
+    },
+    clock: { enabled: true },
+    echo: { enabled: false, windowSeconds: 0, multiplier: 1 },
+    bagByTier: false,
+    previewCount: 2,
+    siege: siegeVariant('m1', 'raiders', 'finite'),
+    pieceBudget: SIEGE_FINITE_PIECES,
+  },
 };
 
 export const DEFAULT_CONFIG = DIFFICULTY_CONFIGS.classic;
+
+/**
+ * The config for one of the four sieges.
+ *
+ * The 2×2 is deliberately a config switch and not four code paths: a playtest
+ * that cannot flip enemy and goal independently cannot tell which of the two
+ * is doing the work.
+ */
+export function siegeConfig(
+  missionId: SiegeMissionId,
+  enemy: 'raiders' | 'tide',
+  mission: 'finite' | 'endless',
+  seed?: number,
+): GameConfig {
+  const base = DIFFICULTY_CONFIGS.siege;
+  const finite = mission === 'finite';
+  return {
+    ...base,
+    siege: siegeVariant(missionId, enemy, mission),
+    // Eighteen pieces and a win, or a bag that never runs out
+    ...(finite ? { pieceBudget: SIEGE_FINITE_PIECES } : { pieceBudget: undefined }),
+    ...(seed !== undefined ? { seed } : {}),
+  };
+}

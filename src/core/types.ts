@@ -6,6 +6,24 @@ export const GRID_SIZE = 9;
 export type CellColor = number;
 export type Grid = (CellColor | null)[][];
 
+/**
+ * What a cell *is*, under whatever is standing on it. Only 'floor' can take a
+ * piece; 'ruin' is a permanent wall the player neither built nor can remove;
+ * the Keep and its gates are floor for the flood fill but are never built on.
+ *
+ * Every board outside the siege is 'floor' end to end, so nothing else in the
+ * game has to know this exists.
+ */
+export type Terrain = 'floor' | 'keep' | 'gate' | 'ruin';
+export type TerrainGrid = Terrain[][];
+
+/** One raider, on its way to the Keep. `id` is stable for the run. */
+export interface Raider {
+  id: number;
+  row: number;
+  col: number;
+}
+
 // ── Piece shape ──
 export type ShapeMatrix = boolean[][];
 
@@ -48,6 +66,13 @@ export interface Region {
    * ECHO close.
    */
   echoCells: GridPos[];
+  /**
+   * Ruins on the boundary. Permanent walls, so a claim cannot remove them and
+   * they pay nothing — but a region held up by ruins alone has no fence to
+   * knock down, and `claimableRegions` refuses it for exactly that reason.
+   * Always empty outside the siege.
+   */
+  ruinCells: GridPos[];
   area: number;
 }
 
@@ -108,8 +133,68 @@ export interface ScoreBreakdown extends ClaimPoints {
 /**
  * 'complete' is the Rationed Daily's happy ending: the budget ran out with
  * the last piece placed. It is not a death, and the score counts in full.
+ *
+ * 'breach' and 'victory' belong to the siege: an enemy reached the Keep, or
+ * the mission's whole piece sequence was survived.
  */
-export type RunEndCause = 'timeout' | 'board_lock' | 'quit' | 'complete';
+export type RunEndCause =
+  | 'timeout' | 'board_lock' | 'quit' | 'complete' | 'breach' | 'victory';
+
+// ── Siege ──
+
+/**
+ * Which of the four sieges a run is: a map, an enemy and a goal. The mission
+ * id is `SiegeMissionId` from Missions.ts, kept as a plain string here so
+ * types.ts stays the leaf of the import graph it has always been.
+ */
+export interface SiegeVariant {
+  missionId: string;
+  enemy: 'raiders' | 'tide';
+  mission: 'finite' | 'endless';
+}
+
+/** `variant` as one token, for a storage key, a telemetry field or a label */
+export function siegeVariantKey(v: SiegeVariant): string {
+  return `${v.missionId}-${v.enemy}-${v.mission}`;
+}
+
+/**
+ * What a siege run is being measured on — the go-gate numbers from the
+ * direction document, gathered as the run happens.
+ *
+ * Nested rather than spread across RunSummary because none of it means
+ * anything outside the siege: a Classic run has no keep to breach and no
+ * enemy to capture, and a summary that carried the fields anyway would be
+ * inviting every reader to check whether they were zero or absent.
+ */
+export interface SiegeMetrics {
+  variant: SiegeVariant;
+  /** Placement the Keep fell on, or null if it never did */
+  breachTurn: number | null;
+  /** Player blocks destroyed by the enemy */
+  wallsLost: number;
+  enemiesCaptured: number;
+  /**
+   * Placements after which at least one raider's route length changed — or,
+   * for the tide, after which the next cell it would take changed. The share
+   * of placements that are actually tactical.
+   */
+  routeChangingPlacements: number;
+  /** Every room sealed, in the order they were sealed */
+  roomAreas: number[];
+  /** Enemies captured in one claim → how many claims took that many */
+  capturesPerClaim: Record<number, number>;
+  /**
+   * Seconds between the hand becoming available and the placement, capped at
+   * DECISION_TIME_CAP entries so a long endless run cannot grow unbounded.
+   */
+  decisionTimes: number[];
+  /** Enemies still on the board when the run ended */
+  enemiesAtEnd: number;
+}
+
+/** How many decision times a summary keeps */
+export const DECISION_TIME_CAP = 100;
 
 // ── Replay: everything the server needs to re-play a run ──
 
@@ -144,6 +229,12 @@ export interface Replay {
   seed: number;
   /** 'YYYY-MM-DD' of the daily this was dealt from; absent for free play */
   dailyKey?: string;
+  /**
+   * Which siege was played. The mode alone does not name a run here — the map,
+   * the enemy and the goal all change what the same inputs do — so the log
+   * carries them and a simulation rebuilds the config from them.
+   */
+  siege?: SiegeVariant;
   moves: Move[];
   /**
    * The run outran MAX_REPLAY_MOVES, so the log stops short of the score and
@@ -207,6 +298,8 @@ export interface RunSummary {
   scoreTimeline: number[];
   previousBest: number;
   isNewBest: boolean;
+  /** Present only on a siege run; the playtest instrumentation for it */
+  siege?: SiegeMetrics;
   /** The run as the server can re-play it, which is what a score is worth */
   replay: Replay;
 }
@@ -220,7 +313,11 @@ export interface FeedbackEvent {
     | 'newHand'
     | 'newBest'
     | 'survey'
-    | 'hold';
+    | 'hold'
+    /** The enemy moved: raiders stepped, spawned, or broke a wall */
+    | 'enemy'
+    /** An enemy stands on the Keep. The run is over. */
+    | 'breach';
   placedCells?: GridPos[];
   pieceColor?: CellColor;
   claim?: ClaimResult;
@@ -236,6 +333,12 @@ export interface FeedbackEvent {
   surveys?: number;
   /** Flat score the survey just paid, on 'survey' */
   surveyBonus?: number;
+  /** Enemies destroyed inside the claimed rooms, on 'claim' */
+  enemiesCaptured?: number;
+  /** Cells the enemy destroyed a player block on, on 'enemy' */
+  wallsBroken?: GridPos[];
+  /** Cells the enemy took this phase, on 'enemy' */
+  enemyMoved?: GridPos[];
 }
 
 // ── Palette — bold and saturated ──

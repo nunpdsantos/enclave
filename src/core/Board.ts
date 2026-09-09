@@ -1,4 +1,4 @@
-import { GRID_SIZE, Grid, CellColor, GridPos, Region, ShapeMatrix } from './types';
+import { GRID_SIZE, Grid, CellColor, GridPos, Region, ShapeMatrix, Terrain, TerrainGrid } from './types';
 
 const DIRS: [number, number][] = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
@@ -31,10 +31,24 @@ export class Board {
    * of `grid` — a lit cell can hold a block and still be lit underneath.
    */
   lit: boolean[][];
+  /**
+   * What each cell *is*, under whatever is on it. All 'floor' outside the
+   * siege, which is why nothing else in the game had to change: 'floor' is
+   * exactly the old behaviour on every rule below.
+   */
+  terrain: TerrainGrid;
+  /**
+   * Cells an enemy is standing on. Not part of `grid` — an enemy is a floor
+   * occupant, so it never holds the flood fill back and never bounds a room —
+   * but a piece cannot land on one either.
+   */
+  occupied: boolean[][];
 
   constructor() {
     this.grid = Board.createEmptyGrid();
     this.lit = Board.createUnlitMap();
+    this.terrain = Board.createFloorTerrain();
+    this.occupied = Board.createUnlitMap();
   }
 
   static createEmptyGrid(): Grid {
@@ -47,9 +61,51 @@ export class Board {
     return Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(false));
   }
 
+  static createFloorTerrain(): TerrainGrid {
+    return Array.from({ length: GRID_SIZE }, () =>
+      Array.from({ length: GRID_SIZE }, (): Terrain => 'floor'),
+    );
+  }
+
+  /**
+   * `reset` deliberately does not clear the terrain: it is the mission's map,
+   * set once when the run is configured, and a run that reset it would start
+   * the siege on an open field. GameState re-applies it on `start`.
+   */
   reset(): void {
     this.grid = Board.createEmptyGrid();
     this.lit = Board.createUnlitMap();
+    this.occupied = Board.createUnlitMap();
+  }
+
+  // ── Terrain ──
+
+  setTerrain(terrain: TerrainGrid): void {
+    this.terrain = terrain.map(row => [...row]);
+  }
+
+  terrainAt(row: number, col: number): Terrain {
+    return this.terrain[row][col];
+  }
+
+  /**
+   * Only open floor takes a piece. The Keep and its gates are floor for the
+   * flood fill — a room may enclose them — but they are never built on, and
+   * ruins are wall already.
+   */
+  isBuildable(row: number, col: number): boolean {
+    return this.terrain[row][col] === 'floor' && !this.occupied[row][col];
+  }
+
+  /** True where a permanent old wall stands: boundary the player did not build */
+  isRuin(row: number, col: number): boolean {
+    return this.terrain[row][col] === 'ruin';
+  }
+
+  /** Where the enemy is standing right now. Replaces the whole set. */
+  setOccupied(cells: GridPos[]): void {
+    this.occupied = Board.createUnlitMap();
+    for (const p of cells) this.occupied[p.row][p.col] = true;
   }
 
   getCell(row: number, col: number): CellColor | null {
@@ -107,7 +163,9 @@ export class Board {
     }
     for (let r = 0; r < shapeRows; r++) {
       for (let c = 0; c < shapeCols; c++) {
-        if (shape[r][c] && this.grid[row + r][col + c] !== null) return false;
+        if (!shape[r][c]) continue;
+        if (this.grid[row + r][col + c] !== null) return false;
+        if (!this.isBuildable(row + r, col + c)) return false;
       }
     }
     return true;
@@ -143,7 +201,11 @@ export class Board {
    * fence scan can both ask "is this a wall?" without rebuilding a key string.
    */
   private wallMap(extraWalls?: ReadonlySet<string>): boolean[][] {
-    const wall: boolean[][] = this.grid.map(row => row.map(c => c !== null));
+    // Blocks and ruins hold it back; the Keep, its gates and the enemies
+    // standing on them are all floor, so a room can enclose any of them.
+    const wall: boolean[][] = this.grid.map((row, r) =>
+      row.map((c, col) => c !== null || this.terrain[r][col] === 'ruin'),
+    );
     if (extraWalls) {
       for (const key of extraWalls) {
         const comma = key.indexOf(',');
@@ -195,6 +257,7 @@ export class Board {
         const seen = new Set<string>();
         const fence: GridPos[] = [];
         const echoCells: GridPos[] = [];
+        const ruinCells: GridPos[] = [];
         for (const p of cells) {
           for (const [dr, dc] of DIRS) {
             const nr = p.row + dr, nc = p.col + dc;
@@ -204,11 +267,12 @@ export class Board {
             if (seen.has(key)) continue;
             seen.add(key);
             if (this.grid[nr][nc] !== null) fence.push({ row: nr, col: nc });
+            else if (this.terrain[nr][nc] === 'ruin') ruinCells.push({ row: nr, col: nc });
             else echoCells.push({ row: nr, col: nc });
           }
         }
 
-        regions.push({ cells, fence, echoCells, area: cells.length });
+        regions.push({ cells, fence, echoCells, ruinCells, area: cells.length });
       }
     }
     return regions;
@@ -263,6 +327,8 @@ export class Board {
     for (let r = 0; r < GRID_SIZE; r++) {
       for (let c = 0; c < GRID_SIZE; c++) {
         if (this.grid[r][c] !== null) continue;
+        // A hint has to promise a placement the board would actually accept
+        if (!this.isBuildable(r, c)) continue;
         this.grid[r][c] = 0;
         const after = this.findEnclosures(extraWalls).length;
         this.grid[r][c] = null;
@@ -276,6 +342,8 @@ export class Board {
     const b = new Board();
     b.grid = this.grid.map(row => [...row]);
     b.lit = this.lit.map(row => [...row]);
+    b.terrain = this.terrain.map(row => [...row]);
+    b.occupied = this.occupied.map(row => [...row]);
     return b;
   }
 }
