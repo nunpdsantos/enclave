@@ -4,7 +4,7 @@ Fence in empty space to claim it. A fast spatial-strategy puzzle for the browser
 
 ## The one rule
 
-Drag pieces onto a 9×9 board. Whenever empty space is **completely surrounded by blocks**, you claim it: the room and its walls vanish and you score the room's **area squared**.
+Drag pieces onto a 9×9 board. Whenever empty space is **completely surrounded by blocks**, you claim it: the room and its walls vanish and you score the room's **area squared**. (Hold the Keep plays a different game on an 11×11 board — see [Hold the Keep](#hold-the-keep-siege--a-graybox).)
 
 | Room | Points |
 |------|--------|
@@ -33,20 +33,25 @@ Layers on top of the rule:
 
 Each mode has its own leaderboard and its own personal best.
 
-| | Classic | Blitz | Rationed Daily | Siege (graybox) |
+| | Classic | Blitz | Rationed Daily | Hold the Keep (graybox) |
 |---|---|---|---|---|
-| Clock | 60 s, bank caps at 90 s | 35 s, bank caps at 50 s | none | 40 s, bank caps at 40 s |
-| Pieces | unlimited | unlimited | 30 | 18, or unlimited |
-| Time per placement | 1.8 s | 1.2 s | — | none |
-| Time per claim | 2.0 + 0.8 × area, max 16 s | 1.5 + 0.6 × area, max 10 s | — | only with a capture, see below |
+| Board | 9×9 | 9×9 | 9×9 | **11×11** |
+| Clock | 60 s, bank caps at 90 s | 35 s, bank caps at 50 s | none | none |
+| Pieces | unlimited | unlimited | 30 | 18, authored |
+| Time per placement | 1.8 s | 1.2 s | — | — |
+| Time per claim | 2.0 + 0.8 × area, max 16 s | 1.5 + 0.6 × area, max 10 s | — | — |
 | Speed window | 8 s, down to 0.45× | 5 s, down to 0.30× | — | off |
-| Drain acceleration | +0.16× per minute, max 1.7× | +0.30× per minute, max 2.0× | — | flat |
+| Drain acceleration | +0.16× per minute, max 1.7× | +0.30× per minute, max 2.0× | — | — |
 | Streak survives | 2 placements without a claim | 1 | 2 | off |
 | Echo window | 2.0 s | 1.5 s | off | off |
 | Survey bonus | 5,000 | 2,500 | 2,000 | off |
 | Bag by tier | yes | yes | no | no |
-| Deal | fresh seed per run | fresh seed per run | one seed per UTC date | fresh seed per run |
-| Personal best | lifetime | lifetime | per day | per mission + enemy + goal, local |
+| Deal | fresh seed per run | fresh seed per run | one seed per UTC date | authored, seedless |
+| Personal best | lifetime | lifetime | per day | per mission, local |
+
+The board size is a property of the game, not a global: `GameConfig.boardSize`
+and `Board.size`, read by the layout, the renderers, the closing hints, the
+drag preview and the replay simulator alike.
 
 Every deal is the server's: a run asks `/api/run-start` for a seed before the
 first piece is dealt, and plays what it is given. See [How a score gets on the
@@ -75,100 +80,169 @@ from it is posted anywhere** — no leaderboard, no run ticket, no server
 validation. Its rules are still being decided, and a shared board for rules
 that change is a board that has to be thrown away.
 
-It is deliberately a **2×2 of variants**, switched independently, because a
-playtest that cannot separate them cannot say which one did the work:
+It is not Classic with raiders bolted on. Every rule Classic scores by is off,
+because the first version of this played as two games at once: a room game and
+a siege game, sharing a board and arguing about it.
 
-| | `finite` (18 pieces) | `endless` |
-|---|---|---|
-| `raiders` | survive eighteen placements → VICTORY | hold out until breach or the clock |
-| `tide` | eighteen placements **and** 60 s survived → VICTORY | hold out until breach or the clock |
+### The objective
 
-**The board.** A mission map adds terrain under the blocks. Four kinds, and
-this table is the contract every module reads:
+**Hold the Keep until relief arrives after 18 turns.** A raider standing on the
+Keep ends the run immediately — including on the eighteenth turn. Survive the
+eighteenth enemy phase without one and relief arrives: `VICTORY`, even with
+raiders still on the board. Holding the Keep is the mission; clearing the field
+is not.
 
-| terrain | takes a piece | holds the flood back | counts in a room's area | survives a claim |
-|---|---|---|---|---|
-| floor | yes | no | yes | — |
-| keep | no | no | yes | yes |
-| gate | no | no | yes | yes |
-| ruin | no | **yes** (boundary) | no | yes |
+**M1, THE GATEHOUSE.** An 11×11 board, a single-cell Keep at (5,5), one gate at
+the top-centre border cell, no ruins. Raiders arrive after turns 1, 3, 5, 7, 9
+and 11 — one each. M2 and M3 are still in `Missions.ts` as data; the picker
+shows one mission, because this test has one question in it.
 
-Enemies are **floor occupants**: they refuse a placement, never hold the flood
-back, and the cell one stands on counts in the area of a room that encloses it.
-A claim only ever pays for regions **this placement newly closed** — a piece
-dropped into a courtyard the ruins had already sealed claims nothing — and a
-region with no player-built fence at all never scores.
+### A turn
 
-**The two enemies** share one idea: a weighted Dijkstra from the Keep where
-open floor costs 1, a player wall costs `wallCost` (4) and a ruin is
-impassable. Weighting a wall rather than forbidding it is what makes a wall a
-*delay* rather than a door. **The number is a cost, not a countdown** — a
-distance of 8 is not eight turns away, because a wall contributes 4 to it and
-takes one turn to break.
+Rotate freely, HOLD once per piece, then either **place** the piece or **SKIP**
+it. Either spends one piece and advances one enemy phase; rotating, dragging
+and HOLD do not. SKIP sits beside ROTATE and takes two taps — the first arms it
+and says `DISCARD?` — because a skip hands the raiders a free turn and is far
+too expensive to lose to a thumb landing an inch to the left.
 
-- **Raiders** step after every committed placement (a HOLD is not a turn). All
-  plans are read from one snapshot in raider-id order, then resolved in the
-  same order: a raider whose target was taken in the meantime waits, and one
-  whose target wall a neighbour already broke walks into the gap. If the
-  cheapest step is a player wall, it destroys the wall and spends the turn
-  doing it. Arrivals land **before** movement and do not act on the phase they
-  appear in; a gate that is occupied delays the arrival rather than cancelling
-  it. A raider on the Keep ends the run as `breach`.
-- **The tide** starts as the gate cells and expands on **game time**, not on
-  placements — every `tideSeconds` (3.0 s on M1, tightening by 0.05 s a tick to
-  a floor of 1.2 s). Its target is the front-adjacent cell with the lowest
-  (distance onward from that cell) + (its own entry cost), so a wall is chosen
-  only when going round genuinely costs more. If the winner is a wall it erodes
-  it — one wall a tick, no growth that tick. Ground a claim just took is
-  excluded from targeting for one tick, so a capture visibly happened.
-  Disconnected tide survives.
+SKIP is what replaced losing to a board with nowhere to put the piece. A run
+that ends because the eleventh piece was the wrong shape is not a decision, it
+is an accident.
 
-**Scoring.** `area² × 10` per room, plus `enemyBonus` (75) per unit captured.
-No points for laying a block, no double-close multiplier, streak pinned at 1.0,
-no echo, no survey, no tier bag, no speed scaling. Territory freshness is off
-by default (`territory.enabled`), so a room pays the same whatever the floor
-has seen — the flag is the whole switch if we want it back.
+### The supply
 
-**The refund, literally.** *A placement refunds time only if its claim captured
-at least one enemy unit. The refund is `min(1 + 0.6 × totalArea + 1.5 ×
-unitsCaptured, 8)` seconds, once per placement, not once per room. An
-empty-room claim scores and refunds nothing.* For the tide, one tide cell is
-one unit — provisional, and one of the things the playtest is meant to settle.
+One authored 18-piece sequence per mission, **identical on every attempt**, in
+`Missions.ts` as a list of piece ids and rotations. No bag, no seed. M1's mix
+is eight straight sections of 2–4 cells, eight corners and Ls of 3–4 cells, and
+two single-cell patches, alternating so that no stretch of the run is all one
+kind of material. **Four** upcoming pieces are visible, not two: what the queue
+shows is a plan to be made rather than luck to be hedged against.
 
-**Nowhere to place.** The enemy phase resolves first, since an attack can open
-space. With raiders, if nothing still fits and a hold cannot rescue it, the run
-ends `board_lock`. With the tide the run simply waits — erosion may open the
-board back up — and the clock is what ends it; with the clock off it is called
-locked after three ticks of nothing.
+Eighteen pieces and eighteen turns is not a coincidence — running out of supply
+and being relieved are the same moment.
 
-**Legibility.** The intent layer is the make-or-break feature: a ring on the
-cell each raider will step into, a red outline on any wall about to be
-attacked, and a closing countdown ring on the tide's next cell. It is the same
-plan pass the phase itself runs, from the same seeded draw, so the arrow is the
-step and not an approximation of it. While a piece is being dragged the layer
-shows the **whole resolution of that drop** instead: what it seals, which
-enemies it would destroy (struck out), which of your walls it spends, and what
-the enemy does about the board it would leave behind.
+### Walls, and the ground behind them
 
-**Determinism.** The enemy's seeded draw is keyed to the turn (or the tide
-tick) rather than being a running stream, because the preview asks the same
-question the phase will answer, on every pointer move — a shared stream would
-let the preview change the future it was previewing. The enemy phase runs
-inside `tryPlace` and the tide inside `advanceClock`, so `simulateRun` drives
-both by driving the same placements; the replay carries which siege it was.
+**Walls persist.** They occupy whole cells and stand until a raider knocks one
+down. A piece cannot overlap a wall, a raider, a ruin, a gate or the Keep;
+building on your own courtyard floor is allowed, and those cells stop being
+courtyard.
 
-**Tunable knobs**, all in `SiegeConfig` (`src/core/Config.ts`) and
-`src/core/Missions.ts`: `wallCost` (4; worth trying 2), `enemyBonus` (75; worth
-trying 250), `captureScoring` (`'flat'`, or `'squared'` for `(area +
-captured)² × 10` with no flat bonus), `clockMode`
-(`'bankPausedInEnemyPhase'`, `'bank'`, `'off'`), `fenceSurvivesEnemyPhase`
-(false — the "gatehouse" question), `previewCount` (2; worth trying 4),
-`tideSeconds`, `minSurvivalSeconds` and each mission's spawn plan.
+**Courtyards are held, not claimed.** Newly enclosed floor becomes yours — the
+same orthogonal enclosure detection the rest of the game uses, where the board
+edge is never a wall, raiders never form boundaries, and the enclosure has to
+have been created by the placement (the enclosures are compared before and
+after it). A region held up by ruins alone never counts: nobody built it.
 
-**Playtest metrics** ride on the run summary as `summary.siege` and go out with
-telemetry as mode `siege` plus a `variant` string: breach turn, walls lost,
-enemies captured, route-changing placements, room areas, captures per claim,
-decision times.
+Held ground stays visibly held for as long as it stays sealed. After any wall
+destruction, ownership is recomputed: held ground that is now connected to the
+outside stops being yours, and still-enclosed ground stays. The Keep, the
+gates, ruins and wall cells never earn.
+
+### The order a turn resolves in
+
+One placement or one skip:
+
+1. **place** the piece (a skip places nothing);
+2. **capture** every raider standing inside a courtyard this turn newly
+   enclosed — they are removed, and the walls stay;
+3. **spawn** whatever the schedule owes, at the gates. Arrivals idle on the
+   phase they appear in, and a blocked gate delays an arrival rather than
+   cancelling it;
+4. the raiders already on the board **act**, all planned from one snapshot in
+   id order: one orthogonal step along the weighted route to the Keep, or one
+   targeted wall destroyed instead of moving. A raider whose target became
+   occupied waits;
+5. **breach check**;
+6. **recompute** held ground;
+7. **award income**.
+
+The drag preview runs *this same routine* on a cloned board — same method, not
+a second implementation — so the captures, the resulting raider positions, the
+wall about to be attacked and the ground the drop would leave are the ones the
+turn will actually produce. The enemy phase is a fixed ~300 ms animation
+whatever the raider count.
+
+### Score
+
+- `+75` per raider captured (`enemyBonus`).
+- `+1` per held floor cell, after every enemy phase the run survives
+  (`groundIncome`).
+
+That is the whole scoring surface. No upfront room payment, no area², no
+multipliers, no clock refunds, no point per block, no streak, no echo, no
+survey, no tier bag, no territory freshness. Score is mastery: the best is
+local and per mission.
+
+Capturing is the spike and ground is the curve — a courtyard sealed on turn 4
+pays fourteen times, and one sealed on turn 16 pays twice. That is the trade
+the mode is asking about.
+
+### The raiders
+
+A weighted Dijkstra from the Keep where open floor costs 1, a player wall costs
+`wallCost` (4) and a ruin is impassable. Weighting a wall rather than
+forbidding it is what makes a wall a *delay* rather than a door. **The number
+is a cost, not a countdown** — a distance of 8 is not eight turns away, because
+a wall contributes 4 to it and takes one turn to break.
+
+Ties are broken by a draw **keyed to the turn number alone**, not to a run
+seed. Two things fall out of that: the intent preview asks the same question
+the phase will answer, on every pointer move, without a shared stream letting
+the preview change the future it is previewing; and a mission is a puzzle, so
+the same plan meets the same raiders doing the same thing on every attempt.
+
+### What the screen says
+
+The HUD is three lines in 64 px, and the order is the argument:
+
+```
+      RELIEF IN 12 TURNS
+CAPTURED 3        HELD 12
+SCORE 940  BEST 1,200   NEXT RAIDERS: TURN 5
+```
+
+No score tiers, no streak, no clock bar, no pace ghost, no BIG ROOM
+celebration, no room dissolve or shockwave on enclosure. Instead: a persistent
+courtyard fill that appears when ground becomes held and drains when it is
+lost, a gold burst where a raider was captured, grey shards and a low knock
+where a wall came down, and a breach sequence when the Keep falls. The
+first-run card is the siege's own three lines, on its own flag, so meeting one
+does not silently spend the other.
+
+Game over is `VICTORY` or `BREACHED`, with captured, held, turns survived and
+walls lost — and the two questions the playtest is actually asking, written
+out: *Could you read the threats and place what you intended?* and *What would
+you build differently?*
+
+### Layout
+
+The siege board is 11×11 and the other three modes stay 9×9. The siege takes
+8 px side gutters instead of 16, a 64 px HUD instead of 104, and a board height
+capped by what is left after the HUD and the hand rather than by half the
+screen. That lands **31 px cells at 360 px wide and 34 px at 390 px**, with
+44 px buttons — asserted in `tests/siege.test.ts` against `computeLayout`,
+which is the layout arithmetic split out as a pure function so it can be
+checked without a browser.
+
+### Tunable knobs
+
+All in `SiegeConfig` (`src/core/Config.ts`) and `src/core/Missions.ts`:
+`wallCost` (4), `enemyBonus` (75), `groundIncome` (1), `reliefTurns` (18),
+`previewCount` (4), each mission's map, spawn list and supply. The flags
+`enemy`, `mission`, `clockMode` and `fenceSurvivesEnemyPhase` are kept in the
+config and hidden from the UI: `enemy` still names the tide, whose pathing
+survives in `Siege.ts` but is not wired into a turn loop that has no clock for
+it to expand on.
+
+### Replays and telemetry
+
+Recording works as it does everywhere else. A skip is logged as
+`{ t: 's', at }`, and the simulator spends it exactly as the browser did — a
+log that dropped its skips would be one turn out from the first one onward.
+Telemetry rides on `variant`, now `m1-raiders-relief18`, with the siege
+counters beside it: captured, held at end, turns survived, skips used, walls
+lost, breach turn, route-changing placements.
 
 ## Territory
 
@@ -245,16 +319,16 @@ npm run build
 
 ### Rules
 
-- `src/core/Board.ts`: the 9×9 grid, the flood-fill enclosure detection, the lit-floor map, and the siege's terrain and enemy-occupancy overlays
-- `src/core/Siege.ts`: the second force — the weighted distance field, the raiders' plan/resolve phase, the tide, and the intent preview. Pure and seed-driven
-- `src/core/Missions.ts`: the three siege maps as rows of strings, their spawn plans, and the terrain semantics table
+- `src/core/Board.ts`: the grid at whatever size the game asked for, the flood-fill enclosure detection, the lit-floor map, and the siege's terrain and raider-occupancy overlays
+- `src/core/Siege.ts`: the second force — the weighted distance field, the raiders' plan/resolve phase, and the intent preview. Pure, and driven by the turn number. The tide's pathing is kept here, unwired
+- `src/core/Missions.ts`: the three siege maps as rows of strings, their arrival schedules, their authored supplies, and the terrain semantics table
 - `src/core/Pieces.ts`: piece shapes, rotation, the seeded shuffled-bag dealer, and the per-tier bag table
 - `src/core/Rules.ts`: `RULES_VERSION` — bump it whenever dealing or scoring changes
 - `src/core/Replay.ts`: re-playing a run from its seed and its inputs, and the reconstructed clock
 - `src/core/Random.ts`: mulberry32, FNV-1a, and the per-run seed
 - `src/core/Daily.ts`: which day it is, and what this browser has done with it. Its `dailySeed` is the old public deal, kept for tests and practice only
 - `src/core/Ticket.ts`: the run ticket format, its HMAC, the daily's derived seed and the replay fingerprint. Pure — the secret is a parameter, so it is never bundled into the client
-- `src/core/GameState.ts`: the run loop: hand, queue, hold, claims, scoring, streaks, echo walls, territory, clock, piece budget, score timeline
+- `src/core/GameState.ts`: the run loop: hand, queue, hold, claims, scoring, streaks, echo walls, territory, clock, piece budget, score timeline — and the siege's own turn, which shares none of the scoring and all of the board
 - `src/core/Config.ts`: per-mode scoring, timer, territory, echo, bag and budget numbers
 - `src/core/Progression.ts`: score tiers (SETTLER through LEGEND), per mode
 - `src/core/Settings.ts`: persisted preferences, personal bests, and the personal best's score curve
@@ -272,11 +346,11 @@ npm run build
 ### Presentation
 
 - `src/scenes/MenuScene.ts`, `GameScene.ts`, `GameOverScene.ts`, `SceneManager.ts`
-- `src/rendering/GridRenderer.ts`: board, lit floor, echo walls, closing hints, placement pops, claim animation
+- `src/rendering/GridRenderer.ts`: board, lit floor, echo walls, closing hints, placement pops, claim animation, and the siege's held courtyards, captures and wall breaks
 - `src/rendering/HandRenderer.ts`: hold slot, current piece, next queue, rotate button, drag piece
 - `src/rendering/GhostRenderer.ts`: the drop ghost and the gold claim preview
-- `src/rendering/UIRenderer.ts`: HUD (score, pace, tier, best, streak pips, survey, timer or piece budget)
-- `src/rendering/LayoutManager.ts`: one layout for every screen size, and pixel → grid
+- `src/rendering/UIRenderer.ts`: HUD (score, pace, tier, best, streak pips, survey, timer or piece budget), and the siege's three lines instead of all of it
+- `src/rendering/LayoutManager.ts`: `computeLayout`, one layout for every screen size and board size, as a pure function; the class holds the current one and does pixel → grid
 - `src/rendering/Widgets.ts`, `Theme.ts`, `FXManager.ts`, `AnimationManager.ts`
 - `src/audio/AudioManager.ts`: the mixer, the voices and the clock — everything that touches an AudioContext
 - `src/audio/Music.ts`: the notes — chord tables, stinger timing, the leitmotif and the mixer's curves, pure and testable
@@ -292,7 +366,7 @@ npm run build
 
 ## How enclosure detection works
 
-An empty cell is "outside" if it can reach the board edge by walking through empty cells. We flood-fill from every empty cell on the border; anything empty that the flood never reaches is inside a fence. Grouping those cells into connected components gives the individual rooms, and the blocks orthogonally touching a room are its fence. On a 9×9 board this runs in a fraction of a millisecond, so it is also used to compute the gold "closing" hints after every move.
+An empty cell is "outside" if it can reach the board edge by walking through empty cells. We flood-fill from every empty cell on the border; anything empty that the flood never reaches is inside a fence. Grouping those cells into connected components gives the individual rooms, and the blocks orthogonally touching a room are its fence. On a 9×9 or 11×11 board this runs in a fraction of a millisecond, so it is also used to compute the gold "closing" hints after every move, and to recompute the siege's held ground after every enemy phase.
 
 The fill takes an optional set of extra walls — the echo cells — which hold it back exactly as blocks do. They are reported separately from the fence, because there is no block there for a claim to remove, and their presence is what earns the claim its ECHO multiplier.
 
@@ -319,7 +393,7 @@ If the request fails — offline, API down, slower than two and a half seconds �
 
 ### The replay
 
-Every run records its inputs: `{ t: 'p', row, col, rot, at }` for a placement, `{ t: 'h', at }` for a hold, where `at` is the second of the run the input landed on, unrounded. That log, plus the seed and the mode, is the **replay**, and it travels with the score and the token.
+Every run records its inputs: `{ t: 'p', row, col, rot, at }` for a placement, `{ t: 'h', at }` for a hold, and `{ t: 's', at }` for a siege skip, where `at` is the second of the run the input landed on, unrounded. That log, plus the seed and the mode, is the **replay**, and it travels with the score and the token.
 
 The server does not take the score. It re-plays the log — same `GameState`, same seeded bag, same echo window, same territory map — and the score only lands on the board if the run comes out at exactly that number. Everything a score depends on is reproduced: the bag tightens with the score, echo walls fade on `at`, claims light the floor. Colours come from the same RNG draw whatever palette is set, and no rule reads them.
 
@@ -364,6 +438,7 @@ The times used to be in it, and that made the dedupe trivial to walk around. A d
 - **The clock check has 0.05 s of slack**, down from a second. The argument that an honest run cannot fail it is in `drainIntegral`, `CLOCK_SLACK_SECONDS` and above. It rests on the two sides computing the *same* time bonus, which they now do because `pieceElapsed` is derived from the recorded times rather than accumulated per frame; while it was accumulated, the tenth-of-a-second rounding could flip and an honest run finishing on 0.035 s reconstructed to −0.065 s and was refused.
 - **A run past 600 recorded inputs is playable but unprovable.** The log stops at the cap, is marked `truncated`, and the server refuses it. Six hundred placements is far past what any bank can fund.
 - **A score kept locally is not a shared score.** When the server refuses one, or the run never got a ticket, the game says so under the board instead of implying it went out.
-- **The siege is a graybox and posts nothing.** No leaderboard, no run ticket, no server validation; the best is per variant and lives in `localStorage`. Its `RULES_VERSION` is shared with the other modes, so a siege replay is only reproducible against the build that recorded it.
-- **The siege's numbers are first-pass.** The tier ladder, the 40-second clock, the 75-point capture, the wall cost of 4 and the 60-second tide survival floor are all placeholders the playtest is meant to move.
+- **The siege is a graybox and posts nothing.** No leaderboard, no run ticket, no server validation; the best is per mission and lives in `localStorage`. Its `RULES_VERSION` is shared with the other modes, so a siege replay is only reproducible against the build that recorded it. `api/leaderboard.ts` accepts three modes and the siege is not one of them, so an 11×11 coordinate or a skip can never reach it.
+- **The siege's numbers are first-pass.** Eighteen turns, the 75-point capture, one point a cell a turn, the wall cost of 4 and M1's arrival schedule are all placeholders the playtest is meant to move.
+- **The siege's presentation has not been seen in a browser by whoever wrote it.** The rules, the resolution order, the replay round trip and the layout arithmetic are covered by tests; how it *reads* on a phone is exactly what the playtest is for.
 - **Starting a run mints an anonymous id**, because a ticket has to be bound to one. A player who never posts a score used to stay unidentified; now the id exists from the first run. It is a random UUID in `localStorage`, it is never returned by `GET`, and nothing else is stored against it.
