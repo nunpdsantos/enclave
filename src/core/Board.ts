@@ -138,17 +138,41 @@ export class Board {
   }
 
   /**
+   * Blocks, plus any extra cells the caller says are walls — the echo walls a
+   * recent claim left behind. One pass over 81 cells so the flood fill and the
+   * fence scan can both ask "is this a wall?" without rebuilding a key string.
+   */
+  private wallMap(extraWalls?: ReadonlySet<string>): boolean[][] {
+    const wall: boolean[][] = this.grid.map(row => row.map(c => c !== null));
+    if (extraWalls) {
+      for (const key of extraWalls) {
+        const comma = key.indexOf(',');
+        const r = Number(key.slice(0, comma));
+        const c = Number(key.slice(comma + 1));
+        if (r >= 0 && c >= 0 && r < GRID_SIZE && c < GRID_SIZE) wall[r][c] = true;
+      }
+    }
+    return wall;
+  }
+
+  /**
    * Find every enclosed room.
    * Cost is tiny (81 cells), so callers can use this freely.
+   *
+   * `extraWalls` ('row,col' keys) are cells with no block that still hold the
+   * flood back: echo walls. They bound rooms exactly as blocks do, but they
+   * are reported in `echoCells` rather than `fence`, because a claim cannot
+   * remove a wall that is not there.
    */
-  findEnclosures(): Region[] {
-    const outside = this.floodFromEdges();
+  findEnclosures(extraWalls?: ReadonlySet<string>): Region[] {
+    const wall = this.wallMap(extraWalls);
+    const outside = this.floodFromEdges(wall);
     const visited: boolean[][] = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(false));
     const regions: Region[] = [];
 
     for (let r = 0; r < GRID_SIZE; r++) {
       for (let c = 0; c < GRID_SIZE; c++) {
-        if (this.grid[r][c] !== null || outside[r][c] || visited[r][c]) continue;
+        if (wall[r][c] || outside[r][c] || visited[r][c]) continue;
 
         // Collect this enclosed component
         const cells: GridPos[] = [];
@@ -160,40 +184,42 @@ export class Board {
           for (const [dr, dc] of DIRS) {
             const nr = p.row + dr, nc = p.col + dc;
             if (nr < 0 || nc < 0 || nr >= GRID_SIZE || nc >= GRID_SIZE) continue;
-            if (visited[nr][nc] || this.grid[nr][nc] !== null) continue;
+            if (visited[nr][nc] || wall[nr][nc]) continue;
             visited[nr][nc] = true;
             stack.push({ row: nr, col: nc });
           }
         }
 
-        // The fence: blocks orthogonally touching the room
-        const fenceSet = new Set<string>();
+        // The boundary: blocks orthogonally touching the room are its fence,
+        // echo walls in the same position are the ghost half of it
+        const seen = new Set<string>();
         const fence: GridPos[] = [];
+        const echoCells: GridPos[] = [];
         for (const p of cells) {
           for (const [dr, dc] of DIRS) {
             const nr = p.row + dr, nc = p.col + dc;
             if (nr < 0 || nc < 0 || nr >= GRID_SIZE || nc >= GRID_SIZE) continue;
-            if (this.grid[nr][nc] === null) continue;
+            if (!wall[nr][nc]) continue;
             const key = `${nr},${nc}`;
-            if (!fenceSet.has(key)) {
-              fenceSet.add(key);
-              fence.push({ row: nr, col: nc });
-            }
+            if (seen.has(key)) continue;
+            seen.add(key);
+            if (this.grid[nr][nc] !== null) fence.push({ row: nr, col: nc });
+            else echoCells.push({ row: nr, col: nc });
           }
         }
 
-        regions.push({ cells, fence, area: cells.length });
+        regions.push({ cells, fence, echoCells, area: cells.length });
       }
     }
     return regions;
   }
 
   /** Flood fill from border empties: true = reachable from the edge */
-  private floodFromEdges(): boolean[][] {
+  private floodFromEdges(wall: boolean[][]): boolean[][] {
     const outside: boolean[][] = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(false));
     const stack: GridPos[] = [];
     const seed = (r: number, c: number) => {
-      if (this.grid[r][c] === null && !outside[r][c]) {
+      if (!wall[r][c] && !outside[r][c]) {
         outside[r][c] = true;
         stack.push({ row: r, col: c });
       }
@@ -206,7 +232,7 @@ export class Board {
       for (const [dr, dc] of DIRS) {
         const nr = p.row + dr, nc = p.col + dc;
         if (nr < 0 || nc < 0 || nr >= GRID_SIZE || nc >= GRID_SIZE) continue;
-        if (outside[nr][nc] || this.grid[nr][nc] !== null) continue;
+        if (outside[nr][nc] || wall[nr][nc]) continue;
         outside[nr][nc] = true;
         stack.push({ row: nr, col: nc });
       }
@@ -227,15 +253,18 @@ export class Board {
   /**
    * Hint helper: which empty cells would, if filled by a single block,
    * create a brand-new enclosure? These are "one block from closing".
+   *
+   * `extraWalls` is the same echo set the real placement will be judged
+   * against, so a hint promises a close that the drop actually delivers.
    */
-  findClosingCells(): GridPos[] {
-    const before = this.findEnclosures().length;
+  findClosingCells(extraWalls?: ReadonlySet<string>): GridPos[] {
+    const before = this.findEnclosures(extraWalls).length;
     const out: GridPos[] = [];
     for (let r = 0; r < GRID_SIZE; r++) {
       for (let c = 0; c < GRID_SIZE; c++) {
         if (this.grid[r][c] !== null) continue;
         this.grid[r][c] = 0;
-        const after = this.findEnclosures().length;
+        const after = this.findEnclosures(extraWalls).length;
         this.grid[r][c] = null;
         if (after > before) out.push({ row: r, col: c });
       }

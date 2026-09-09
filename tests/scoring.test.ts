@@ -3,7 +3,7 @@ import { GameState } from '../src/core/GameState';
 import { makePiece } from '../src/core/Pieces';
 import { DIFFICULTY_CONFIGS } from '../src/core/Config';
 import { FeedbackEvent, PieceInstance } from '../src/core/types';
-import { grid } from './helpers';
+import { grid, jumpPastEcho } from './helpers';
 
 /**
  * These drive GameState directly rather than through a scene. The bag is
@@ -87,6 +87,7 @@ describe('scoring order', () => {
     placeSingle(gs, ROOM_2X2_OPEN, 2, 3);
     expect(gs.streakCount).toBe(1);
     expect(gs.score).toBe(161);
+    jumpPastEcho(gs);
 
     // Rebuilding the same room lands on floor the first claim lit, so the
     // streak is riding on half-price ground: see tests/territory.test.ts
@@ -113,6 +114,7 @@ describe('scoring order', () => {
 
   it('counts rooms, not claims, and records the size histogram', () => {
     placeSingle(gs, TWO_ROOMS_OPEN, 4, 4);
+    jumpPastEcho(gs);
     placeSingle(gs, ROOM_2X2_OPEN, 2, 3);
 
     expect(gs.claims).toBe(2);
@@ -166,6 +168,7 @@ describe('claimPoints — the price the drag preview quotes', () => {
   it('quotes the current streak, so the preview matches mid-run', () => {
     const gs = newGame();
     placeSingle(gs, ROOM_2X2_OPEN, 2, 3);                  // streak 1
+    jumpPastEcho(gs);
     gs.board.grid = grid(TWO_2X2_OPEN);
 
     const regions = previewAt(gs, makePiece('tri_line', 1, WHITE), 2, 4);

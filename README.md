@@ -24,6 +24,8 @@ Layers on top of the rule:
 - **Streaks.** Claims on consecutive placements multiply the score. A few empty placements and the streak breaks.
 - **Closing hints.** Gold cells mark where a single block would close a room.
 - **Shared walls.** Claiming a room removes its walls, including any wall it shares with a neighbouring room. Closing order matters.
+- **Echo walls.** A fence a claim removes lingers for a moment as a fading ghost that still counts as a wall, so the room next door can be closed against it. A claim bounded by a ghost pays **×1.25**. The window is 2 s in Classic and 1.5 s in Blitz, which turns the shared wall from a pitfall into the game's signature combo. The floor a claim just took stays solid for the same window, so a room can never re-close itself off its own ghosts.
+- **Bag by tier.** From ARCHITECT upward the bag gets stingier with fence material: fewer long bars, then fewer corners, more awkward shapes, and by SOVEREIGN no BAR 5 at all. Every bag still holds 23–25 pieces, and the change only ever lands at a refill, never mid-bag.
 
 Three modes: Classic (60 s clock), Blitz (35 s) and the Rationed Daily, each with its own leaderboard and personal best.
 
@@ -35,6 +37,7 @@ One puzzle a day, the same one for everyone: **30 pieces, no clock**. The seed i
 - **First submission counts.** Replaying the day is allowed and is labelled `PRACTICE RUN · NOT SUBMITTED`; the leaderboard keeps the score you posted first, higher or not, so the board measures the puzzle and not how many attempts you had.
 - Each day is its own leaderboard (`leaderboard:enclave:daily:YYYY-MM-DD`), readable for a week and expiring after eight days. Scores can only be posted to today's or yesterday's board — the second so a run that crossed midnight still lands where it was dealt.
 - The personal best is per day, for the same reason: a lifetime daily best would only say you once had a good seed.
+- **No echo walls and no tier bag.** An echo window is measured in seconds and the Daily has no clock, and a bag that tightens with the score would deal two players different pieces on the same puzzle. Both are off, so the mix and the order are the same for everyone.
 
 ## Territory
 
@@ -82,7 +85,7 @@ npm run build
 ### Rules
 
 - `src/core/Board.ts`: the 9×9 grid and the flood-fill enclosure detection
-- `src/core/Pieces.ts`: piece shapes, rotation, and the seeded shuffled-bag dealer
+- `src/core/Pieces.ts`: piece shapes, rotation, the seeded shuffled-bag dealer, and the per-tier bag table
 - `src/core/Random.ts`: mulberry32, FNV-1a, and the per-run seed
 - `src/core/Daily.ts`: which day it is, what it deals, and what this browser has done with it
 - `src/core/GameState.ts`: the run loop: hand, queue, hold, claims, scoring, streaks, clock, piece budget
@@ -103,6 +106,8 @@ npm run build
 ## How enclosure detection works
 
 An empty cell is "outside" if it can reach the board edge by walking through empty cells. We flood-fill from every empty cell on the border; anything empty that the flood never reaches is inside a fence. Grouping those cells into connected components gives the individual rooms, and the blocks orthogonally touching a room are its fence. On a 9×9 board this runs in a fraction of a millisecond, so it is also used to compute the gold "closing" hints after every move.
+
+The fill takes an optional set of extra walls — the echo cells — which hold it back exactly as blocks do. They are reported separately from the fence, because there is no block there for a claim to remove, and their presence is what earns the claim its ECHO multiplier.
 
 ## Known limitations
 

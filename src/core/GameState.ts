@@ -2,12 +2,29 @@ import { Board, INNER_CELLS } from './Board';
 import { PieceBag, rotatePiece } from './Pieces';
 import { Difficulty, GameConfig, TerritoryConfig, DEFAULT_CONFIG } from './Config';
 import { dailyKey, dailySeed } from './Daily';
+import { getProgressStatus } from './Progression';
 import { mulberry32, randomSeed } from './Random';
 import { getPersonalBest, recordPersonalBest } from './Settings';
 import {
   PieceInstance, FeedbackEvent, ClaimResult, ClaimPoints, ScoreBreakdown, Region,
-  RunEndCause, RunSummary, GridPos,
+  RunEndCause, RunSummary, GridPos, CellColor, EchoWall,
 } from './types';
+
+/** A cell the echo window is holding, and when it stops holding it */
+interface TimedCell {
+  row: number;
+  col: number;
+  expiresAt: number;
+}
+
+interface EchoRecord extends TimedCell {
+  /** The block that stood here, so the ghost is drawn as that wall */
+  color: CellColor;
+}
+
+function cellKey(p: GridPos): string {
+  return `${p.row},${p.col}`;
+}
 
 /**
  * What a stretch of floor is worth: full price for ground never claimed,
@@ -72,6 +89,29 @@ export class GameState {
   surveys = 0;
   newBestReached = false;
 
+  /**
+   * Echo walls: a fence a claim removed goes on holding the flood back until
+   * it fades, which is what makes closing the room next door a combo rather
+   * than a punishment. The set has two halves, both on the same clock:
+   *
+   *  - `echoes` are the removed blocks. They are drawn, fading, in the colour
+   *    of the block that stood there, and a room they bound pays the ECHO
+   *    multiplier.
+   *  - `spentFloor` is the floor the claim just took. It is never drawn and
+   *    never worth anything: it is solid only so the room a claim emptied
+   *    cannot immediately re-close itself off its own ghost walls. With both
+   *    halves standing, a claim's footprint holds exactly the shape it had
+   *    before the claim, so nothing outside the footprint changes either.
+   */
+  private echoes: EchoRecord[] = [];
+  private spentFloor: TimedCell[] = [];
+  /**
+   * Bumped whenever the echo set changes — add, consume or expire. The hints
+   * and the drag preview are computed against that set, so a view polls this
+   * to know when its answers went stale, without recomputing per frame.
+   */
+  echoVersion = 0;
+
   /** The deal this run is playing. Fixed by the date for the daily. */
   seed = 0;
   /** 'YYYY-MM-DD' of the daily being played, or null outside the daily */
@@ -116,6 +156,90 @@ export class GameState {
     return Number.isFinite(undealt) ? undealt + inPlay : Infinity;
   }
 
+  // ── Echo walls ──
+
+  /** 'row,col' of every cell the echo window is currently holding as a wall */
+  activeEchoKeys(): ReadonlySet<string> {
+    const keys = new Set<string>();
+    for (const e of this.echoes) keys.add(cellKey(e));
+    for (const s of this.spentFloor) keys.add(cellKey(s));
+    return keys;
+  }
+
+  /** The echo walls to draw, with how much of their window each has left */
+  echoWalls(): EchoWall[] {
+    const window = this.config.echo.windowSeconds;
+    return this.echoes.map(e => ({
+      row: e.row,
+      col: e.col,
+      color: e.color,
+      remaining: Math.max(0, e.expiresAt - this.gameElapsed),
+      window,
+    }));
+  }
+
+  /**
+   * The rooms a board would pay for right now, echo walls standing. The
+   * placement and the drag preview both come through here, so a preview
+   * cannot quote a room the placement would then refuse.
+   *
+   * Two kinds of region are refused, and neither can exist outside an echo
+   * window. A room with no block at all in its fence is held up by ghosts
+   * alone: the player built nothing and there is nothing to knock down. And a
+   * room bounded by spent floor is closing against something invisible — the
+   * ghost walls can be seen fading, the floor under them cannot.
+   *
+   * Both catch the same shape of accident: the gap a claim leaves behind can
+   * seal itself when a neighbouring claim eats the wall between them.
+   */
+  claimableRegions(board: Board): Region[] {
+    const regions = board.findEnclosures(this.activeEchoKeys());
+    if (this.echoes.length === 0 && this.spentFloor.length === 0) return regions;
+    const spent = new Set(this.spentFloor.map(cellKey));
+    return regions.filter(r =>
+      r.fence.length > 0 && !r.echoCells.some(c => spent.has(cellKey(c))),
+    );
+  }
+
+  /**
+   * Keep only the echo cells the predicate accepts, across both halves of the
+   * set, and bump the version if the set actually moved.
+   */
+  private filterEchoes(keep: (cell: TimedCell) => boolean): void {
+    if (this.echoes.length === 0 && this.spentFloor.length === 0) return;
+    const echoes = this.echoes.filter(keep);
+    const spentFloor = this.spentFloor.filter(keep);
+    if (echoes.length === this.echoes.length && spentFloor.length === this.spentFloor.length) return;
+    this.echoes = echoes;
+    this.spentFloor = spentFloor;
+    this.echoVersion++;
+  }
+
+  /**
+   * The echo bookkeeping for one claim: the ghost walls it just spent are
+   * gone, and the fence it just removed becomes the next set of ghosts.
+   *
+   * Consuming first matters — otherwise the fence this claim is echoing would
+   * be swept straight back out again by its own rooms' `echoCells`.
+   */
+  private recordEcho(claim: ClaimResult): void {
+    const used = new Set<string>();
+    for (const r of claim.regions) for (const e of r.echoCells) used.add(cellKey(e));
+    if (used.size > 0) this.filterEchoes(c => !used.has(cellKey(c)));
+
+    const echo = this.config.echo;
+    if (!echo.enabled) return;
+    const expiresAt = this.gameElapsed + echo.windowSeconds;
+    for (let i = 0; i < claim.fenceCleared.length; i++) {
+      const cell = claim.fenceCleared[i];
+      this.echoes.push({ row: cell.row, col: cell.col, color: claim.fenceColors[i] ?? 0xffffff, expiresAt });
+    }
+    for (const r of claim.regions) {
+      for (const cell of r.cells) this.spentFloor.push({ row: cell.row, col: cell.col, expiresAt });
+    }
+    this.echoVersion++;
+  }
+
   get streakSafeMoves(): number {
     if (this.streakCount <= 0) return 0;
     return Math.max(0, this.config.scoring.streakWindow - this.movesSinceLastClaim);
@@ -158,10 +282,14 @@ export class GameState {
     this.newBestReached = false;
     this.held = null;
     this.holdUsed = false;
+    this.echoes = [];
+    this.spentFloor = [];
+    this.echoVersion++;
     this.highScore = getPersonalBest(this.difficulty, this.dailyDate ?? undefined);
 
     // Deal the hand plus up to previewCount upcoming pieces. Under a budget
     // the bag can run dry, and the queue is simply shorter than the preview.
+    this.syncBagTier();
     this.current = this.bag.next();
     this.queue = [];
     for (let i = 0; i < this.config.previewCount; i++) {
@@ -177,6 +305,9 @@ export class GameState {
     if (this.isGameOver) return false;
     this.pieceElapsed += dt;
     this.gameElapsed += dt;
+    // Echo walls run on the game clock, not on placements, so this is the one
+    // place they can fade out.
+    this.filterEchoes(c => c.expiresAt > this.gameElapsed);
     // No clock: the run still ages (telemetry wants a duration) but nothing
     // drains and nothing can time out.
     if (!this.config.clock.enabled) return false;
@@ -278,8 +409,26 @@ export class GameState {
     const territoryFactor = territoryFactorOf(t, totalFresh, totalArea);
     const multiCloseMultiplier = 1 + s.multiCloseBonusPerRoom * (regions.length - 1);
     const streakMultiplier = this.streakMultiplier;
-    const turnScore = Math.floor(basePoints * multiCloseMultiplier * streakMultiplier);
-    return { basePoints, roomPoints, multiCloseMultiplier, streakMultiplier, territoryFactor, turnScore };
+    // The echo bonus is a property of the rooms themselves — one of them was
+    // bounded by a ghost wall — so a preview reading the same regions prices
+    // it identically without knowing anything about the live echo set.
+    const echoUsed = this.config.echo.enabled && regions.some(r => r.echoCells.length > 0);
+    const echoMultiplier = echoUsed ? this.config.echo.multiplier : 1;
+    const turnScore = Math.floor(basePoints * multiCloseMultiplier * streakMultiplier * echoMultiplier);
+    return {
+      basePoints, roomPoints, multiCloseMultiplier, streakMultiplier, echoMultiplier,
+      territoryFactor, turnScore,
+    };
+  }
+
+  /**
+   * Point the bag at the tier the score has reached. Cheap by design — it
+   * records an index and nothing else, and the mix changes at the next refill,
+   * never mid-bag — so calling it after every score change costs nothing.
+   */
+  private syncBagTier(): void {
+    if (!this.config.bagByTier) return;
+    this.bag.setTier(getProgressStatus(this.difficulty, this.score).tierIndex);
   }
 
   /** Attempt to place the current piece at (row, col) */
@@ -291,6 +440,10 @@ export class GameState {
 
     this.totalTurns++;
     const placedCells = this.board.place(piece.shape, row, col, piece.color);
+    // An echo wall is empty ground: a piece may land on one, and then it is a
+    // real block again rather than a block and a ghost in the same cell.
+    const covered = new Set(placedCells.map(cellKey));
+    this.filterEchoes(c => !covered.has(cellKey(c)));
     const speedFraction = this.currentSpeedFraction;
     this.pieceElapsed = 0;
     events.push({ type: 'place', placedCells, pieceColor: piece.color, speedFraction });
@@ -298,8 +451,8 @@ export class GameState {
     // Placement points
     this.score += placedCells.length * this.config.scoring.pointsPerBlockPlaced;
 
-    // Detect and resolve enclosures
-    const regions = this.board.findEnclosures();
+    // Detect and resolve enclosures, echo walls counting as walls
+    const regions = this.claimableRegions(this.board);
     let claim: ClaimResult | null = null;
     if (regions.length > 0) {
       const fenceSet = new Set<string>();
@@ -320,6 +473,7 @@ export class GameState {
         fenceCleared,
         fenceColors,
       };
+      this.recordEcho(claim);
     }
 
     // Streak bookkeeping BEFORE scoring so the multiplier reflects the run-up
@@ -387,6 +541,10 @@ export class GameState {
       this.newBestReached = true;
       events.push({ type: 'newBest', previousBest: this.highScore });
     }
+
+    // Every score change this placement could make — the blocks, the claim
+    // and the survey — has landed, so one sync here keeps the bag on tier.
+    this.syncBagTier();
 
     // Deal the next piece. Under a budget both the queue and the bag can be
     // empty, and then the run is finished rather than dead.

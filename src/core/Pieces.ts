@@ -78,6 +78,66 @@ export const PIECE_TYPES: PieceType[] = [
 
 const TYPE_BY_ID = new Map(PIECE_TYPES.map(t => [t.id, t]));
 
+/** Copies of each piece id in one bag. A missing id means the bag has none. */
+export type BagComposition = Readonly<Record<string, number>>;
+
+/** The bag every run starts on: exactly the `bagCount` column of PIECE_TYPES */
+const BASE_BAG: BagComposition = Object.fromEntries(PIECE_TYPES.map(t => [t.id, t.bagCount]));
+
+/** A bag with some counts overridden. A count of 0 drops the piece entirely. */
+function bagWith(base: BagComposition, changes: Record<string, number>): BagComposition {
+  const out: Record<string, number> = { ...base };
+  for (const [id, count] of Object.entries(changes)) {
+    if (count <= 0) delete out[id];
+    else out[id] = count;
+  }
+  return out;
+}
+
+// Fewer long bars, more diagonals: the cheapest fence material gets scarce
+// first, because a BAR 4 closes a wall no other piece can.
+const ARCHITECT_BAG = bagWith(BASE_BAG, { tri_line: 2, tet_line: 1, s: 2, z: 2 });
+// Corners follow the bars, and the two shapes that waste space double.
+const WARDEN_BAG = bagWith(ARCHITECT_BAG, { corner: 2, t: 2, u: 2 });
+// The end of easy patching: no BAR 5 at all, and the DOMINO that plugs a
+// one-cell gap is halved while the SQUARE that cannot plug anything doubles.
+const SOVEREIGN_BAG = bagWith(WARDEN_BAG, { domino: 2, square: 2, pent_line: 0 });
+
+/**
+ * What each progress tier is dealt, indexed by `getProgressStatus().tierIndex`
+ * (SETTLER, BUILDER, ARCHITECT, WARDEN, SOVEREIGN, LEGEND).
+ *
+ * Difficulty here is the mix, not the pace: every bag holds 23–25 pieces, so
+ * the deal keeps its rhythm and only the material changes. SETTLER and BUILDER
+ * share the base bag — the ramp starts once the player has proved they can
+ * close rooms at all.
+ */
+export const TIER_BAGS: ReadonlyArray<BagComposition> = [
+  BASE_BAG,
+  BASE_BAG,
+  ARCHITECT_BAG,
+  WARDEN_BAG,
+  SOVEREIGN_BAG,
+  SOVEREIGN_BAG,
+];
+
+function clampTier(tierIndex: number): number {
+  if (!Number.isFinite(tierIndex)) return 0;
+  return Math.max(0, Math.min(TIER_BAGS.length - 1, Math.floor(tierIndex)));
+}
+
+/** The bag a tier deals. Out-of-range indices clamp to the ends. */
+export function bagForTier(tierIndex: number): BagComposition {
+  return TIER_BAGS[clampTier(tierIndex)];
+}
+
+/** How many pieces a tier's bag holds */
+export function bagSizeForTier(tierIndex: number): number {
+  let n = 0;
+  for (const count of Object.values(bagForTier(tierIndex))) n += count;
+  return n;
+}
+
 export function cellCount(shape: ShapeMatrix): number {
   let n = 0;
   for (const row of shape) for (const c of row) if (c) n++;
@@ -111,11 +171,15 @@ export function pieceName(piece: PieceInstance): string {
  * hand out — the Rationed Daily's budget — after which `next()` returns null
  * and the queue simply runs dry. With no limit the bag refills forever, which
  * is what Classic and Blitz have always done.
+ *
+ * `setTier` swaps the composition for the next refill. Never mid-bag: a bag
+ * the player has already started counting on must finish as it was dealt.
  */
 export class PieceBag {
   private bag: string[] = [];
   private lastColor = -1;
   private dealt = 0;
+  private tier = 0;
   private readonly rng: Rng;
   private readonly limit: number;
 
@@ -127,6 +191,14 @@ export class PieceBag {
   /** Pieces this bag can still deal. Infinity when there is no budget. */
   get remaining(): number {
     return this.limit - this.dealt;
+  }
+
+  /**
+   * Which tier's mix the *next* bag is made of. Cheap enough to call on every
+   * score change: it only records the number.
+   */
+  setTier(tierIndex: number): void {
+    this.tier = clampTier(tierIndex);
   }
 
   next(): PieceInstance | null {
@@ -146,8 +218,15 @@ export class PieceBag {
   }
 
   private refill(): void {
+    const composition = bagForTier(this.tier);
     const items: string[] = [];
-    for (const t of PIECE_TYPES) for (let i = 0; i < t.bagCount; i++) items.push(t.id);
+    // Walk PIECE_TYPES rather than the record so the pre-shuffle order is
+    // fixed by the piece table: the seeded shuffle must not depend on how a
+    // composition object happened to be built.
+    for (const t of PIECE_TYPES) {
+      const count = composition[t.id] ?? 0;
+      for (let i = 0; i < count; i++) items.push(t.id);
+    }
     // Fisher–Yates shuffle
     for (let i = items.length - 1; i > 0; i--) {
       const j = Math.floor(this.rng() * (i + 1));

@@ -56,11 +56,29 @@ export interface ClockConfig {
   enabled: boolean;
 }
 
+export interface EchoConfig {
+  /**
+   * Off removes the mechanic completely: no echo walls are recorded, nothing
+   * is drawn, and a claim's multiplier stays 1.
+   */
+  enabled: boolean;
+  /** How long a removed fence goes on counting as a wall */
+  windowSeconds: number;
+  /** What a claim pays when an echo wall bounded any of its rooms */
+  multiplier: number;
+}
+
 export interface GameConfig {
   scoring: ScoringConfig;
   timer: TimerConfig;
   territory: TerritoryConfig;
   clock: ClockConfig;
+  echo: EchoConfig;
+  /**
+   * Whether the bag composition tightens as the player climbs the tiers. Off
+   * keeps the base bag for the whole run.
+   */
+  bagByTier: boolean;
   /** Number of upcoming pieces shown */
   previewCount: number;
   /** Total pieces the run will ever be dealt. Undefined means unlimited. */
@@ -97,6 +115,10 @@ export const DIFFICULTY_CONFIGS: Record<Difficulty, GameConfig> = {
       drainCap: 1.7,
     },
     clock: { enabled: true },
+    // Two seconds is about one considered placement: long enough to plan the
+    // second room, short enough that it stays a combo and not a safety net.
+    echo: { enabled: true, windowSeconds: 2.0, multiplier: 1.25 },
+    bagByTier: true,
     previewCount: 2,
   },
   blitz: {
@@ -115,6 +137,10 @@ export const DIFFICULTY_CONFIGS: Record<Difficulty, GameConfig> = {
       drainCap: 2.0,
     },
     clock: { enabled: true },
+    // Shorter, because everything in Blitz is: the window has to stay inside
+    // the rhythm of a 35 s run rather than spanning several placements.
+    echo: { enabled: true, windowSeconds: 1.5, multiplier: 1.25 },
+    bagByTier: true,
     previewCount: 2,
   },
   // The Rationed Daily: 30 pieces, no clock, the same deal for everyone.
@@ -139,6 +165,12 @@ export const DIFFICULTY_CONFIGS: Record<Difficulty, GameConfig> = {
       drainCap: 1,
     },
     clock: { enabled: false },
+    // No clock, so a window measured in seconds would reward whoever happens
+    // to play fast — the one thing this mode is not about. And the bag stays
+    // the base bag: the daily is only comparable if everyone is dealt from
+    // the same mix, whatever score they are on.
+    echo: { enabled: false, windowSeconds: 0, multiplier: 1 },
+    bagByTier: false,
     previewCount: 2,
     pieceBudget: 30,
   },

@@ -4,7 +4,7 @@ import { INNER_CELLS } from '../src/core/Board';
 import { makePiece } from '../src/core/Pieces';
 import { DIFFICULTY_CONFIGS, GameConfig } from '../src/core/Config';
 import { FeedbackEvent, GridPos } from '../src/core/types';
-import { grid } from './helpers';
+import { grid, jumpPastEcho } from './helpers';
 
 /**
  * Territory: the board's memory. Claimed floor stays lit, relit floor pays
@@ -107,7 +107,7 @@ describe('territory factor', () => {
     const cells: GridPos[] = Array.from({ length: 7 }, (_, i) => ({ row: 3, col: i + 1 }));
     gs.board.markLit(cells.slice(0, 5));
 
-    const points = gs.claimPoints([{ cells, fence: [], area: 7 }]);
+    const points = gs.claimPoints([{ cells, fence: [], echoCells: [], area: 7 }]);
     expect(points.basePoints).toBe(315);
     expect(points.turnScore).toBe(315);
   });
@@ -215,6 +215,7 @@ describe('the survey', () => {
     const gs = newGame();
     gs.board.markLit(innerCells({ row: 4, col: 4 }));
     placeSingle(gs, ROOM_1X1_OPEN, 4, 5);
+    jumpPastEcho(gs);
     placeSingle(gs, ROOM_2X2_OPEN, 2, 3);                   // 4 cells lit again
 
     const summary = gs.buildRunSummary('quit');

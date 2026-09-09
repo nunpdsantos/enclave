@@ -1,5 +1,5 @@
 import { Container, Graphics } from 'pixi.js';
-import { GRID_SIZE, Grid, GridPos, CellColor, Region } from '../core/types';
+import { GRID_SIZE, Grid, GridPos, CellColor, EchoWall, Region } from '../core/types';
 import { isInnerCell } from '../core/Board';
 import { Layout } from './LayoutManager';
 import { THEME, drawBeveledBlock, drawWallBlock, darken, getBoardTokens, lerpColor, lighten, luminance, easeOutBack } from './Theme';
@@ -30,10 +30,14 @@ const CLAIM_DURATION = 0.7;
 interface RoomOutline { segments: [number, number, number, number][]; life: number; maxLife: number }
 const OUTLINE_DURATION = 0.9;
 
+/** How solid an echo wall looks at the instant the claim removes it */
+const ECHO_MAX_ALPHA = 0.55;
+
 export class GridRenderer {
   container: Container;
   private bgGraphics: Graphics;
   private floorGraphics: Graphics;
+  private echoGraphics: Graphics;
   private blockGraphics: Graphics;
   private hintGraphics: Graphics;
   private popGraphics: Graphics;
@@ -47,6 +51,10 @@ export class GridRenderer {
   private claiming: ClaimCell[] = [];
   private outlines: RoomOutline[] = [];
   private closingCells: GridPos[] = [];
+  /** Echo walls, counted down here so the fade is smooth between updates */
+  private echoes: EchoWall[] = [];
+  /** Last grid drawn, so an echo can join to the real blocks beside it */
+  private blockGrid: Grid | null = null;
 
   /** Last lit map drawn, kept so a resize can repaint the floor from it */
   private litMap: boolean[][] | null = null;
@@ -59,6 +67,7 @@ export class GridRenderer {
     this.container = new Container();
     this.bgGraphics = new Graphics();
     this.floorGraphics = new Graphics();
+    this.echoGraphics = new Graphics();
     this.glowGraphics = new Graphics();
     this.blockGraphics = new Graphics();
     this.hintGraphics = new Graphics();
@@ -68,6 +77,8 @@ export class GridRenderer {
 
     this.container.addChild(this.bgGraphics);
     this.container.addChild(this.floorGraphics);
+    // Above the floor it stands on, below the blocks it used to be one of
+    this.container.addChild(this.echoGraphics);
     this.container.addChild(this.glowGraphics);
     this.container.addChild(this.hintGraphics);
     this.container.addChild(this.blockGraphics);
@@ -87,6 +98,7 @@ export class GridRenderer {
       this.drawFloor(this.litMap);
       this.floorFade = fade;
     }
+    this.drawEcho();
   }
 
   private drawBackground(): void {
@@ -167,6 +179,7 @@ export class GridRenderer {
    */
   drawBlocks(grid: Grid): void {
     const g = this.blockGraphics;
+    this.blockGrid = grid;
     g.clear();
     const { gridOriginX, gridOriginY, cellSize } = this.layout;
     const filled = (r: number, c: number): boolean =>
@@ -240,6 +253,53 @@ export class GridRenderer {
     }
   }
 
+  /**
+   * The echo walls now standing. Called only when the set changes — the fade
+   * itself is run here in `update`, from the `remaining` each cell arrives
+   * with, so a prune upstream also re-syncs the countdown.
+   */
+  setEcho(cells: EchoWall[]): void {
+    this.echoes = cells.map(c => ({ ...c }));
+    this.drawEcho();
+  }
+
+  /**
+   * A ghost of a wall has to read as a wall, so it is the same tile in the
+   * same colour, joined to the real blocks and to the rest of its own fence,
+   * just translucent and dimming as its window runs out.
+   */
+  private drawEcho(): void {
+    const g = this.echoGraphics;
+    g.clear();
+    if (!this.layout || this.echoes.length === 0) return;
+    const { gridOriginX, gridOriginY, cellSize } = this.layout;
+    const grid = this.blockGrid;
+    const ghosts = new Set(this.echoes.map(e => `${e.row},${e.col}`));
+    const walled = (r: number, c: number): boolean =>
+      r >= 0 && c >= 0 && r < GRID_SIZE && c < GRID_SIZE
+      && ((grid !== null && grid[r][c] !== null) || ghosts.has(`${r},${c}`));
+
+    for (const e of this.echoes) {
+      const life = e.window > 0 ? Math.max(0, Math.min(1, e.remaining / e.window)) : 0;
+      const alpha = ECHO_MAX_ALPHA * life;
+      if (alpha <= 0.01) continue;
+      drawWallBlock(
+        g,
+        gridOriginX + e.col * cellSize,
+        gridOriginY + e.row * cellSize,
+        cellSize,
+        BLOCK_INSET,
+        e.color,
+        CELL_RADIUS,
+        {
+          up: walled(e.row - 1, e.col), down: walled(e.row + 1, e.col),
+          left: walled(e.row, e.col - 1), right: walled(e.row, e.col + 1),
+        },
+        alpha,
+      );
+    }
+  }
+
   popCells(cells: GridPos[], color: CellColor): void {
     for (const cell of cells) this.pops.push({ row: cell.row, col: cell.col, color, life: 0 });
   }
@@ -293,6 +353,17 @@ export class GridRenderer {
         this.floorGraphics.alpha = 1;
         this.litMap = null;
       }
+    }
+
+    // Echo walls: redrawn every frame, but only while any are standing —
+    // fading is the whole point of them, and there are never more than a
+    // fence's worth.
+    if (this.echoes.length > 0) {
+      for (let i = this.echoes.length - 1; i >= 0; i--) {
+        this.echoes[i].remaining -= dt;
+        if (this.echoes[i].remaining <= 0) this.echoes.splice(i, 1);
+      }
+      this.drawEcho();
     }
 
     // Placement pops

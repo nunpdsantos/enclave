@@ -41,7 +41,28 @@ export interface Region {
   cells: GridPos[];
   /** Blocks orthogonally adjacent to the region: the fence */
   fence: GridPos[];
+  /**
+   * Echo walls orthogonally adjacent to the region: the part of its boundary
+   * that is a ghost of a wall a claim already removed. Never overlaps `fence`
+   * — there is no block here to knock down — but it is what makes the claim an
+   * ECHO close.
+   */
+  echoCells: GridPos[];
   area: number;
+}
+
+/**
+ * A fence cell a claim removed that still counts as a wall, for as long as it
+ * lasts. `remaining / window` is how far through its life it is, which is all
+ * a renderer needs to fade it.
+ */
+export interface EchoWall {
+  row: number;
+  col: number;
+  /** Colour of the block that stood here, so the ghost reads as that wall */
+  color: CellColor;
+  remaining: number;
+  window: number;
 }
 
 /** Result of one placement */
@@ -65,6 +86,11 @@ export interface ClaimPoints {
   roomPoints: number[];
   multiCloseMultiplier: number;
   streakMultiplier: number;
+  /**
+   * echo.multiplier when an echo wall bounded any of the claimed rooms, 1
+   * otherwise. Applied last, inside the same floor() as the others.
+   */
+  echoMultiplier: number;
   /**
    * What the claim as a whole paid per unit of floor, 0.5–1: full for
    * all-new floor, relitFloorFactor for all-relit, and 1 whenever territory

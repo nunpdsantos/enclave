@@ -86,6 +86,8 @@ export class GameScene implements Scene {
   private previewKey = '';
   private previewValue: ClosePreview | null = null;
   private boardVersion = 0;
+  /** Last echo set this scene drew, hinted and priced against */
+  private echoVersion = 0;
 
   private onVisibilityChange = () => {
     if (document.hidden && this.phase === 'playing' && !this.paused) this.pause();
@@ -176,6 +178,7 @@ export class GameScene implements Scene {
 
     this.gameState.start();
     this.boardVersion++; // the board just reset: any memoised preview is stale
+    this.echoVersion = this.gameState.echoVersion;
     this.dragController.setCurrent(this.gameState.current);
     this.dragController.updateBoard(this.gameState.board);
 
@@ -283,6 +286,7 @@ export class GameScene implements Scene {
 
     this.animationManager.update(animDt);
     if (this.gameState.tick(dt)) { this.startGameOverSequence(); return; }
+    this.syncEchoWalls();
 
     this.fxManager.update(dt, this.gameState.drainRate, this.gameState.gameElapsed);
     // Without a clock there is no bar to fill, no urgency to announce and no
@@ -728,8 +732,22 @@ export class GameScene implements Scene {
 
   private refreshBoard(): void {
     this.boardVersion++;
+    this.echoVersion = this.gameState.echoVersion;
     this.gridRenderer.drawBlocks(this.gameState.board.grid);
-    this.gridRenderer.setClosingCells(this.gameState.board.findClosingCells());
+    // Blocks first: the echo tiles join to whatever was just drawn. Hints and
+    // preview are priced against the same echo set the placement will be.
+    this.gridRenderer.setEcho(this.gameState.echoWalls());
+    this.gridRenderer.setClosingCells(this.gameState.board.findClosingCells(this.gameState.activeEchoKeys()));
+  }
+
+  /**
+   * Echo walls fade on the clock, not on a placement, so the hints and the
+   * memoised preview can go stale with nothing else happening. One integer
+   * compare per frame; the flood fills only rerun when the set actually moved.
+   */
+  private syncEchoWalls(): void {
+    if (this.gameState.echoVersion === this.echoVersion) return;
+    this.refreshBoard();
   }
 
   /** The ghost, plus the gold claim preview when the drop would seal a room */
@@ -749,6 +767,8 @@ export class GameScene implements Scene {
   /**
    * What this drop would claim, memoised on piece + cell + board so the
    * flood fill runs once per snapped position, not once per pointer event.
+   * `boardVersion` moves when the echo set does, so a preview quoted through
+   * a ghost wall stops being quoted the moment the ghost goes.
    */
   private closePreview(piece: PieceInstance, row: number, col: number): ClosePreview | null {
     const key = `${piece.typeId}:${piece.rotation}:${row}:${col}:${this.boardVersion}`;
@@ -759,7 +779,7 @@ export class GameScene implements Scene {
     const probe = this.gameState.board.clone();
     if (probe.canPlace(piece.shape, row, col)) {
       probe.place(piece.shape, row, col, piece.color);
-      const regions = probe.findEnclosures();
+      const regions = this.gameState.claimableRegions(probe);
       if (regions.length > 0) {
         this.previewValue = { regions, points: this.gameState.claimPoints(regions).turnScore };
       }
@@ -873,6 +893,10 @@ export class GameScene implements Scene {
           if (breakdown && breakdown.territoryFactor < 1) {
             parts.push(`RELIT ×${formatFactor(breakdown.territoryFactor)}`);
           }
+          // The ghost wall paid: say so, or the bonus is invisible
+          if (breakdown && breakdown.echoMultiplier > 1) {
+            parts.push(`ECHO ×${formatFactor(breakdown.echoMultiplier)}`);
+          }
           if (parts.length > 0) this.animationManager.showStreakPopup(0, parts.join('  ·  '));
           if (event.timeBonus) this.showTimeBonusPopup(event.timeBonus, true);
 
@@ -935,7 +959,13 @@ export class GameScene implements Scene {
     const status = getProgressStatus(this.gameState.difficulty, this.gameState.score);
     if (announceTier && status.tierIndex > this.progressTierIndex) {
       const layout = this.layoutManager.layout;
-      this.showCenterAlert(`${status.current.label}`, status.current.color, 30);
+      // From ARCHITECT on, the tier also takes fence material out of the bag.
+      // Say it on the tier card, where the player is already looking, so the
+      // ramp is something they were told about rather than something they
+      // only feel. Not in the daily, where the bag never changes.
+      const tougherBag = this.gameState.config.bagByTier && status.tierIndex >= 2;
+      const label = tougherBag ? `${status.current.label} · TOUGHER BAG` : status.current.label;
+      this.showCenterAlert(label, status.current.color, 30);
       this.audioManager.playTierUp();
       this.fxManager.triggerFlash(0.22, 8);
       this.fxManager.triggerShake(3, 0.1);

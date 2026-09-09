@@ -243,6 +243,13 @@ export class AnimationManager {
       }),
     });
     text.anchor.set(0.5);
+    // A long alert — a tier card carrying its bag note — must not run off a
+    // narrow phone. The entry animation owns `scale` and swells 30%, so the
+    // only place to give ground is the type size.
+    const maxWidth = (this.layout.width - 24) / 1.3;
+    if (text.width > maxWidth) {
+      text.style.fontSize = Math.max(11, Math.floor(fontSize * (maxWidth / text.width)));
+    }
     text.x = this.layout.width / 2;
     text.y = this.layout.height / 2;
     this.container.addChild(text);
