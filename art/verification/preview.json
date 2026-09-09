@@ -1,20 +1,22 @@
 {
+  "projection": "diamond",
   "pixiVersion": "8.20.1",
   "frameCount": 31,
-  "atlasBytes": 34902,
+  "atlasBytes": 127151,
   "checks": [
     "preview script syntax",
     "exact preview/atlas name match",
     "Pixi spritesheet parse",
-    "all textures 64x64 with center anchors",
+    "projection frame sizes with center anchors",
     "three actual Pixi scene graphs",
-    "all catalog entries",
+    "projection switching and resize",
+    "catalog replacement and atlas swap",
     "raider/tide toggles",
     "intent visibility",
     "grid control",
     "greyscale CSS class",
-    "inverse projected cell inspection"
+    "all 81 cell centres and boundary inspection at all scales"
   ],
   "browserVerified": false,
-  "limitation": "DOM and GPU Application are adapters. No browser was launched; actual CDN, GPU rendering and responsive CSS require a separate visual check."
+  "limitation": "DOM and GPU Application are adapters. Browser connection unavailable in this session; actual CDN, GPU rendering, responsive CSS and physical touch require a separate check."
 }

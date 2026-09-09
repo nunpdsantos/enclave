@@ -760,8 +760,24 @@
     "engine": "blender-eevee",
     "cellUnit": 1,
     "cellPixels": 64,
-    "elevation": 60,
-    "azimuth": -45,
+    "projection": "diamond",
+    "elevation": 60.0,
+    "azimuth": -45.0,
+    "orthoScale": 1.4142135623730951,
+    "framePixels": 128,
+    "logicalFramePixels": 64.0,
+    "groundAnchor": {
+      "x": 0.5,
+      "y": 0.5
+    },
+    "columnStep": [
+      32,
+      27.712812921102035
+    ],
+    "rowStep": [
+      -32,
+      27.712812921102035
+    ],
     "joinBits": {
       "up": 1,
       "down": 2,

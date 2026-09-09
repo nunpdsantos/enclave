@@ -11,6 +11,36 @@ ELEVATION = 60.0
 AZIMUTH = -45.0
 ORTHO_SCALE = math.sqrt(2)  # a 1-unit square has a 64px-wide diamond at 1x
 TILE = 128
+
+@dataclass(frozen=True)
+class Projection:
+    name: str
+    elevation: float
+    azimuth: float
+    ortho_scale: float
+    frame_size: int
+
+    def vertex(self, v):
+        x, y, z = v
+        # Rotate logical -Y toward a +X camera (azimuth 0), then undo
+        # orthographic ground foreshortening. Heights remain unscaled.
+        return (-y/math.sin(math.radians(self.elevation)), x, z) if self.name == "square" else v
+
+    def pixel(self, v):
+        x, y, z = self.vertex(v)
+        el, az = math.radians(self.elevation), math.radians(self.azimuth)
+        scale = self.frame_size/self.ortho_scale
+        return (self.frame_size/2 + (-math.sin(az)*x+math.cos(az)*y)*scale,
+                self.frame_size/2 - (-math.sin(el)*math.cos(az)*x-math.sin(el)*math.sin(az)*y+math.cos(el)*z)*scale)
+
+    @property
+    def suffix(self):
+        return "-square" if self.name == "square" else ""
+
+PROJECTIONS = {
+    "diamond": Projection("diamond", ELEVATION, AZIMUTH, ORTHO_SCALE, TILE),
+    "square": Projection("square", 60.0, 0.0, 1.5, 192),
+}
 WALL_WIDTH = .44
 WALL_HEIGHT = .25
 CRENEL_HEIGHT = .14

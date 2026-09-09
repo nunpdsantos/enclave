@@ -56,6 +56,8 @@ is a structural check, not a claim of validated colour-vision accessibility.
 
 ## Camera, scale and integration contract
 
+### Diamond (original, default)
+
 - Orthographic; elevation **60° above the ground** (30° down from vertical).
   Azimuth **315° / -45°**, measured from +X toward +Y. Camera is southeast at
   `(+X, -Y, +Z)` looking at the origin. No perspective, tilt or camera roll.
@@ -72,6 +74,41 @@ is a structural check, not a claim of validated colour-vision accessibility.
   also draws 32 px tiles, producing a 288 px board that fits a phone. At 60° the
   front faces remain visible, but floor exposure is larger than a low 30° view.
   A 45° azimuth gives equal weight to both board axes and exposes wall thickness.
+### Square oblique
+
+- Orthographic camera at **60° elevation, azimuth 0°**, looking from
+  `(+X, 0, +Z)` at the origin, no roll. Azimuth uses the same +X reference as
+  Diamond. Logical geometry is mapped `(x,y,z) → (-y/sin(60°), x, z)` before
+  rendering: logical south/front faces face the camera, columns go right and
+  rows go down. The 90° coordinate remap does not rotate the on-screen board.
+- A camera change alone would make rectangular cells. The **1.154700538× ground
+  depth compensation** cancels foreshortening; heights are unchanged. With
+  **192×192 px frames and ortho scale 1.5**, the projection is exactly
+  `(96 + 128x, 96 - 128y - 64z)` at 2×. Thus a ground cell is exactly
+  **64×64 px at 1×**, column step `(64,0)`, row step `(0,64)`.
+- Ground centre retains the same normalized **anchor `(0.5,0.5)`**, now pixel
+  `(96,96)`. Pixi frames are 96×96 logical pixels with `meta.scale:"2"`;
+  **frame size is not cell spacing**. Transparent margins contain the raised
+  north wall and the oversized axe without clipping or changing the 64 px grid.
+- **Why 60°:** the parapet front is 8 px high at 1×, with 4.48 px of merlon
+  height. At 55° these would be 9.18 / 5.14 px, with 22.1% depth compensation;
+  at 65°, 6.76 / 3.79 px, with 10.3% compensation. These are geometric
+  comparisons, not three rendered studies. 60° balances visible fronts with
+  exposed floor area; the 32 px phone composite retains the wall silhouette.
+- Square uses rows for back-to-front object ordering, then column and height
+  within a row. Wall banners rise 8 px (the parapet height). Diamond retains
+  `row + column` ordering and its 5.66 px banner rise. Floors and tide draw first;
+  intent brackets draw last. East/west gate arches appear edge-on in Square.
+- A 9×9 Square board occupies 576×576 px at 1×, or 288×288 px at phone scale.
+  Preview canvases include margins: 608×624, 1216×1248, and 304×312 px.
+- Use **Square for the phone puzzle**: cell ownership, orthogonal piece shapes,
+  rotations and touch regions share the same screen axes. Use **Diamond for
+  dioramas, campaign views or art presentation** where seeing two wall faces is
+  useful and direct grid manipulation is secondary. This preview does not
+  integrate either projection into the game or validate dragging on a device.
+
+### Shared geometry
+
 - Wall width **0.44 units**; parapet **0.25**; merlons **0.14** above it. The keep's
   crown reaches **0.685**, plus its small flag. Height stays subordinate to cell
   ownership. Joined wall ends reach exactly `±0.5`, without a decorative cap.
@@ -84,17 +121,16 @@ is a structural check, not a claim of validated colour-vision accessibility.
   rotations or reflections: they would rotate the baked light and the projection.
 - Gates `n/e/s/w` identify the board edge they open onto. All four are rendered
   from rotated world geometry; the camera and lighting stay fixed.
-- Floor first, translucent ground second, objects sorted by `row + column`
-  back to front (column breaks ties), ownership flags with their host, intent last.
-  To raise a sprite by `z` world units, move it up by
-  `z * cos(60°) * 64 / sqrt(2)` logical pixels.
-- `LayoutManager.ts` currently computes a rectangular cell grid from the viewport;
-  `GridRenderer.ts` already supplies the four joins. Adopting this actual oblique
-  grid later needs projected placement **and inverse hit-testing**. These are
-  not drop-in art for the current square hit grid. No `src/` or `api/` edits are
-  part of this art branch. For a projected hit point: let `dx=x/32`,
-  `dy=y/27.7128129211` relative to the first centre, then
-  `col=round((dy+dx)/2)`, `row=round((dy-dx)/2)`; reject out-of-board cells.
+- To raise a sprite by `z` logical world units, move it up by
+  `z * cos(60°) * 64 / sqrt(2)` logical pixels in Diamond, or `z * 32` in Square.
+- Square's board basis agrees with the game's axis-aligned grid. Integration
+  still needs to respect the larger padded frames and existing game sizing.
+  Diamond would additionally need projected placement and inverse hit-testing.
+  No `src/` or `api/` edits are part of this art branch. Relative to the first
+  centre, Square inspection uses `col=floor(x/64 + .5)`, `row=floor(y/64 + .5)`.
+  Diamond uses `dx=x/32`, `dy=y/27.7128129211`, then
+  `col=floor((dy+dx)/2 + .5)`, `row=floor((dy-dx)/2 + .5)`.
+  Both reject out-of-board cells.
 
 ## Light rig and geometry
 
@@ -104,7 +140,8 @@ weight `0.12`. Face brightness is ambient plus positive normal dot products with
 key and fill; thresholds `0.20`, `0.47`, `0.72` choose L0 through L3. This reads
 as a broad upper-left key, with the right face darker. No moving sun.
 
-`geometry.py` bakes those bands per flat polygon. `kit.py` creates named sun rig
+`geometry.py` bakes those bands per flat polygon in logical coordinates, before
+the Square coordinate transform. Both projections preserve the authored palette. `kit.py` creates named sun rig
 objects and uses EEVEE emission materials for the already baked colours, so
 continuous renderer lighting cannot add extra shades. This is an intentional
 four-step light bake, not physically based material lighting. Standard colour
@@ -120,48 +157,63 @@ vertices. No external assets or new packages are required.
 
 ## Files, atlas and reproduction
 
-From the repository root:
+Render with the **Blender MCP server**, which runs outside the shell sandbox.
+The shell Blender path crashes during Metal detection on this machine. Do not
+use the legacy `render.sh` here. Call `blender_run_script` twice:
 
-```sh
-art/blender/render.sh
-# Explicit fallback if this machine cannot initialise Blender's Metal GPU:
-art/blender/render.sh --software
-node art/verify.mjs
-npm run dev
-# Open http://localhost:5173/art-preview.html
+```json
+{"script":"/Users/nunosantos/Projects/enclave-art/art/blender/kit.py","args":["--projection","diamond"],"cwd":"/Users/nunosantos/Projects/enclave-art","timeout_ms":900000}
+{"script":"/Users/nunosantos/Projects/enclave-art/art/blender/kit.py","args":["--projection","square"],"cwd":"/Users/nunosantos/Projects/enclave-art","timeout_ms":900000}
 ```
 
-`BLENDER_BIN` and `ART_PYTHON` may override the installed paths. Default Python:
-`/Applications/Blender.app/Contents/Resources/5.2/python/bin/python3.13`.
-Optional Blender scene: `art/blender/render.sh --save-blend`.
-For one asset, run `kit.py` directly with Blender's `-- --only wall-07`, or run
-`software.py --only wall-07` with bundled Python; then rerun the full pipeline
-before delivery. `render.sh` is a full-build wrapper and rejects partial builds.
+Then pack and verify from the repository root (Python 3.10+):
+
+```sh
+python3 art/pack.py --projection diamond
+python3 art/pack.py --projection square
+node art/verify.mjs                 # checks both atlases, including geometry
+python3 art/check_assets.py --projection diamond
+python3 art/check_assets.py --projection square
+npm run dev
+# Open the reported local URL followed by /art-preview.html
+```
+
+`ART_PYTHON` overrides the verification interpreter; its default is Blender's
+bundled Python at `/Applications/Blender.app/Contents/Resources/5.2/python/bin/python3.13`.
+MCP args can include `--save-blend` (writes `kit.blend` or `kit-square.blend`),
+or `--only wall-07` for an isolated inspection. Run a full build before packing
+and delivery so the manifest and all images agree. The historical CPU fallback
+is Diamond-only; it is not used for these renders.
 
 Source names use lowercase kebab-case. `wall-00` through `wall-15` use decimal
 two-digit masks, not binary strings. `floor-*` is terrain, `banner-*` ownership,
 `enemy-*` provisional opposition. Keep those roles separate from gameplay enums;
 replace `raider()` or `tide()` in `geometry.py` without changing the common kit.
 
-`art/renders/` holds 31 untrimmed 128 px frames, the 384 px 3×3
-`sample-board.png`, and `render-manifest.json`. The sample is excluded from the
+`art/renders/` holds 31 untrimmed 128 px Diamond frames; `art/renders-square/`
+holds the same 31 names at 192 px. Each also has the 384 px 3×3
+`sample-board.png` and `render-manifest.json`. The sample is excluded from the
 atlas. `art/pack.py` uses a standard-library PNG reader/writer, 8 columns, two
 extruded texels per edge, two clear texels between slots. No trimming, rotation or
-resampling. Atlas dimensions are 1072×536, with a checked limit below 2,000,000
-bytes. PNG data is straight alpha; edge filtering averages premultiplied colours.
+resampling. Diamond atlas dimensions are 1072×536; Square is 1584×792. Each has a
+checked limit below 2,000,000 bytes. PNG data is straight alpha; edge filtering averages premultiplied colours.
 
 Pixi v8 JSON has `frames[name].frame = {x,y,w,h}`, `rotated:false`,
 `trimmed:false`, full `sourceSize` / `spriteSourceSize`, centre anchors,
-`meta.image:"atlas.png"`, **`meta.scale:"2"`**. Pixi therefore loads each
-128 px source as a 64 px logical texture. The preview explicitly checks that
+`meta.image:"atlas.png"` or `"atlas-square.png"`, **`meta.scale:"2"`**. Pixi
+loads Diamond frames at 64 logical pixels and Square frames at 96 logical pixels.
+Both use 64 px cells; `enclave` metadata records projection, frame size, ground
+anchor, camera and board basis steps. The preview explicitly checks that
 contract. `enclave.engine` exposes render provenance. Never relabel CPU output as
 Blender output. Generated files include no timestamps inside PNGs.
 
-`art/verification/pipeline.json` records measured render time, atlas bytes,
+`art/verification/pipeline.json` and `pipeline-square.json` record measured render time, atlas bytes,
 frame count and SHA-256 hashes. `art/verify.mjs` exercises the installed Pixi v8
 spritesheet parser, preview frame contract and PNG/atlas structure. The preview
 uses the owner-requested jsDelivr v8 URL, whose resolved minor version can change;
 actual browser checks must be reported separately from installed-library checks.
+Both projections have separate `geometry`, `preview` and board-composite files,
+with `-square` suffixes for Square. `blocked-checks.txt` records current limits.
 
 ## Ten concept-sheet prompts for the owner
 

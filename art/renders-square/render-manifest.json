@@ -1,0 +1,53 @@
+{
+  "engine": "blender-eevee",
+  "blender_version": "5.2.1 LTS",
+  "blender_render_verified": true,
+  "projection": "square",
+  "elevation": 60.0,
+  "azimuth": 0.0,
+  "ortho_scale": 1.5,
+  "ground_depth_compensation": 1.1547005383792517,
+  "render_seconds": 10.647,
+  "frame_count": 31,
+  "asset_size": [
+    192,
+    192
+  ],
+  "sample_size": [
+    384,
+    384
+  ],
+  "frames": [
+    "wall-00",
+    "wall-01",
+    "wall-02",
+    "wall-03",
+    "wall-04",
+    "wall-05",
+    "wall-06",
+    "wall-07",
+    "wall-08",
+    "wall-09",
+    "wall-10",
+    "wall-11",
+    "wall-12",
+    "wall-13",
+    "wall-14",
+    "wall-15",
+    "keep",
+    "gate-n",
+    "gate-e",
+    "gate-s",
+    "gate-w",
+    "ruin-a",
+    "ruin-b",
+    "floor-stone",
+    "floor-courtyard-a",
+    "floor-courtyard-b",
+    "banner-cobalt",
+    "banner-oxblood",
+    "enemy-raider",
+    "enemy-tide",
+    "enemy-target"
+  ]
+}

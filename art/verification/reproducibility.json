@@ -40,5 +40,6 @@
     "art/renders/wall-15.png": "3c5b6a8d2368a2a1837648d3f7eca122dfdd010d43679bafcfe726d75c0cbc5b",
     "public/assets/siege/atlas.png": "cd3524621ebb787946dd818b70f559e7e77a3dc6e913861604b02d268f9a2fd2",
     "public/assets/siege/atlas.json": "5eac24856d5036c1249fd6cc1a6241607f62c459bebedd81aad764cb2edf68cb"
-  }
+  },
+  "status": "Historical CPU fallback result; does not verify current Blender Diamond or Square outputs."
 }

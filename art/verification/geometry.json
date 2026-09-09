@@ -1,5 +1,7 @@
 {
+  "projection": "diamond",
   "checks": [
+    "ground centre anchor and cell basis",
     "all 16 join extents",
     "16 distinct wall images",
     "atlas regions match source PNG bytes",

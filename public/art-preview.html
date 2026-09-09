@@ -106,9 +106,10 @@
         <figcaption>One glance: walls, safe ground, approaching siege.</figcaption>
       </figure>
     </section>
-    <div class="status" role="status" aria-live="polite"><span id="status-message">Loading the siege kit…</span><span id="atlas-stats"></span><span><b>60°</b> elevation · <b>45°</b> three-quarter view</span></div>
+    <div class="status" role="status" aria-live="polite"><span id="status-message">Loading the siege kit…</span><span id="atlas-stats"></span><span id="camera-stats"></span></div>
     <div id="error" class="error" hidden></div>
     <div class="controls" aria-label="Art inspection controls">
+      <fieldset><legend>Projection</legend><label><input id="projection-diamond" name="projection" type="radio" value="diamond" checked>Diamond</label><label><input id="projection-square" name="projection" type="radio" value="square">Square</label></fieldset>
       <fieldset><legend>Enemy studies</legend><label><input id="raiders" type="checkbox" checked>Raiders</label><label><input id="tide" type="checkbox" checked>Tide</label></fieldset>
       <label class="separate"><input id="mono" type="checkbox">Greyscale</label>
       <label><input id="grid" type="checkbox">Cell outlines</label>
@@ -151,6 +152,16 @@
     const CELL_WIDTH = 64;
     const STEP_X = CELL_WIDTH/2;
     const STEP_Y = STEP_X*Math.sin(Math.PI/3);
+    const PROJECTIONS = {
+      diamond: {atlas:'atlas',frameSize:64,column:[STEP_X,STEP_Y],row:[-STEP_X,STEP_Y],height:560,origin:[304,48],bannerRaise:5.66,camera:'60° elevation · 315° diamond view'},
+      square: {atlas:'atlas-square',frameSize:96,column:[64,0],row:[0,64],height:624,origin:[48,64],bannerRaise:8,camera:'60° elevation · 0° square oblique'}
+    };
+    let projection='diamond';
+    const layout=()=>PROJECTIONS[projection];
+    function position(r,c) {
+      const {column,row}=layout();
+      return [c*column[0]+r*row[0],c*column[1]+r*row[1]];
+    }
     const apps = [];
     const byId = id=>document.getElementById(id);
     const wallAt = (r,c)=>ROWS[r]?.[c]==='w';
@@ -162,18 +173,20 @@
     }
     async function start() {
       if (!window.PIXI) throw new Error('PixiJS could not load from jsDelivr. Check the network, then reload this page.');
-      const sheet = await PIXI.Assets.load('/assets/siege/atlas.json');
-      const actual = Object.keys(sheet.textures).sort();
-      if (JSON.stringify(actual)!==JSON.stringify([...FRAME_NAMES].sort())) throw new Error('Atlas frame names do not match the preview contract. Run art/blender/render.sh and art/verify.mjs.');
-      if (FRAME_NAMES.some(name=>sheet.textures[name].width!==64||sheet.textures[name].height!==64)) throw new Error('Expected 64px logical textures from 128px frames with meta.scale "2".');
-      // Scale modes are deliberate: linear sampling for silhouettes at 32px.
-      sheet.textureSource.scaleMode='linear';
-      const engine=sheet.data.enclave?.engine||'unknown';
-      byId('status-message').textContent=engine==='cpu-fallback'?'CPU reference render · Blender output pending':'Blender EEVEE render';
-      const response=await fetch('/assets/siege/atlas.png');
-      if (!response.ok) throw new Error(`Atlas PNG HTTP ${response.status}`);
-      const bytes=(await response.arrayBuffer()).byteLength;
-      byId('atlas-stats').textContent=`${actual.length} frames · ${(bytes/1024).toFixed(1)} KiB atlas`;
+      const sheets={},sizes={};
+      for (const [name,config] of Object.entries(PROJECTIONS)) {
+        const sheet=await PIXI.Assets.load(`/assets/siege/${config.atlas}.json`);
+        const actual=Object.keys(sheet.textures).sort();
+        if (JSON.stringify(actual)!==JSON.stringify([...FRAME_NAMES].sort())) throw new Error(`${name}: atlas frame names do not match the preview contract.`);
+        if (FRAME_NAMES.some(frame=>sheet.textures[frame].width!==config.frameSize||sheet.textures[frame].height!==config.frameSize)) throw new Error(`${name}: unexpected logical frame size.`);
+        if (sheet.data.enclave.projection!==name) throw new Error(`${name}: incorrect projection metadata.`);
+        if (sheet.data.enclave.cellPixels!==CELL_WIDTH||JSON.stringify(sheet.data.enclave.columnStep)!==JSON.stringify(config.column)||JSON.stringify(sheet.data.enclave.rowStep)!==JSON.stringify(config.row)) throw new Error(`${name}: atlas and board cell steps disagree.`);
+        sheet.textureSource.scaleMode='linear';
+        const response=await fetch(`/assets/siege/${config.atlas}.png`);
+        if (!response.ok) throw new Error(`Atlas PNG HTTP ${response.status}`);
+        sizes[name]=(await response.arrayBuffer()).byteLength;
+        sheets[name]=sheet;
+      }
       const views = [{id:'view-1',scale:1,w:608,h:560},{id:'view-2',scale:2,w:1216,h:1120},{id:'phone-view',scale:.5,w:304,h:282}];
       for (const view of views) {
         const app=new PIXI.Application();
@@ -184,24 +197,32 @@
         apps.push({app,board,view});
         app.stage.eventMode='static'; app.stage.hitArea=new PIXI.Rectangle(0,0,view.w,view.h);
         app.stage.on('pointermove',event=> {
-          const dx=(event.global.x-view.w/2)/view.scale/STEP_X;
-          const dy=(event.global.y-48*view.scale)/view.scale/STEP_Y;
-          const c=Math.round((dy+dx)/2),r=Math.round((dy-dx)/2);
+          const {column,row}=layout();
+          const dx=(event.global.x-board.x)/view.scale,dy=(event.global.y-board.y)/view.scale;
+          const determinant=column[0]*row[1]-column[1]*row[0];
+          const c=Math.floor((dx*row[1]-dy*row[0])/determinant+.5);
+          const r=Math.floor((dy*column[0]-dx*column[1])/determinant+.5);
           if (r<0||c<0||r>8||c>8) return;
           const label=wallAt(r,c)?`wall-${String(joinMask(r,c)).padStart(2,'0')} · ${joinLabel(joinMask(r,c))}`:ROWS[r][c]==='k'?'keep':ROWS[r][c]==='c'?'lit courtyard':ROWS[r][c]==='r'?'ruin':'open ground';
           byId('inspector').textContent=`Row ${r+1}, column ${c+1} · ${label}`;
         });
       }
       function sprite(board,name,r,c,raise=0) {
-        const item=new PIXI.Sprite(sheet.textures[name]);
-        item.anchor.set(.5); item.position.set((c-r)*STEP_X,(c+r)*STEP_Y-raise);
+        const item=new PIXI.Sprite(sheets[projection].textures[name]);
+        item.anchor.set(.5); const [x,y]=position(r,c); item.position.set(x,y-raise);
         item.label=name; board.addChild(item); return item;
       }
       function draw() {
-        for (const {app,board} of apps) {
+        for (const {app,board,view} of apps) {
+          const config=layout();
+          view.h=projection==='diamond'&&view.scale===.5?282:config.height*view.scale;
+          byId(view.id).style.height=`${view.h}px`;
+          app.renderer.resize(view.w,view.h);
+          app.stage.hitArea=new PIXI.Rectangle(0,0,view.w,view.h);
+          board.position.set(config.origin[0]*view.scale,config.origin[1]*view.scale);
           for (const child of board.removeChildren()) child.destroy({children:true});
           const slab=new PIXI.Graphics();
-          const rim=[0,-STEP_Y-4,STEP_X*9+5,STEP_Y*8,0,STEP_Y*17+7,-STEP_X*9-5,STEP_Y*8];
+          const rim=projection==='square'?[-36,-36,548,-36,548,548,-36,548]:[0,-STEP_Y-4,STEP_X*9+5,STEP_Y*8,0,STEP_Y*17+7,-STEP_X*9-5,STEP_Y*8];
           slab.poly(rim).fill(0x0f141c).stroke({color:0x766952,width:1}); board.addChild(slab);
           for(let r=0;r<9;r++) for(let c=0;c<9;c++) {
             const lit=ROWS[r][c]==='c'||ROWS[r][c]==='k';
@@ -211,8 +232,9 @@
           if(byId('grid').checked) {
             const lines=new PIXI.Graphics();
             for(let r=0;r<9;r++) for(let c=0;c<9;c++) {
-              const x=(c-r)*STEP_X,y=(c+r)*STEP_Y;
-              lines.poly([x,y-STEP_Y,x+STEP_X,y,x,y+STEP_Y,x-STEP_X,y]).stroke({color:0xe6d5af,alpha:.35,width:.7});
+              const [x,y]=position(r,c);
+              const outline=projection==='square'?[x-32,y-32,x+32,y-32,x+32,y+32,x-32,y+32]:[x,y-STEP_Y,x+STEP_X,y,x,y+STEP_Y,x-STEP_X,y];
+              lines.poly(outline).stroke({color:0xe6d5af,alpha:.35,width:.7});
             }
             board.addChild(lines);
           }
@@ -224,29 +246,43 @@
           }
           for(const [r,c,d] of GATES) objects.push([r,c,`gate-${d}`,0]);
           if(byId('raiders').checked) for(const [r,c] of RAIDERS) objects.push([r,c,'enemy-raider',0]);
-          for(const [r,c,owner] of BANNERS) objects.push([r,c,`banner-${owner}`,wallAt(r,c)?5.66:0]);
-          objects.sort((a,b)=>(a[0]+a[1])-(b[0]+b[1])||a[1]-b[1]||a[3]-b[3]);
+          for(const [r,c,owner] of BANNERS) objects.push([r,c,`banner-${owner}`,wallAt(r,c)?layout().bannerRaise:0]);
+          objects.sort((a,b)=>projection==='square'?a[0]-b[0]||a[1]-b[1]||a[3]-b[3]:(a[0]+a[1])-(b[0]+b[1])||a[1]-b[1]||a[3]-b[3]);
           for(const [r,c,name,raise] of objects) sprite(board,name,r,c,raise);
           if(byId('raiders').checked||byId('tide').checked) for(const [r,c] of TARGETS) sprite(board,'enemy-target',r,c);
           app.render();
         }
       }
-      for(const name of FRAME_NAMES) {
-        const frame=sheet.data.frames[name].frame;
-        const figure=document.createElement('figure'); figure.className='asset';
-        const thumbnail=document.createElement('div'); thumbnail.className='thumb'; thumbnail.role='img'; thumbnail.ariaLabel=name;
-        thumbnail.style.backgroundImage='url(/assets/siege/atlas.png)';
-        thumbnail.style.backgroundSize=`${sheet.data.meta.size.w/2}px ${sheet.data.meta.size.h/2}px`;
-        thumbnail.style.backgroundPosition=`${-frame.x/2}px ${-frame.y/2}px`;
-        const caption=document.createElement('figcaption'); caption.textContent=name;
-        const detail=document.createElement('span'); detail.textContent=name.startsWith('wall-')?joinLabel(Number(name.slice(5))):'64 px / 1×';
-        caption.append(detail); figure.append(thumbnail,caption); byId('catalog').append(figure);
+      function catalogue() {
+        const sheet=sheets[projection];
+        byId('catalog').replaceChildren();
+        for(const name of FRAME_NAMES) {
+          const frame=sheet.data.frames[name].frame;
+          const figure=document.createElement('figure'); figure.className='asset';
+          const thumbnail=document.createElement('div'); thumbnail.className='thumb'; thumbnail.role='img'; thumbnail.ariaLabel=name;
+          thumbnail.style.width=thumbnail.style.height=`${layout().frameSize}px`;
+          thumbnail.style.backgroundImage=`url(/assets/siege/${layout().atlas}.png)`;
+          thumbnail.style.backgroundSize=`${sheet.data.meta.size.w/2}px ${sheet.data.meta.size.h/2}px`;
+          thumbnail.style.backgroundPosition=`${-frame.x/2}px ${-frame.y/2}px`;
+          const caption=document.createElement('figcaption'); caption.textContent=name;
+          const detail=document.createElement('span'); detail.textContent=name.startsWith('wall-')?joinLabel(Number(name.slice(5))):'64 px cell / 1×';
+          caption.append(detail); figure.append(thumbnail,caption); byId('catalog').append(figure);
+        }
       }
       ['raiders','tide','grid'].forEach(id=>byId(id).addEventListener('change',draw));
       byId('mono').addEventListener('change',()=>document.body.classList.toggle('mono',byId('mono').checked));
-      draw();
-      // Read-only browser QA report; no game state, analytics or persistence.
-      window.__ENCLAVE_ART_QA__={ready:true,pixiVersion:PIXI.VERSION,frameCount:actual.length,logicalTextureSize:64,engine,atlasBytes:bytes,views:views.map(v=>({id:v.id,width:v.w,height:v.h,scale:v.scale})),wallMasks:[...new Set(ROWS.flatMap((row,r)=>[...row].flatMap((cell,c)=>cell==='w'?[joinMask(r,c)]:[])))].sort((a,b)=>a-b)};
+      function setProjection(name) {
+        projection=name;
+        const sheet=sheets[name],engine=sheet.data.enclave.engine;
+        byId('status-message').textContent=engine==='cpu-fallback'?'CPU reference render · Blender output pending':'Blender EEVEE render';
+        byId('atlas-stats').textContent=`${FRAME_NAMES.length} frames · ${(sizes[name]/1024).toFixed(1)} KiB atlas`;
+        byId('camera-stats').textContent=layout().camera;
+        byId('inspector').textContent='Inspect a cell on either board. Up / down / left / right refer to board coordinates.';
+        catalogue(); draw();
+        window.__ENCLAVE_ART_QA__={ready:true,projection:name,pixiVersion:PIXI.VERSION,frameCount:FRAME_NAMES.length,logicalTextureSize:layout().frameSize,cellPixels:64,engine,atlasBytes:sizes[name],views:views.map(v=>({id:v.id,width:v.w,height:v.h,scale:v.scale}))};
+      }
+      for(const name of Object.keys(PROJECTIONS)) byId(`projection-${name}`).addEventListener('change',()=>{if(byId(`projection-${name}`).checked) setProjection(name);});
+      setProjection('diamond');
       window.addEventListener('pagehide',()=>apps.forEach(({app})=>app.destroy(true,{children:true,texture:false,textureSource:false})),{once:true});
     }
     start().catch(error=>{ console.error(error); byId('status-message').textContent='The art preview could not load.'; byId('error').hidden=false; byId('error').textContent=error.message; });

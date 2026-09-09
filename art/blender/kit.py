@@ -13,16 +13,18 @@ import sys
 import time
 
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from geometry import ASSETS, ELEVATION, AZIMUTH, ORTHO_SCALE, KEY, FILL, asset, sample_board, face_colour
+from geometry import ASSETS, PROJECTIONS, KEY, FILL, asset, sample_board, face_colour
 
 def main():
     import bpy
     from mathutils import Vector
     parser=argparse.ArgumentParser()
     parser.add_argument("--only",choices=ASSETS)
+    parser.add_argument("--projection",choices=PROJECTIONS,default="diamond")
     parser.add_argument("--save-blend",action="store_true",help="Save the final 3x3 inspection scene")
     args=parser.parse_args(sys.argv[sys.argv.index("--")+1:] if "--" in sys.argv else [])
-    root=Path(__file__).resolve().parents[1]; out=root/"renders"; out.mkdir(exist_ok=True)
+    projection=PROJECTIONS[args.projection]
+    root=Path(__file__).resolve().parents[1]; out=root/f"renders{projection.suffix}"; out.mkdir(exist_ok=True)
     start=time.perf_counter()
     bpy.ops.object.select_all(action="SELECT"); bpy.ops.object.delete(use_global=False)
     scene=bpy.context.scene
@@ -33,15 +35,15 @@ def main():
     scene.render.image_settings.color_depth="8"
     scene.render.image_settings.compression=90
     scene.render.resolution_percentage=100
-    scene.render.resolution_x=scene.render.resolution_y=128
+    scene.render.resolution_x=scene.render.resolution_y=projection.frame_size
     scene.view_settings.view_transform="Standard"
     scene.view_settings.look="None"
     scene.view_settings.exposure=0; scene.view_settings.gamma=1
     scene.world.color=(0,0,0)
-    camera=bpy.data.objects.new("Camera-60deg-SE",bpy.data.cameras.new("Orthographic"))
+    camera=bpy.data.objects.new(f"Camera-{projection.name}-{projection.elevation:g}deg",bpy.data.cameras.new("Orthographic"))
     scene.collection.objects.link(camera); scene.camera=camera
-    camera.data.type="ORTHO"; camera.data.ortho_scale=ORTHO_SCALE
-    el,az=math.radians(ELEVATION),math.radians(AZIMUTH)
+    camera.data.type="ORTHO"; camera.data.ortho_scale=projection.ortho_scale
+    el,az=math.radians(projection.elevation),math.radians(projection.azimuth)
     camera.location=(10*math.cos(el)*math.cos(az),10*math.cos(el)*math.sin(az),10*math.sin(el))
     camera.rotation_euler=(-camera.location).to_track_quat("-Z","Y").to_euler()
     for name,direction,energy in (("Key-baked-upper-left",KEY,.76),("Fill-baked-cool",FILL,.12)):
@@ -79,7 +81,7 @@ def main():
             mesh=obj.data; bpy.data.objects.remove(obj,do_unlink=True); bpy.data.meshes.remove(mesh)
         objects.clear()
         for source in meshes:
-            mesh=bpy.data.meshes.new(source.name); mesh.from_pydata(source.vertices,[],source.faces); mesh.update()
+            mesh=bpy.data.meshes.new(source.name); mesh.from_pydata([projection.vertex(v) for v in source.vertices],[],source.faces); mesh.update()
             obj=bpy.data.objects.new(source.name,mesh); scene.collection.objects.link(obj); objects.append(obj)
             indices={}
             for poly,face in zip(mesh.polygons,source.faces):
@@ -92,13 +94,15 @@ def main():
         build(asset(name)); scene.render.filepath=str(out/f"{name}.png")
         bpy.ops.render.render(write_still=True)
     if args.only: return
-    build(sample_board()); camera.data.ortho_scale=ORTHO_SCALE*3.12
+    build(sample_board()); camera.data.ortho_scale=projection.ortho_scale*3.12
     scene.render.resolution_x=scene.render.resolution_y=384
     scene.render.filepath=str(out/"sample-board.png"); bpy.ops.render.render(write_still=True)
-    if args.save_blend: bpy.ops.wm.save_as_mainfile(filepath=str(root/"blender"/"kit.blend"))
+    if args.save_blend: bpy.ops.wm.save_as_mainfile(filepath=str(root/"blender"/f"kit{projection.suffix}.blend"))
     elapsed=time.perf_counter()-start
     report={"engine":"blender-eevee","blender_version":bpy.app.version_string,"blender_render_verified":True,
-            "render_seconds":round(elapsed,3),"frame_count":len(names),"asset_size":[128,128],"sample_size":[384,384],"frames":names}
+            "projection":projection.name,"elevation":projection.elevation,"azimuth":projection.azimuth,
+            "ortho_scale":projection.ortho_scale,"ground_depth_compensation":1/math.sin(el) if projection.name=="square" else 1,
+            "render_seconds":round(elapsed,3),"frame_count":len(names),"asset_size":[projection.frame_size]*2,"sample_size":[384,384],"frames":names}
     (out/"render-manifest.json").write_text(json.dumps(report,indent=2)+"\n")
     print(f"EEVEE rendered {len(names)} assets + sample in {elapsed:.3f}s")
 

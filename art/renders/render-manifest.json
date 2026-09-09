@@ -2,7 +2,12 @@
   "engine": "blender-eevee",
   "blender_version": "5.2.1 LTS",
   "blender_render_verified": true,
-  "render_seconds": 14.197,
+  "projection": "diamond",
+  "elevation": 60.0,
+  "azimuth": -45.0,
+  "ortho_scale": 1.4142135623730951,
+  "ground_depth_compensation": 1,
+  "render_seconds": 11.92,
   "frame_count": 31,
   "asset_size": [
     128,
