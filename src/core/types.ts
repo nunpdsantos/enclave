@@ -136,6 +136,19 @@ export interface RunSummary {
   surveys: number;
   /** Inner cells still lit when the run ended, 0–INNER_CELLS */
   litCells: number;
+  /**
+   * The territory map as the run left it, so the share card can draw the
+   * board the score was won on. A run whose last claim completed a survey
+   * ends on a freshly reset map, which is the truthful picture of it.
+   */
+  litMap: boolean[][];
+  /**
+   * Empty cells that a single block would have closed a room on, counted at
+   * the final board. What the run left on the table.
+   */
+  closingAtEnd: number;
+  /** Pieces still undealt under a budget; 0 in the unbudgeted modes */
+  piecesLeft: number;
   gameElapsed: number;
   previousBest: number;
   isNewBest: boolean;

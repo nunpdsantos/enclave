@@ -6,9 +6,25 @@ import { dailyKey, dailyNumber, hasSubmittedDaily, markDailySubmitted } from '..
 import { INNER_CELLS } from '../core/Board';
 import { RunSummary } from '../core/types';
 import { getProgressStatus } from '../core/Progression';
+import { insightsFor } from '../core/Insights';
+import { renderShareCard } from '../core/ShareCard';
+import { getGamesPlayed } from '../core/Settings';
 import { AudioManager } from '../audio/AudioManager';
 import { FONT_DISPLAY, FONT_MONO, THEME, DIFFICULTY_COLORS } from '../rendering/Theme';
-import { createButton, createStatChip, createSectionLabel, createBodyText } from '../rendering/Widgets';
+import { createButton, createStatChip, createSectionLabel, createBodyText, createTextButton } from '../rendering/Widgets';
+
+/**
+ * The least room the leaderboard needs under the insights: 36 from its
+ * heading to the first row, the three rows buildLeaderboard() draws whatever
+ * the arithmetic says, and the 36 it keeps clear above the buttons.
+ */
+const LEADERBOARD_MIN_HEIGHT = 36 + 3 * 24 + 36;
+
+/** How tall the playbook link is, gap included */
+const PLAYBOOK_HEIGHT = 38;
+
+/** The playbook is offered for this many runs in a mode, then it stops */
+const PLAYBOOK_RUNS = 3;
 
 function formatDuration(seconds: number): string {
   const s = Math.max(0, Math.floor(seconds));
@@ -38,6 +54,8 @@ export class GameOverScene implements Scene {
   private rank: number | null = null;
   private leaderboardContainer: Container | null = null;
   private shareLabel: Text | null = null;
+  /** The share card, rendered at most once per game-over screen */
+  private cardPromise: Promise<Blob> | null = null;
 
   // Name input group — everything related to name entry
   private nameInputGroup: Container | null = null;
@@ -196,6 +214,16 @@ export class GameOverScene implements Scene {
     }
 
     const wouldRank = !this.isPracticeRun && this.leaderboard.wouldRank(summary.score);
+    this.buttonsTop = h - 118;
+
+    // Insights get whatever the rows under them do not need: the name entry
+    // or the practice label, the playbook link, and the leaderboard's floor.
+    const nameBlock = wouldRank ? 92 : this.isPracticeRun ? 26 : 0;
+    const playbook = getGamesPlayed(this.difficulty) <= PLAYBOOK_RUNS;
+    nextY = this.buildInsights(
+      nextY, nameBlock + LEADERBOARD_MIN_HEIGHT + (playbook ? PLAYBOOK_HEIGHT : 0),
+    );
+    if (playbook) nextY = this.buildPlaybookLink(nextY);
 
     if (wouldRank) {
       this.buildNameInput(nextY);
@@ -214,9 +242,53 @@ export class GameOverScene implements Scene {
     }
 
     this.leaderboardTop = nextY;
-    this.buttonsTop = h - 118;
     this.buildLeaderboard();
     this.buildButtons();
+  }
+
+  // ── Insights ──
+
+  /**
+   * Up to three lines of what to do differently, between the stats and the
+   * name entry. The block only takes space the rows below it do not need, so
+   * a short screen drops the third line rather than the leaderboard.
+   */
+  private buildInsights(top: number, reservedBelow: number): number {
+    const lines = insightsFor(this.summary, DIFFICULTY_CONFIGS[this.difficulty]);
+    if (lines.length === 0) return top;
+
+    const cx = this.width / 2;
+    const wrapWidth = Math.min(300, this.width - 56);
+    const limit = this.buttonsTop - reservedBelow;
+
+    // Measure before drawing: the heading is only worth having if a line fits
+    const texts: Text[] = [];
+    let y = top + 30;
+    for (const line of lines) {
+      const t = createBodyText(line, cx, y, { fontSize: 11.5, color: THEME.textMuted, wrapWidth });
+      if (y + t.height > limit) { t.destroy(); break; }
+      texts.push(t);
+      y += t.height + 4;
+    }
+    if (texts.length === 0) return top;
+
+    this.container.addChild(createSectionLabel('INSIGHTS', cx, top, Math.min(200, this.width - 80)));
+    for (const t of texts) this.container.addChild(t);
+    return y + 8;
+  }
+
+  /**
+   * The first runs in a mode get a door into the full guide, right where the
+   * player has just been told what went wrong and may want to know why.
+   */
+  private buildPlaybookLink(top: number): number {
+    const height = PLAYBOOK_HEIGHT - 8;
+    this.container.addChild(createTextButton('HOW TO PLAY ↗', this.width / 2, top + height / 2, () => {
+      this.audio.playUiClick();
+      const win = window.open('/how-to-play', '_blank');
+      if (win) win.opener = null; else window.location.href = '/how-to-play';
+    }, { height }));
+    return top + PLAYBOOK_HEIGHT;
   }
 
   // ── Name input ──
@@ -421,16 +493,52 @@ export class GameOverScene implements Scene {
     this.container.addChild(this.shareLabel);
   }
 
-  /** Share the result via the Web Share API, falling back to the clipboard */
-  private async share(): Promise<void> {
+  /** The one-line result, which travels alongside the card */
+  private shareText(): string {
     const s = this.summary;
     const label = this.difficulty === 'daily'
       ? `Daily #${dailyNumber(this.dailyDate)}`
       : DIFFICULTY_LABELS[this.difficulty];
-    const text = `I scored ${s.score.toLocaleString()} in Enclave (${label}) — ` +
-      `${s.claims} rooms claimed, biggest ${s.biggestRoom} cells, ×${s.maxStreak} streak. Can you beat it?`;
+    const surveys = DIFFICULTY_CONFIGS[this.difficulty].territory.enabled && s.surveys > 0
+      ? `, ${s.surveys} ${s.surveys === 1 ? 'survey' : 'surveys'}`
+      : '';
+    return `I scored ${s.score.toLocaleString()} in Enclave (${label}) — ` +
+      `${s.claims} rooms claimed, biggest ${s.biggestRoom} cells, ×${s.maxStreak} streak${surveys}. Can you beat it?`;
+  }
+
+  /**
+   * The share card as a file, or null when it cannot be made.
+   *
+   * Rendered on the first SHARE press and then kept: a 1080×1350 draw is
+   * not something the game-over screen should ever wait on, and a card that
+   * will not render is a reason to share text, not to fail the share.
+   */
+  private async shareCardFile(): Promise<File | null> {
+    try {
+      if (!this.cardPromise) {
+        this.cardPromise = renderShareCard(this.summary, {
+          modeLabel: this.boardLabel,
+          host: window.location.host,
+        });
+      }
+      const blob = await this.cardPromise;
+      return new File([blob], 'enclave.png', { type: 'image/png' });
+    } catch {
+      return null;
+    }
+  }
+
+  /** Share the card, falling back to the text share and then the clipboard */
+  private async share(): Promise<void> {
+    const text = this.shareText();
     const url = window.location.origin;
     try {
+      const file = await this.shareCardFile();
+      if (file && navigator.canShare?.({ files: [file] })) {
+        await navigator.share({ files: [file], title: 'Enclave', text });
+        this.setShareLabel('SHARED');
+        return;
+      }
       if (navigator.share) {
         await navigator.share({ title: 'Enclave', text, url });
         this.setShareLabel('SHARED');

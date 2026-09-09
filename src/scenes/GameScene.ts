@@ -20,6 +20,7 @@ import {
   MOTION_LABELS, MOTION_ORDER, REDUCED_PARTICLE_SCALE, isReducedMotion, onReducedMotionChange,
 } from '../core/Accessibility';
 import { reportRun } from '../core/Telemetry';
+import { foldRun, loadStats, saveStats } from '../core/Stats';
 import { FONT_DISPLAY, THEME, drawPanel } from '../rendering/Theme';
 import { createButton, createToggle, createCycleToggle, createBodyText } from '../rendering/Widgets';
 
@@ -75,8 +76,8 @@ export class GameScene implements Scene {
 
   private gameOverSequenceActive = false;
   private gameOverElapsed = 0;
-  /** Guards the one telemetry report per run (quit and death share a path) */
-  private runReported = false;
+  /** Guards the one record per run — telemetry and lifetime stats (quit and death share a path) */
+  private runRecorded = false;
 
   /**
    * Single-entry memo for the close preview. The ghost is redrawn on every
@@ -205,7 +206,7 @@ export class GameScene implements Scene {
     this.progressTierIndex = getProgressStatus(this.gameState.difficulty, this.gameState.score).tierIndex;
     this.gameOverSequenceActive = false;
     this.gameOverElapsed = 0;
-    this.runReported = false;
+    this.runRecorded = false;
 
     document.addEventListener('visibilitychange', this.onVisibilityChange);
     window.addEventListener('keydown', this.onKeyDown);
@@ -520,9 +521,12 @@ export class GameScene implements Scene {
    */
   private endRun(endCauseOverride?: RunEndCause): RunSummary {
     const summary = this.gameState.buildRunSummary(endCauseOverride);
-    if (!this.runReported) {
-      this.runReported = true;
+    if (!this.runRecorded) {
+      this.runRecorded = true;
       reportRun(summary);
+      // Lifetime stats fold in here for the same reason telemetry does: one
+      // run, one record, and a quit counts as a run that was played.
+      saveStats(summary.difficulty, foldRun(loadStats(summary.difficulty), summary));
     }
     return summary;
   }

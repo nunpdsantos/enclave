@@ -196,6 +196,50 @@ export function createCycleToggle(
   return root;
 }
 
+/**
+ * Text-only button on a faint plate: for links and side doors that would
+ * shout as a pill. The plate is what gets tapped, because an 11 px label is
+ * well under a thumb.
+ */
+export function createTextButton(
+  label: string,
+  cx: number,
+  cy: number,
+  onClick: () => void,
+  opts: { fontSize?: number; color?: number; letterSpacing?: number; height?: number } = {},
+): Container {
+  const root = new Container();
+  const text = new Text({
+    text: label,
+    style: new TextStyle({
+      fontFamily: FONT_DISPLAY,
+      fontSize: opts.fontSize ?? 11,
+      fontWeight: '700',
+      fill: opts.color ?? THEME.cyan,
+      letterSpacing: opts.letterSpacing ?? 2,
+    }),
+  });
+  text.anchor.set(0.5);
+  text.x = cx;
+  text.y = cy;
+
+  const h = opts.height ?? 30;
+  const w = text.width + 28;
+  const bg = new Graphics();
+  bg.roundRect(cx - w / 2, cy - h / 2, w, h, h / 2);
+  bg.fill({ color: 0x000000, alpha: 0.25 });
+  bg.roundRect(cx - w / 2, cy - h / 2, w, h, h / 2);
+  bg.stroke({ color: 0xffffff, alpha: 0.12, width: 1 });
+
+  root.addChild(bg);
+  root.addChild(text);
+  root.eventMode = 'static';
+  root.cursor = 'pointer';
+  root.on('pointerdown', (e) => e.stopPropagation());
+  root.on('pointerup', (e) => { e.stopPropagation(); onClick(); });
+  return root;
+}
+
 /** Labelled statistic chip: big value, small caption underneath */
 export function createStatChip(
   caption: string,

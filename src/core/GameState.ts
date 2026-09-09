@@ -627,6 +627,11 @@ export class GameState {
       holds: this.holds,
       surveys: this.surveys,
       litCells: this.board.litCount(),
+      litMap: this.board.lit.map(row => [...row]),
+      closingAtEnd: this.board.findClosingCells().length,
+      // Only a budgeted run has a count left to report: unbudgeted play is
+      // Infinity, which has no business in a summary that gets serialised.
+      piecesLeft: Number.isFinite(this.piecesRemaining) ? this.piecesRemaining : 0,
       gameElapsed: this.gameElapsed,
       previousBest: this.highScore,
       isNewBest: this.score > this.highScore,

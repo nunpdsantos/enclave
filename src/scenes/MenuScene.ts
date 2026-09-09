@@ -5,9 +5,14 @@ import { Difficulty, DIFFICULTY_LABELS, DIFFICULTY_CONFIGS } from '../core/Confi
 import { dailyKey, dailyNumber, formatCountdown, msUntilNextDaily } from '../core/Daily';
 import { PaletteSetting, getPersonalBest, getGamesPlayed, loadSettings, updateSettings } from '../core/Settings';
 import { MOTION_LABELS, MOTION_ORDER, getPiecePalette, remapColor } from '../core/Accessibility';
+import {
+  LifetimeStats, formatPlayTime, formatRoomSize, loadStats, mostCommonRoomSize,
+} from '../core/Stats';
 import { AudioManager } from '../audio/AudioManager';
 import { FONT_DISPLAY, FONT_MONO, THEME, DIFFICULTY_COLORS, drawPanel, drawBeveledBlock, easeOutBack } from '../rendering/Theme';
-import { createButton, createToggle, createCycleToggle, createSectionLabel, createBodyText } from '../rendering/Widgets';
+import {
+  createButton, createToggle, createCycleToggle, createSectionLabel, createBodyText, createTextButton,
+} from '../rendering/Widgets';
 
 const DIFFICULTIES: Difficulty[] = ['classic', 'blitz', 'daily'];
 const DIFFICULTY_DESCRIPTIONS: Record<Difficulty, string> = {
@@ -24,6 +29,27 @@ const RESET_REFRESH_SECONDS = 60;
 const PALETTE_ORDER: PaletteSetting[] = ['standard', 'highContrast'];
 const PALETTE_LABELS = ['STANDARD', 'HIGH'];
 const HAND_LABELS = ['RIGHT', 'LEFT'];
+
+/** The STATS panel's rows, in reading order */
+function statRows(stats: LifetimeStats): [string, string][] {
+  return [
+    ['RUNS', String(stats.runs)],
+    ['BEST', stats.bestScore.toLocaleString()],
+    ['BIGGEST ROOM', stats.biggestRoom > 0 ? `${stats.biggestRoom} cells` : '—'],
+    ['ROOMS', stats.roomsTotal.toLocaleString()],
+    ['SURVEYS', String(stats.surveysTotal)],
+    ['USUAL ROOM', formatRoomSize(mostCommonRoomSize(stats))],
+    ['TIME PLAYED', formatPlayTime(stats.playSeconds)],
+    ['LAST PLAYED', formatLastPlayed(stats.lastPlayed)],
+  ];
+}
+
+/** A stored ISO timestamp as the player's own local date */
+function formatLastPlayed(iso: string): string {
+  if (!iso) return '—';
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleDateString();
+}
 
 interface FloatingBlock {
   x: number;
@@ -47,6 +73,7 @@ export class MenuScene implements Scene {
   private selectedDifficulty: Difficulty;
   private showingHelp = false;
   private showingOptions = false;
+  private showingStats = false;
 
   // Rebuildable sections
   private difficultyContainer: Container | null = null;
@@ -176,13 +203,13 @@ export class MenuScene implements Scene {
     this.addCornerButton('?', 30, () => {
       this.audio.playUiClick();
       this.showingHelp = !this.showingHelp;
-      if (this.showingHelp) this.showingOptions = false;
+      if (this.showingHelp) { this.showingOptions = false; this.showingStats = false; }
       this.buildLowerSection();
     });
     this.addCornerButton('⚙', 70, () => {
       this.audio.playUiClick();
       this.showingOptions = !this.showingOptions;
-      if (this.showingOptions) this.showingHelp = false;
+      if (this.showingOptions) { this.showingHelp = false; this.showingStats = false; }
       this.buildLowerSection();
     });
     this.addCornerButton('↻', this.width - 30, () => {
@@ -374,9 +401,86 @@ export class MenuScene implements Scene {
       this.buildHelp(group);
     } else if (this.showingOptions) {
       this.buildOptions(group);
+    } else if (this.showingStats) {
+      this.buildStats(group);
     } else {
       this.buildLeaderboard(group);
     }
+  }
+
+  /**
+   * Lifetime stats for the selected mode.
+   *
+   * It gets a panel rather than a fourth corner button: three corners is all
+   * a 360-wide phone has room for, and this is a place you go to read, not a
+   * switch you flip. The way in is the text button under the leaderboard,
+   * because the OPTIONS panel's footer is already the line a short screen
+   * drops — a door that can vanish is not a door.
+   */
+  private buildStats(group: Container): void {
+    const cx = this.width / 2;
+    const top = this.height * 0.47;
+    const panelW = Math.min(360, this.width - 32);
+    const stats = loadStats(this.selectedDifficulty);
+
+    group.addChild(createSectionLabel(
+      `STATS — ${DIFFICULTY_LABELS[this.selectedDifficulty]}`, cx, top + 14, panelW - 60,
+    ));
+
+    const backH = 34;
+    let bottom: number;
+
+    if (stats.runs === 0) {
+      const note = createBodyText('No runs yet.', cx, top + 58, {
+        fontSize: 12,
+        color: THEME.textMuted,
+      });
+      group.addChild(note);
+      bottom = top + 58 + note.height + 18 + backH + 12;
+    } else {
+      const halfW = Math.min(panelW / 2 - 26, this.width / 2 - 30);
+      const rows = statRows(stats);
+      const listTop = top + 60;
+      // Rows tighten rather than run off the bottom of a short screen
+      const rowH = Math.min(26, Math.max(20, (this.height - 30 - backH - listTop) / rows.length));
+      let y = listTop;
+      for (const [label, value] of rows) {
+        const key = new Text({
+          text: label,
+          style: new TextStyle({
+            fontFamily: FONT_DISPLAY, fontSize: 11, fontWeight: '600',
+            fill: THEME.textMuted, letterSpacing: 2,
+          }),
+        });
+        key.anchor.set(0, 0.5);
+        key.x = cx - halfW;
+        key.y = y;
+        group.addChild(key);
+
+        const val = new Text({
+          text: value,
+          style: new TextStyle({ fontFamily: FONT_MONO, fontSize: 13, fill: THEME.textPrimary }),
+        });
+        val.anchor.set(1, 0.5);
+        val.x = cx + halfW;
+        val.y = y;
+        group.addChild(val);
+        y += rowH;
+      }
+      bottom = y + backH / 2 + 12;
+    }
+
+    // The panel is entered from a button that is no longer on screen, so it
+    // carries its own way back rather than relying on the corner buttons.
+    group.addChild(createButton('BACK', cx, bottom - backH / 2 - 6, () => {
+      this.audio.playUiClick();
+      this.showingStats = false;
+      this.buildLowerSection();
+    }, { width: 120, height: backH, color: THEME.btnSecondary, glow: false, fontSize: 12, letterSpacing: 3 }));
+
+    const panel = new Graphics();
+    drawPanel(panel, cx - panelW / 2, top, panelW, bottom - top, 16, 0.55);
+    group.addChildAt(panel, 0);
   }
 
   /**
@@ -525,17 +629,22 @@ export class MenuScene implements Scene {
       : DIFFICULTY_LABELS[this.selectedDifficulty];
     group.addChild(createSectionLabel(`LEADERBOARD — ${boardName}`, cx, startY));
 
+    // The stats door sits at the foot of the section, and the rows are
+    // budgeted around it rather than over it
+    const statsY = this.height - 30;
+
     if (entries.length === 0) {
       group.addChild(createBodyText('No scores yet. Be the first on the board.', cx, startY + 40, {
         fontSize: 12,
         color: THEME.textMuted,
       }));
+      group.addChild(this.statsLink(cx, statsY));
       return;
     }
 
     const lineHeight = 28;
     const listStartY = startY + 40;
-    const available = this.height - listStartY - 16;
+    const available = statsY - 26 - listStartY;
     const maxRows = Math.max(3, Math.min(10, Math.floor(available / lineHeight)));
     const halfW = Math.min(150, this.width / 2 - 24);
     const leftX = cx - halfW;
@@ -588,6 +697,18 @@ export class MenuScene implements Scene {
       valText.y = y;
       group.addChild(valText);
     }
+
+    group.addChild(this.statsLink(cx, statsY));
+  }
+
+  private statsLink(cx: number, cy: number): Container {
+    return createTextButton('STATS', cx, cy, () => {
+      this.audio.playUiClick();
+      this.showingStats = true;
+      this.showingHelp = false;
+      this.showingOptions = false;
+      this.buildLowerSection();
+    }, { color: THEME.textSecondary });
   }
 
   private logoGfx: Graphics | null = null;
@@ -666,7 +787,7 @@ export class MenuScene implements Scene {
 
   /** Called when remote leaderboard data arrives after the menu was built */
   refreshLeaderboard(): void {
-    if (!this.showingHelp && !this.showingOptions) this.buildLowerSection();
+    if (!this.showingHelp && !this.showingOptions && !this.showingStats) this.buildLowerSection();
   }
 
   enter(): void {}
