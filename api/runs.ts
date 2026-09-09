@@ -14,7 +14,7 @@ const KEY = 'telemetry:enclave:runs';
 /** Keep the newest 5,000 runs — enough to tune the clock, small enough to scan */
 const MAX_RUNS = 5000;
 
-const VALID_MODES = ['classic', 'blitz', 'daily'] as const;
+const VALID_MODES = ['classic', 'blitz', 'daily', 'siege'] as const;
 type Mode = (typeof VALID_MODES)[number];
 
 // ── Limits. Anything outside these is a bug or an attack, not a real run. ──
@@ -26,6 +26,9 @@ const MAX_COUNT = 100_000;
 const MAX_SCORE = 100_000_000;
 const MAX_DURATION_S = 21_600;
 const MAX_ROOM_SIZE_KEYS = 100;
+
+/** The siege's scalar counters, validated and stored as one list */
+const SIEGE_COUNTS = ['enemiesCaptured', 'wallsLost', 'breachTurn', 'routeChanging'] as const;
 
 interface RunRecord {
   v: string;
@@ -44,6 +47,16 @@ interface RunRecord {
   tier: string;
   roomSizes: Record<string, number>;
   pid?: string;
+  /**
+   * Which siege, as 'm1-raiders-finite'. The 2×2 is the whole question this
+   * prototype is asking, so a siege run that cannot be told apart from the
+   * other three is a run that measures nothing.
+   */
+  variant?: string;
+  enemiesCaptured?: number;
+  wallsLost?: number;
+  breachTurn?: number;
+  routeChanging?: number;
   /** Server clock, so runs can be bucketed by day without trusting the client */
   ts: string;
 }
@@ -126,6 +139,10 @@ function parseRun(raw: unknown): RunRecord | null {
   if (!isRoomSizes(b.roomSizes)) return null;
   if (b.seed !== undefined && !isNumber(b.seed, Number.MAX_SAFE_INTEGER)) return null;
   if (b.pid !== undefined && !isString(b.pid, MAX_PID)) return null;
+  if (b.variant !== undefined && !isString(b.variant, MAX_STRING)) return null;
+  for (const key of SIEGE_COUNTS) {
+    if (b[key] !== undefined && !isCount(b[key])) return null;
+  }
 
   const record: RunRecord = {
     v: b.v,
@@ -146,6 +163,11 @@ function parseRun(raw: unknown): RunRecord | null {
   };
   if (typeof b.seed === 'number') record.seed = b.seed;
   if (typeof b.pid === 'string') record.pid = b.pid;
+  if (typeof b.variant === 'string') record.variant = b.variant;
+  for (const key of SIEGE_COUNTS) {
+    const value = b[key];
+    if (typeof value === 'number') record[key] = value;
+  }
   return record;
 }
 
@@ -262,7 +284,15 @@ export default async function handler(request: Request): Promise<Response> {
       modes[mode] = summarise(runs.filter(r => r.mode === mode));
     }
 
-    return json({ total: runs.length, versions, modes });
+    // The four sieges get their own rows: the point of the 2×2 is comparing
+    // them, and an aggregate over all four would answer nothing.
+    const variants: Record<string, ModeStats> = {};
+    for (const run of runs) {
+      if (run.mode !== 'siege' || !run.variant || variants[run.variant]) continue;
+      variants[run.variant] = summarise(runs.filter(r => r.variant === run.variant));
+    }
+
+    return json({ total: runs.length, versions, modes, variants });
   }
 
   if (request.method === 'POST') {

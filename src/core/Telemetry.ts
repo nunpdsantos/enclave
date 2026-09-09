@@ -1,4 +1,4 @@
-import { RunSummary } from './types';
+import { RunSummary, siegeVariantKey } from './types';
 import { Difficulty } from './Config';
 import { getProgressStatus } from './Progression';
 import { loadSettings } from './Settings';
@@ -36,6 +36,14 @@ export interface RunReport {
   tier: string;
   roomSizes: Record<string, number>;
   pid?: string;
+  /** Which siege, as 'm1-raiders-finite'. Absent in every other mode. */
+  variant?: string;
+  /** Siege counters. Small and scalar: the arrays stay in the local summary. */
+  enemiesCaptured?: number;
+  wallsLost?: number;
+  /** Placement the Keep fell on; absent when it never did */
+  breachTurn?: number;
+  routeChanging?: number;
 }
 
 /** One decimal is plenty for a duration, and keeps the payload small. */
@@ -66,6 +74,18 @@ export function buildRunReport(summary: RunSummary): RunReport {
     tier: getProgressStatus(summary.difficulty, summary.score).current.label,
     roomSizes,
   };
+
+  // The siege is measured on different numbers, so it sends them. Scalars
+  // only — decisionTimes and roomAreas would not fit the 2 KB body and are
+  // read off the local summary instead.
+  const siege = summary.siege;
+  if (siege) {
+    report.variant = siegeVariantKey(siege.variant);
+    report.enemiesCaptured = siege.enemiesCaptured;
+    report.wallsLost = siege.wallsLost;
+    report.routeChanging = siege.routeChangingPlacements;
+    if (siege.breachTurn !== null) report.breachTurn = siege.breachTurn;
+  }
 
   const pid = getStoredPlayerId();
   if (pid) report.pid = pid;

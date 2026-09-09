@@ -1,14 +1,21 @@
 import { Board, INNER_CELLS } from './Board';
 import { PieceBag, rotatePiece } from './Pieces';
-import { Difficulty, GameConfig, TerritoryConfig, DEFAULT_CONFIG } from './Config';
+import { Difficulty, GameConfig, SiegeConfig, TerritoryConfig, DEFAULT_CONFIG } from './Config';
 import { dailyKey, dailySeed } from './Daily';
+import { cellsOfTerrain, terrainOf } from './Missions';
 import { getProgressStatus } from './Progression';
-import { mulberry32, randomSeed } from './Random';
+import { Rng, mulberry32, randomSeed } from './Random';
 import { RULES_VERSION } from './Rules';
-import { getPersonalBest, recordPbTimeline, recordPersonalBest } from './Settings';
+import {
+  SiegeIntent, keyOf, readIntent, stepRaiders, stepTide, tideIntervalAt,
+} from './Siege';
+import {
+  getPersonalBest, getSiegeBest, recordPbTimeline, recordPersonalBest, recordSiegeBest,
+} from './Settings';
 import {
   PieceInstance, FeedbackEvent, ClaimResult, ClaimPoints, ScoreBreakdown, Region,
   RunEndCause, RunSummary, GridPos, CellColor, EchoWall, Move, Replay, MAX_REPLAY_MOVES,
+  DECISION_TIME_CAP, Raider, SiegeMetrics, SiegeVariant, siegeVariantKey,
 } from './types';
 
 /** A cell the echo window is holding, and when it stops holding it */
@@ -26,6 +33,12 @@ interface EchoRecord extends TimedCell {
 function cellKey(p: GridPos): string {
   return `${p.row},${p.col}`;
 }
+
+/**
+ * The tide's ticks and the raiders' turns each get their own seeded draw, and
+ * this keeps the two streams apart. See `siegeRng`.
+ */
+const TIDE_SALT = 0x40000;
 
 /**
  * How many seconds of a run the score timeline keeps. Fifteen minutes is far
@@ -146,6 +159,35 @@ export class GameState {
   /** The run outran the cap: the log is short, so the score cannot be proved */
   private movesTruncated = false;
 
+  // ── Siege ──
+
+  /** Raiders on the board, oldest first. Empty outside the siege. */
+  raiders: Raider[] = [];
+  /** Cells the tide holds, as 'row,col'. Empty outside the siege. */
+  tide = new Set<string>();
+  /** Where the Keep is, read off the mission map */
+  keep: GridPos = { row: 4, col: 4 };
+  /** Gate cells in map reading order, which is what a spawn index means */
+  gates: GridPos[] = [];
+  /** What the enemy will do next, for the intent preview */
+  intent: SiegeIntent | null = null;
+  /** Bumped whenever the enemy or the terrain moves, so a view knows to redraw */
+  siegeVersion = 0;
+  private nextRaiderId = 1;
+  /** Tide expansions so far — the tempo tightens with it */
+  private tideTicks = 0;
+  /** Game time the next tide expansion is due at */
+  private nextTideAt = 0;
+
+  /**
+   * Events raised outside a `tryPlace` — the tide expanding on the clock, and
+   * the breach that may follow. Drained by the scene each frame, because the
+   * caller of `tick` has no return value to put them in.
+   */
+  private pending: FeedbackEvent[] = [];
+
+  private siegeMetrics: SiegeMetrics | null = null;
+
   private bag = new PieceBag();
   readonly config: GameConfig;
   readonly difficulty: Difficulty;
@@ -203,6 +245,9 @@ export class GameState {
    */
   get currentSpeedFraction(): number {
     if (!this.config.clock.enabled) return 1;
+    // The siege pays a claim in full however long it was thought about: the
+    // pressure there is the thing walking at the Keep, not the stopwatch.
+    if (!this.config.timer.speedScaling) return 1;
     const { speedWindowSeconds, minSpeedFraction } = this.config.timer;
     const t = Math.min(this.pieceElapsed / speedWindowSeconds, 1);
     return 1 - (1 - minSpeedFraction) * t;
@@ -257,11 +302,14 @@ export class GameState {
    */
   claimableRegions(board: Board): Region[] {
     const regions = board.findEnclosures(this.activeEchoKeys());
-    if (this.echoes.length === 0 && this.spentFloor.length === 0) return regions;
+    // A room needs at least one block the player put there. Outside the siege
+    // that is every enclosed room by definition, so this only ever bites on a
+    // ghost wall or on a pocket of the map the ruins had already closed —
+    // free ground nobody built, which must not pay like a claim.
+    const built = regions.filter(r => r.fence.length > 0);
+    if (this.echoes.length === 0 && this.spentFloor.length === 0) return built;
     const spent = new Set(this.spentFloor.map(cellKey));
-    return regions.filter(r =>
-      r.fence.length > 0 && !r.echoCells.some(c => spent.has(cellKey(c))),
-    );
+    return built.filter(r => !r.echoCells.some(c => spent.has(cellKey(c))));
   }
 
   /**
@@ -328,7 +376,277 @@ export class GameState {
 
   get streakMultiplier(): number {
     const s = this.config.scoring;
+    if (!s.streakEnabled) return 1;
     return Math.min(1 + this.streakCount * s.streakIncrement, s.streakCap);
+  }
+
+  /** The siege's config, or null in every other mode */
+  get siege(): SiegeConfig | null {
+    return this.config.siege ?? null;
+  }
+
+  /** Which of the four sieges this is, for a key, a label or a log */
+  get siegeVariant(): SiegeVariant | null {
+    const s = this.siege;
+    return s ? { missionId: s.missionId, enemy: s.enemy, mission: s.mission } : null;
+  }
+
+  /** Enemies on the board right now, whichever kind they are */
+  enemyCells(): GridPos[] {
+    if (this.raiders.length > 0) {
+      return this.raiders.map(r => ({ row: r.row, col: r.col }));
+    }
+    return [...this.tide].map(k => {
+      const comma = k.indexOf(',');
+      return { row: Number(k.slice(0, comma)), col: Number(k.slice(comma + 1)) };
+    });
+  }
+
+  /** Tide expansions so far. The countdown ring reads it for the tempo. */
+  get tideTickCount(): number {
+    return this.tideTicks;
+  }
+
+  /** Game time the next tide expansion is due at */
+  get nextTideDueAt(): number {
+    return this.nextTideAt;
+  }
+
+  /** Events raised off the clock rather than off an input. Clears the queue. */
+  drainEvents(): FeedbackEvent[] {
+    if (this.pending.length === 0) return [];
+    const out = this.pending;
+    this.pending = [];
+    return out;
+  }
+
+
+  // ── The siege ──
+
+  /**
+   * A fresh generator for one enemy decision, keyed to which decision it is.
+   *
+   * Deliberately not a running stream. The intent preview asks the same
+   * question the enemy phase will answer, and it asks it every time the player
+   * moves the piece — so a shared stream would make the preview change the
+   * future it is previewing. Keying the draw to the turn (or the tide tick)
+   * instead means the preview is *the same draw* the phase will make, however
+   * many times it is asked, and a replay reproduces both.
+   */
+  private siegeRng(salt: number): Rng {
+    return mulberry32((this.seed + Math.imul(salt, 0x9e3779b1)) | 0);
+  }
+
+  /** The draw the raider phase of `turn` will make */
+  private raiderRng(turn: number): Rng {
+    return this.siegeRng(turn);
+  }
+
+  /** The draw the tide's `tick`-th expansion will make */
+  private tideRng(tick: number): Rng {
+    return this.siegeRng(TIDE_SALT + tick);
+  }
+
+  /** Lay the mission out: terrain, the Keep, the gates and the starting enemy. */
+  private startSiege(siege: SiegeConfig): void {
+    const terrain = terrainOf(siege.map);
+    this.board.setTerrain(terrain);
+    const keeps = cellsOfTerrain(terrain, 'keep');
+    this.keep = keeps[0] ?? { row: 4, col: 4 };
+    this.gates = cellsOfTerrain(terrain, 'gate');
+    this.raiders = [];
+    this.tide = new Set();
+    this.nextRaiderId = 1;
+    this.tideTicks = 0;
+    this.nextTideAt = 0;
+    if (siege.enemy === 'tide') {
+      // The tide is the gates: it does not arrive, it is already in the doorway
+      for (const g of this.gates) this.tide.add(keyOf(g));
+      this.nextTideAt = tideIntervalAt(siege, 0);
+    }
+    this.siegeMetrics = {
+      variant: { missionId: siege.missionId, enemy: siege.enemy, mission: siege.mission },
+      breachTurn: null,
+      wallsLost: 0,
+      enemiesCaptured: 0,
+      routeChangingPlacements: 0,
+      roomAreas: [],
+      capturesPerClaim: {},
+      decisionTimes: [],
+      enemiesAtEnd: 0,
+    };
+    this.syncEnemies();
+  }
+
+  /**
+   * Push the enemy's footprint onto the board, so `canPlace` refuses to build
+   * on an enemy, and recompute what it will do next. One call after every
+   * change to the enemy or to the walls.
+   */
+  private syncEnemies(): void {
+    const cells = this.enemyCells();
+    this.board.setOccupied(cells);
+    const siege = this.siege;
+    if (!siege) { this.intent = null; return; }
+    const rng = siege.enemy === 'tide'
+      ? this.tideRng(this.tideTicks)
+      : this.raiderRng(this.totalTurns + 1);
+    this.intent = readIntent(this.board, this.raiders, this.tide, this.keep, rng);
+    this.siegeVersion++;
+  }
+
+  /** Weighted route length per raider, or the tide's next cell — what a placement can change */
+  private routeSignature(): Map<number, number> | string {
+    const siege = this.siege;
+    if (!siege) return '';
+    if (siege.enemy === 'tide') {
+      const rng = this.tideRng(this.tideTicks);
+      const target = readIntent(this.board, [], this.tide, this.keep, rng).tideTarget;
+      return target ? keyOf(target) : 'none';
+    }
+    const rng = this.raiderRng(this.totalTurns + 1);
+    return readIntent(this.board, this.raiders, this.tide, this.keep, rng).routeLengths;
+  }
+
+  /**
+   * Did this placement change what the enemy is going to do?
+   *
+   * The go-gate number: a mode where most placements leave the siege's plan
+   * untouched is a mode where the second force is scenery.
+   */
+  private routeChanged(
+    before: Map<number, number> | string, after: Map<number, number> | string,
+  ): boolean {
+    if (typeof before === 'string' || typeof after === 'string') return before !== after;
+    for (const [id, length] of before) {
+      if (!after.has(id)) continue; // captured, which is a different thing
+      if (after.get(id) !== length) return true;
+    }
+    return false;
+  }
+
+  /** An enemy stands on the Keep. Nothing after this matters. */
+  private breach(): void {
+    if (this.isGameOver) return;
+    this.isGameOver = true;
+    this.deathCause = 'breach';
+    if (this.siegeMetrics) this.siegeMetrics.breachTurn = this.totalTurns;
+    this.finalizeBest();
+  }
+
+  private keepHeldByEnemy(): boolean {
+    if (this.tide.has(keyOf(this.keep))) return true;
+    return this.raiders.some(r => r.row === this.keep.row && r.col === this.keep.col);
+  }
+
+  /**
+   * The raiders' turn: every raider steps toward the Keep or breaks the wall
+   * in its way, then the schedule lands whoever is due at the gates.
+   *
+   * Run from inside `tryPlace`, which is what makes a replay reproduce it: the
+   * simulation drives the same method with the same inputs and never has to
+   * know a siege is being played.
+   */
+  private raiderPhase(): FeedbackEvent[] {
+    const siege = this.siege;
+    if (!siege || siege.enemy !== 'raiders') return [];
+    const turn = this.totalTurns;
+    const steps = stepRaiders(this.board, this.raiders, this.keep, this.raiderRng(turn));
+    const broken: GridPos[] = [];
+    const moved: GridPos[] = [];
+    for (const step of steps) {
+      const raider = this.raiders.find(r => r.id === step.id);
+      if (!raider) continue;
+      if (step.brokeWall) {
+        broken.push(step.brokeWall);
+        if (this.siegeMetrics) this.siegeMetrics.wallsLost++;
+        continue;
+      }
+      raider.row = step.to.row;
+      raider.col = step.to.col;
+      moved.push({ row: step.to.row, col: step.to.col });
+    }
+
+    // Arrivals. A gate with a raider still standing in it is skipped rather
+    // than queued: the schedule is a tempo, not a debt.
+    const held = new Set(this.raiders.map(keyOf));
+    for (const spawn of siege.spawns) {
+      if (spawn.turn !== turn) continue;
+      const gate = this.gates[spawn.gate];
+      if (!gate || held.has(keyOf(gate))) continue;
+      this.raiders.push({ id: this.nextRaiderId++, row: gate.row, col: gate.col });
+      held.add(keyOf(gate));
+      moved.push({ row: gate.row, col: gate.col });
+    }
+
+    this.syncEnemies();
+    const events: FeedbackEvent[] = [
+      { type: 'enemy', wallsBroken: broken, enemyMoved: moved },
+    ];
+    if (this.keepHeldByEnemy()) {
+      this.breach();
+      events.push({ type: 'breach' });
+    }
+    return events;
+  }
+
+  /**
+   * The tide, on the clock rather than on placements.
+   *
+   * Driven from `advanceClock` and `advanceClockTo` alike, and off absolute
+   * times rather than deltas, so sixty small frames and one big jump to the
+   * same instant produce exactly the same expansions — which is the whole
+   * reason a replay of a tide run lands on the same board.
+   */
+  private runTide(): void {
+    const siege = this.siege;
+    if (!siege || siege.enemy !== 'tide' || this.isGameOver) return;
+    while (this.gameElapsed >= this.nextTideAt && !this.isGameOver) {
+      const step = stepTide(this.board, this.tide, this.keep, this.tideRng(this.tideTicks));
+      const broken: GridPos[] = [];
+      const moved: GridPos[] = [];
+      if (step.erodedWall) {
+        broken.push(step.erodedWall);
+        if (this.siegeMetrics) this.siegeMetrics.wallsLost++;
+      } else if (step.claimed) {
+        this.tide.add(keyOf(step.claimed));
+        moved.push(step.claimed);
+      }
+      this.tideTicks++;
+      this.nextTideAt += tideIntervalAt(siege, this.tideTicks);
+      this.syncEnemies();
+      this.pending.push({ type: 'enemy', wallsBroken: broken, enemyMoved: moved });
+      if (this.keepHeldByEnemy()) {
+        this.breach();
+        this.pending.push({ type: 'breach' });
+        this.pending.push({ type: 'gameOver' });
+      }
+    }
+  }
+
+  /**
+   * Enemies caught inside the rooms a claim just sealed. They are removed and
+   * paid for; the floor they stood on is claimed like any other.
+   */
+  private captureEnemies(regions: Region[]): number {
+    const siege = this.siege;
+    if (!siege) return 0;
+    const inside = new Set<string>();
+    for (const r of regions) for (const c of r.cells) inside.add(keyOf(c));
+    if (inside.size === 0) return 0;
+
+    const before = this.raiders.length + this.tide.size;
+    this.raiders = this.raiders.filter(r => !inside.has(keyOf(r)));
+    for (const key of [...this.tide]) if (inside.has(key)) this.tide.delete(key);
+    const captured = before - (this.raiders.length + this.tide.size);
+    if (captured > 0 && this.siegeMetrics) {
+      this.siegeMetrics.enemiesCaptured += captured;
+    }
+    if (this.siegeMetrics) {
+      const m = this.siegeMetrics.capturesPerClaim;
+      m[captured] = (m[captured] ?? 0) + 1;
+    }
+    return captured;
   }
 
   start(): FeedbackEvent {
@@ -376,7 +694,17 @@ export class GameState {
     this.echoVersion++;
     this.moves = [];
     this.movesTruncated = false;
-    this.highScore = getPersonalBest(this.difficulty, this.dailyDate ?? undefined);
+    this.pending = [];
+    // The siege has one best per variant: the same score means four different
+    // things across the 2×2, so one lifetime number would compare nothing.
+    const variant = this.siegeVariant;
+    this.highScore = variant
+      ? getSiegeBest(siegeVariantKey(variant))
+      : getPersonalBest(this.difficulty, this.dailyDate ?? undefined);
+
+    // The mission's map, its Keep, its gates, and the enemy already in them.
+    // Before the bag is dealt, because a piece is offered against this board.
+    if (this.config.siege) this.startSiege(this.config.siege);
 
     // Deal the hand plus up to previewCount upcoming pieces. Under a budget
     // the bag can run dry, and the queue is simply shorter than the preview.
@@ -408,6 +736,7 @@ export class GameState {
     // Echo walls run on the game clock, not on placements, so this is the one
     // place they can fade out.
     this.filterEchoes(c => c.expiresAt > this.gameElapsed);
+    this.runTide();
   }
 
   /**
@@ -435,12 +764,16 @@ export class GameState {
     this.gameElapsed = elapsed;
     this.sampleTimeline();
     this.filterEchoes(c => c.expiresAt > this.gameElapsed);
+    this.runTide();
   }
 
   /** Tick the clock. Returns true if time ran out. */
   tick(dt: number): boolean {
     if (this.isGameOver) return false;
     this.advanceClock(dt);
+    // The tide runs on the clock, so it can end the run inside advanceClock.
+    // Report that as a finished run and leave the cause it set alone.
+    if (this.isGameOver) return true;
     // No clock: the run still ages (telemetry wants a duration) but nothing
     // drains and nothing can time out.
     if (!this.config.clock.enabled) return false;
@@ -598,6 +931,14 @@ export class GameState {
     const covered = new Set(placedCells.map(cellKey));
     this.filterEchoes(c => !covered.has(cellKey(c)));
     const speedFraction = this.currentSpeedFraction;
+    // How long the player looked at this piece before committing, recorded
+    // before the clock is reset. Capped, so an endless run cannot grow it.
+    if (this.siegeMetrics && this.siegeMetrics.decisionTimes.length < DECISION_TIME_CAP) {
+      this.siegeMetrics.decisionTimes.push(this.pieceElapsed);
+    }
+    // What the enemy was going to do, judged against the board the player was
+    // looking at. Compared again once the claim has resolved.
+    const routeBefore = this.routeSignature();
     // The new piece's clock starts here, at the same double this placement
     // was recorded at — which is what the simulation reads it back as.
     this.lastPlacementAt = this.gameElapsed;
@@ -630,6 +971,9 @@ export class GameState {
       };
       this.recordEcho(claim);
     }
+    // Enemies caught inside the rooms die with them. Before the score, so the
+    // count is in hand when the claim is paid and the clock refilled.
+    const enemiesCaptured = claim ? this.captureEnemies(claim.regions) : 0;
 
     // Streak bookkeeping BEFORE scoring so the multiplier reflects the run-up
     if (claim) {
@@ -646,7 +990,12 @@ export class GameState {
     const t = this.config.timer;
     let bonus = t.placeBonus;
     if (claim) {
-      bonus += Math.min(t.claimBonusCap, t.claimBaseBonus + t.claimPerCellBonus * claim.totalArea);
+      bonus += Math.min(
+        t.claimBonusCap,
+        t.claimBaseBonus
+        + t.claimPerCellBonus * claim.totalArea
+        + t.claimPerEnemyBonus * enemiesCaptured,
+      );
     }
     const timeBonus = this.config.clock.enabled ? Math.round(bonus * speedFraction * 10) / 10 : 0;
     this.addTime(timeBonus);
@@ -658,15 +1007,21 @@ export class GameState {
     if (claim) {
       const points = this.claimPoints(claim.regions);
       this.score += points.turnScore;
+      // Flat, per enemy, outside every multiplier: one number to tune, and a
+      // capture is worth the same whatever room it happened to be in.
+      this.score += enemiesCaptured * this.config.scoring.pointsPerEnemy;
 
-      this.streakCount++;
-      this.maxStreak = Math.max(this.maxStreak, this.streakCount);
+      if (this.config.scoring.streakEnabled) {
+        this.streakCount++;
+        this.maxStreak = Math.max(this.maxStreak, this.streakCount);
+      }
       this.claims++;
       this.cellsClaimed += claim.totalArea;
       this.roomsClaimed += claim.regions.length;
       for (const r of claim.regions) {
         this.biggestRoom = Math.max(this.biggestRoom, r.area);
         this.roomSizes[r.area] = (this.roomSizes[r.area] ?? 0) + 1;
+        this.siegeMetrics?.roomAreas.push(r.area);
       }
       if (claim.regions.length >= 2) this.doubleCloses++;
 
@@ -680,6 +1035,7 @@ export class GameState {
         streakCount: this.streakCount,
         timeBonus,
         litCount: this.board.litCount(),
+        enemiesCaptured,
       });
       if (surveyed) {
         events.push({
@@ -695,6 +1051,20 @@ export class GameState {
     if (!this.newBestReached && this.highScore > 0 && this.score > this.highScore) {
       this.newBestReached = true;
       events.push({ type: 'newBest', previousBest: this.highScore });
+    }
+
+    // The enemy answers. Inside tryPlace on purpose: the replay simulation
+    // drives this same method, so the siege re-plays with no special casing.
+    if (this.config.siege) {
+      this.syncEnemies();
+      if (this.routeChanged(routeBefore, this.routeSignature())) {
+        if (this.siegeMetrics) this.siegeMetrics.routeChangingPlacements++;
+      }
+      for (const e of this.raiderPhase()) events.push(e);
+      if (this.isGameOver) {
+        events.push({ type: 'gameOver' });
+        return events;
+      }
     }
 
     // Every score change this placement could make — the blocks, the claim
@@ -718,7 +1088,8 @@ export class GameState {
 
     if (!this.current) {
       this.isGameOver = true;
-      this.deathCause = 'complete';
+      // Surviving all eighteen is the mission, not merely the end of the bag
+      this.deathCause = this.config.siege?.mission === 'finite' ? 'victory' : 'complete';
       this.finalizeBest();
       events.push({ type: 'gameOver' });
       return events;
@@ -745,6 +1116,9 @@ export class GameState {
   private markTerritory(regions: Region[]): boolean {
     if (!this.config.territory.enabled) return false;
     for (const r of regions) this.board.markLit(r.cells);
+    // Freshness pricing without the objective: the siege wants relit ground
+    // to be worth less, not a second thing to be winning.
+    if (!this.config.territory.surveyEnabled) return false;
     if (this.board.litCount() < INNER_CELLS) return false;
 
     this.surveys++;
@@ -767,6 +1141,13 @@ export class GameState {
   }
 
   finalizeBest(): void {
+    // A siege best is per variant and stays on this device: this prototype
+    // posts nothing, so there is no board for it to be compared on.
+    const variant = this.siegeVariant;
+    if (variant) {
+      recordSiegeBest(siegeVariantKey(variant), this.score);
+      return;
+    }
     const isBest = recordPersonalBest(this.difficulty, this.score, this.dailyDate ?? undefined);
     // The pace line races the clock, and only the timed modes have one: the
     // daily deals the same thirty pieces to everyone with no seconds to
@@ -781,6 +1162,9 @@ export class GameState {
       mode: this.difficulty,
       seed: this.seed,
       ...(this.dailyDate !== null ? { dailyKey: this.dailyDate } : {}),
+      // Which siege: the map, the enemy and the goal all change what the same
+      // inputs do, so the log has to carry them for a replay to mean anything.
+      ...(this.siegeVariant ? { siege: this.siegeVariant } : {}),
       // Entries are never mutated after recording, so a copy of the array is
       // all the isolation a caller needs.
       moves: [...this.moves],
@@ -816,6 +1200,17 @@ export class GameState {
       scoreTimeline: [...this.scoreTimeline],
       previousBest: this.highScore,
       isNewBest: this.score > this.highScore,
+      ...(this.siegeMetrics
+        ? {
+          siege: {
+            ...this.siegeMetrics,
+            roomAreas: [...this.siegeMetrics.roomAreas],
+            capturesPerClaim: { ...this.siegeMetrics.capturesPerClaim },
+            decisionTimes: [...this.siegeMetrics.decisionTimes],
+            enemiesAtEnd: this.raiders.length + this.tide.size,
+          },
+        }
+        : {}),
       replay: this.buildReplay(),
     };
   }

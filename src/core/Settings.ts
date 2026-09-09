@@ -36,6 +36,10 @@ export interface GameSettings {
   palette: PaletteSetting;
   /** Mirror the HOLD slot and NEXT column for left-thumb play */
   leftHanded: boolean;
+  /** Last siege picked in the menu — mission, enemy and goal */
+  siegeMission: string;
+  siegeEnemy: 'raiders' | 'tide';
+  siegeGoal: 'finite' | 'endless';
 }
 
 const SETTINGS_KEY = 'enclave_settings_v1';
@@ -59,6 +63,11 @@ const DEFAULT_SETTINGS: GameSettings = {
   motion: 'system',
   palette: 'standard',
   leftHanded: false,
+  // The first siege anyone should meet: one gate, discrete raiders, a win
+  // state at eighteen pieces.
+  siegeMission: 'm1',
+  siegeEnemy: 'raiders',
+  siegeGoal: 'finite',
 };
 
 function bestKey(difficulty: Difficulty): string {
@@ -72,6 +81,8 @@ function gamesKey(difficulty: Difficulty): string {
 function pbTimelineKey(difficulty: Difficulty): string {
   return `enclave_${difficulty}_pb_timeline`;
 }
+
+const SIEGE_BEST_PREFIX = 'enclave_siege_best_';
 
 let cached: GameSettings | null = null;
 
@@ -181,6 +192,35 @@ export function pbPaceAt(timeline: number[], second: number): number | null {
   if (timeline.length === 0) return null;
   const i = Math.max(0, Math.min(Math.floor(second), timeline.length - 1));
   return timeline[i];
+}
+
+// ── Siege bests ──
+
+/**
+ * One best per siege, keyed by mission + enemy + goal.
+ *
+ * Local only, and deliberately so: this prototype posts no siege score
+ * anywhere. The same number means four different things across the 2×2, and a
+ * shared board for a mode whose rules are still being decided would be a board
+ * that has to be thrown away.
+ */
+export function getSiegeBest(variantKey: string): number {
+  try {
+    const raw = localStorage.getItem(SIEGE_BEST_PREFIX + variantKey);
+    const n = raw ? parseInt(raw, 10) : 0;
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Store a siege best if it beats the stored one. Returns true if it did. */
+export function recordSiegeBest(variantKey: string, score: number): boolean {
+  if (score <= getSiegeBest(variantKey)) return false;
+  try {
+    localStorage.setItem(SIEGE_BEST_PREFIX + variantKey, String(Math.floor(score)));
+  } catch { /* storage unavailable */ }
+  return true;
 }
 
 export function getGamesPlayed(difficulty: Difficulty): number {

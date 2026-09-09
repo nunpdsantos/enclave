@@ -1,4 +1,5 @@
-import { DIFFICULTY_CONFIGS, GameConfig, TimerConfig } from './Config';
+import { DIFFICULTY_CONFIGS, GameConfig, TimerConfig, siegeConfig } from './Config';
+import { isMissionId } from './Missions';
 import { isDailyKey } from './Daily';
 import { GameState } from './GameState';
 import { rotationCount } from './Pieces';
@@ -175,7 +176,21 @@ export function simulateRun(replay: Replay): SimResult {
     if (typeof key !== 'string' || !isDailyKey(key)) return fail('seed', 0, 0);
   }
 
-  const gs = new GameState({ ...base, seed: replay.seed }, replay.mode);
+  // The siege's rules are the same rules; what is not in the mode alone is
+  // *which* siege — the map, the enemy and the goal — so the log carries them
+  // and the config is rebuilt from them. Everything below is untouched: the
+  // enemy phase runs inside tryPlace, so the simulation drives it by driving
+  // the same placements.
+  let config: GameConfig = { ...base, seed: replay.seed };
+  if (replay.mode === 'siege') {
+    const v = replay.siege;
+    if (!v || !isMissionId(v.missionId)) return fail('shape', 0, 0);
+    if (v.enemy !== 'raiders' && v.enemy !== 'tide') return fail('shape', 0, 0);
+    if (v.mission !== 'finite' && v.mission !== 'endless') return fail('shape', 0, 0);
+    config = siegeConfig(v.missionId, v.enemy, v.mission, replay.seed);
+  }
+
+  const gs = new GameState(config, replay.mode);
   gs.start();
 
   const clocked = base.clock.enabled;

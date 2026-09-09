@@ -107,7 +107,7 @@ describe('territory factor', () => {
     const cells: GridPos[] = Array.from({ length: 7 }, (_, i) => ({ row: 3, col: i + 1 }));
     gs.board.markLit(cells.slice(0, 5));
 
-    const points = gs.claimPoints([{ cells, fence: [], echoCells: [], area: 7 }]);
+    const points = gs.claimPoints([{ cells, fence: [], echoCells: [], ruinCells: [], area: 7 }]);
     expect(points.basePoints).toBe(315);
     expect(points.turnScore).toBe(315);
   });

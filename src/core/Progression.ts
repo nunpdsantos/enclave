@@ -34,6 +34,18 @@ export const PROGRESS_TIERS: Record<Difficulty, ProgressTier[]> = {
     { minScore: 7000, label: 'SOVEREIGN', color: 0xef4444 },
     { minScore: 14000, label: 'LEGEND', color: 0xd946ef },
   ],
+  // A siege pays for rooms and captures only, on a 40-second command clock,
+  // and eighteen pieces is a short run — so the ladder is the shortest of the
+  // four. Placeholder numbers by design: what a good siege score looks like is
+  // one of the things the playtest is for.
+  siege: [
+    { minScore: 0, label: 'LEVY', color: 0x3b82f6 },
+    { minScore: 500, label: 'SERJEANT', color: 0x10b981 },
+    { minScore: 1400, label: 'CASTELLAN', color: 0xfbbf24 },
+    { minScore: 3000, label: 'MARSHAL', color: 0xf59e0b },
+    { minScore: 6000, label: 'WARDEN', color: 0xef4444 },
+    { minScore: 12000, label: 'LEGEND', color: 0xd946ef },
+  ],
 };
 
 export interface ProgressStatus {
