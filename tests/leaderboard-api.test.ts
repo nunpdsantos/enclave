@@ -2063,6 +2063,40 @@ describe('review 4, finding 4 — replacing an unusable daily ticket is still on
   });
 });
 
+describe('review 5, finding 2 — the compare-and-set compares Redis\'s own bytes', () => {
+  // The stored value is one half of the compare, and the SDK used to hand it
+  // over `JSON.parse`d: the four characters `null` came back as `null`, and a
+  // JSON-quoted string came back without its quotes. Either way `ARGV[1]` was
+  // a different string from the one Lua compares it with, so the
+  // compare-and-set lost every time — the junk stayed on the key and every
+  // request was answered with a candidate it had failed to store.
+  //
+  // Both of these are values a real database can hold: this key is written by
+  // `SET` with whatever string the handler minted, and a value on it that the
+  // secret did not sign is exactly the case the compare-and-set exists for.
+  for (const junk of ['null', '"a-quoted-ticket"']) {
+    it(`replaces a stored ${junk} and converges on one ticket`, async () => {
+      const start = await runStartHandler();
+      const today = daysAgo(0);
+      const ticketKey = `${dailyKeyFor(today)}:ticket:p1`;
+      store.set(ticketKey, { kind: 'string', value: junk });
+
+      const first = await (await start(startRun({ id: 'p1', mode: 'daily' }))).json();
+      // The ticket the player is playing is the ticket that is stored
+      expect(storedString(ticketKey)).toBe(first.token);
+      expect(readTicketPayload(first.token)?.practice).toBeUndefined();
+      expect(readTicketPayload(first.token)?.dailyKey).toBe(today);
+
+      // ...and the next ask is answered with that one rather than replacing
+      // it again, which is the whole point of storing it.
+      const again = await (await start(startRun({ id: 'p1', mode: 'daily' }))).json();
+      expect(again).toEqual(first);
+      expect(storedString(ticketKey)).toBe(first.token);
+      expect(expiresFor(ticketKey)).toEqual([DAILY_TTL]);
+    });
+  }
+});
+
 describe('review 4, finding 2 — a key of the wrong type consumes nothing', () => {
   it('answers 503 and leaves the ticket, the fingerprint and the day unspent', async () => {
     const h = await handler();

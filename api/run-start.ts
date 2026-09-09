@@ -87,14 +87,33 @@ function secret(): string | null {
   return process.env.ENCLAVE_SECRET || process.env.KV_REST_API_TOKEN || null;
 }
 
-/** The client, or null when this deployment has no database configured. */
+/**
+ * The client, or null when this deployment has no database configured.
+ *
+ * Deserialisation is off. Every value this handler reads is a ticket — an
+ * opaque string that is compared, byte for byte, against what Redis holds
+ * (see `CLAIM_TICKET_SCRIPT`). The SDK's default is to `JSON.parse` what it
+ * reads and hand back the result, which is a *different string* whenever the
+ * stored bytes happen to be valid JSON: the four characters `null` come back
+ * as `null`, and `"x"` comes back as `x`. The compare-and-set was then given
+ * an `ARGV[1]` that could never equal the bytes Lua compares it with, so it
+ * lost every time and every request answered with a candidate it had failed
+ * to store. Writing was never affected — the SDK passes strings through
+ * unserialised — so with reads raw, both halves of the compare are the same
+ * bytes.
+ */
 function getRedis(): Redis | null {
   const url = process.env.KV_REST_API_URL;
   const token = process.env.KV_REST_API_TOKEN;
   if (!url || !token) return null;
   // A factory, not a signal: the SDK calls it once per command, so each
   // command gets its own deadline rather than sharing one.
-  return new Redis({ url, token, signal: () => AbortSignal.timeout(REDIS_TIMEOUT_MS) });
+  return new Redis({
+    url,
+    token,
+    automaticDeserialization: false,
+    signal: () => AbortSignal.timeout(REDIS_TIMEOUT_MS),
+  });
 }
 
 /**
@@ -261,8 +280,12 @@ export default async function handler(request: Request): Promise<Response> {
     // Nothing was stored for this id today: this ask is the attempt.
     if (claimed !== null) return answer(candidate);
 
-    // Read once: the token that goes back has to be the one that was verified.
-    const held = await redis.get<string>(ticketKey);
+    // Read once: the token that goes back has to be the one that was
+    // verified. The client deserialises nothing, so this is the stored bytes
+    // or nothing at all — anything else is a database answering out of shape
+    // and is treated as no ticket, which the compare-and-set below replaces.
+    const raw: unknown = await redis.get<string>(ticketKey);
+    const held = typeof raw === 'string' ? raw : null;
     const stored = await verifyTicket(key, held);
     // A stored value this secret did not sign, or one for another id or
     // another date, is not a ticket anybody can spend. Replace it rather than
