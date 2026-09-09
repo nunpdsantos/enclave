@@ -757,7 +757,7 @@
     "scale": "2"
   },
   "enclave": {
-    "engine": "cpu-fallback",
+    "engine": "blender-eevee",
     "cellUnit": 1,
     "cellPixels": 64,
     "elevation": 60,

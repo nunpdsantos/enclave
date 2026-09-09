@@ -1,7 +1,8 @@
 {
-  "engine": "cpu-fallback",
-  "blender_render_verified": false,
-  "render_seconds": 4.519,
+  "engine": "blender-eevee",
+  "blender_version": "5.2.1 LTS",
+  "blender_render_verified": true,
+  "render_seconds": 14.197,
   "frame_count": 31,
   "asset_size": [
     128,
@@ -11,7 +12,6 @@
     384,
     384
   ],
-  "supersampling": 2,
   "frames": [
     "wall-00",
     "wall-01",
