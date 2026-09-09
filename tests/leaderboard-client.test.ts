@@ -1,5 +1,6 @@
-import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { Difficulty } from '../src/core/Config';
+import { dailyKey } from '../src/core/Daily';
 import { Leaderboard, LeaderboardEntry, RunStarter, RunTicket } from '../src/core/Leaderboard';
 import { signTicket, TICKET_VERSION } from '../src/core/Ticket';
 import { emptyReplay } from './helpers';
@@ -610,6 +611,53 @@ describe('review 6, finding 1 — a board never goes backwards from a submission
     await read;
     expect(board.getEntries().map(e => e.name)).toEqual(['Bea', 'Ann']);
     expect(cached('classic')).toEqual(['Bea', 'Ann']);
+  });
+});
+
+/**
+ * The menu needs a DOM and a renderer, so what is testable here is the
+ * client-level move its rebuild now makes first: re-select the daily for the
+ * date the heading is about to be computed from. The scene draws the heading
+ * and the rows in one pass from those two things, and only the re-selection
+ * can make them agree.
+ */
+describe('review 6, finding 2 — the daily board follows the day', () => {
+  it('re-selects the new day\'s board once the clock is past UTC midnight', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.parse('2026-09-09T23:58:00.000Z'));
+      deferredFetch();
+      // The menu is on the Daily, and the client with it.
+      const board = new Leaderboard('daily');
+      expect(board.getBoardId()).toBe('daily-2026-09-09');
+      only('GET', 'difficulty=daily-2026-09-09').resolve([row('The 9th', 500)]);
+      await board.waitForRemote();
+      expect(board.getEntries().map(e => e.name)).toEqual(['The 9th']);
+
+      // Midnight passes with the menu still open — the RESETS IN readout
+      // rolls over on its own — and then OPTIONS is opened and closed. The
+      // heading that rebuild writes says DAILY #10, because it is computed
+      // from the date it is drawn on.
+      vi.setSystemTime(Date.parse('2026-09-10T00:02:00.000Z'));
+      expect(dailyKey()).toBe('2026-09-10');
+
+      // So the rebuild re-selects first. Synchronously: the rows the heading
+      // is drawn beside are the 10th's before the next line runs, and the
+      // 9th's ten are not among them.
+      const read = board.showBoard('daily');
+      expect(board.getBoardId()).toBe('daily-2026-09-10');
+      expect(board.getEntries()).toEqual([]);
+
+      only('GET', 'difficulty=daily-2026-09-10').resolve([row('The 10th', 300)]);
+      await read;
+      expect(board.getEntries().map(e => e.name)).toEqual(['The 10th']);
+      // And the 9th keeps its own rows under its own key, where a run that
+      // crossed midnight can still be posted to them
+      expect(cached('daily-2026-09-09')).toEqual(['The 9th']);
+      expect(cached('daily-2026-09-10')).toEqual(['The 10th']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

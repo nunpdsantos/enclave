@@ -650,12 +650,29 @@ export class MenuScene implements Scene {
   }
 
   private buildLeaderboard(group: Container): void {
+    // The heading and the rows are drawn here in one pass, and they have to
+    // name one board. The heading is computed from the date it is drawn on;
+    // the client holds whatever board it was last pointed at — which, on a
+    // Daily left selected across UTC midnight, is yesterday's. Opening and
+    // closing OPTIONS was then enough to draw the 9th's ten under
+    // "LEADERBOARD — DAILY #10", with no way to correct it: the countdown
+    // had already rolled over and tapping the selected chip does nothing.
+    //
+    // `selectBoard` is synchronous, so the rows below are the new day's
+    // before the next line runs, and it answers true only when the board
+    // actually moved — which is the only time a read is worth starting, and
+    // is what stops a rebuild that redraws from reading again for ever.
+    const today = dailyKey();
+    if (this.leaderboard.selectBoard(this.selectedDifficulty, today)) {
+      void this.leaderboard.refresh().then(() => this.refreshLeaderboard());
+    }
+
     const entries = this.leaderboard.getEntries();
     const cx = this.width / 2;
     const startY = this.height * 0.47;
 
     const boardName = this.selectedDifficulty === 'daily'
-      ? `DAILY #${dailyNumber(dailyKey())}`
+      ? `DAILY #${dailyNumber(today)}`
       : DIFFICULTY_LABELS[this.selectedDifficulty];
     group.addChild(createSectionLabel(`LEADERBOARD — ${boardName}`, cx, startY));
 
@@ -817,6 +834,7 @@ export class MenuScene implements Scene {
 
   /** Called when remote leaderboard data arrives after the menu was built */
   refreshLeaderboard(): void {
+    if (!this.live) return;
     if (!this.showingHelp && !this.showingOptions && !this.showingStats) this.buildLowerSection();
   }
 
@@ -849,12 +867,22 @@ export class MenuScene implements Scene {
     }
   }
 
+  /**
+   * False once the scene has been left. The read this scene starts for itself
+   * when the day rolls over outlives the screen that asked for it, and a
+   * redraw of a menu nobody is looking at builds Pixi objects into a
+   * container that has already been taken off the stage.
+   */
+  private live = true;
+
   enter(): void {
+    this.live = true;
     window.addEventListener('pointerdown', this.onFirstGesture);
     window.addEventListener('keydown', this.onFirstGesture);
   }
 
   exit(): void {
+    this.live = false;
     this.detachGestureWatch();
     this.container.removeAllListeners();
   }
