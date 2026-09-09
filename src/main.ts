@@ -126,9 +126,16 @@ async function boot() {
     // before the first piece is dealt. Without one the run still plays — on
     // a local seed, as practice — and the game-over screen says the score
     // stayed here rather than pretending it went out.
-    const ticket = await requestRunTicket(selectedDifficulty);
+    //
+    // The siege asks for none: nothing about it is posted, so a ticket would
+    // only be a round trip spent to be told what this client already knows.
+    // Its config comes from the menu's picker instead of from the mode table,
+    // because the mode alone does not name a run — the map, the enemy and the
+    // goal all change what the same eighteen pieces do.
+    const isSiege = selectedDifficulty === 'siege';
+    const ticket = isSiege ? null : await requestRunTicket(selectedDifficulty);
     runToken = ticket?.token ?? null;
-    const base = DIFFICULTY_CONFIGS[selectedDifficulty];
+    const base = isSiege ? currentSiegeConfig() : DIFFICULTY_CONFIGS[selectedDifficulty];
     const config: GameConfig = ticket
       ? {
         ...base,
