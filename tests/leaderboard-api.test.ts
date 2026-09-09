@@ -27,6 +27,11 @@ import { BotRun, playBotRun } from './helpers';
  */
 
 // ── The stub: an in-memory Redis speaking Upstash's REST protocol ──
+//
+// Faithful where these tests lean on it — one type per key, TTLs that expire,
+// base64 bulk strings, ZADD's flags, a script run to completion — and honest
+// about where it is not: see `evalSubmit` for what a transcription of Lua can
+// and cannot prove.
 
 type StubValue =
   | { kind: 'string'; value: string }
@@ -37,6 +42,34 @@ type StubValue =
 const store = new Map<string, StubValue>();
 /** Every TTL the handler set, in order, by EXPIRE or by SET ... EX */
 const expires: [string, number][] = [];
+/**
+ * When each key with a TTL disappears, in epoch milliseconds.
+ *
+ * The stub used to *record* every TTL and honour none of them, so a test
+ * could assert that a key was given eight days and never that it was gone
+ * after them — an expiry set on the wrong key would have read as correct.
+ */
+const expiryAt = new Map<string, number>();
+
+/**
+ * The value at a key, or undefined once its TTL has passed. Redis evicts
+ * lazily too: the key is not gone until something looks for it.
+ */
+function live(key: string): StubValue | undefined {
+  const deadline = expiryAt.get(key);
+  if (deadline !== undefined && Date.now() >= deadline) {
+    store.delete(key);
+    expiryAt.delete(key);
+    return undefined;
+  }
+  return store.get(key);
+}
+
+/** Record a TTL as both a fact a test can assert and a deadline the stub keeps. */
+function setExpiry(key: string, seconds: number): void {
+  expires.push([key, seconds]);
+  expiryAt.set(key, Date.now() + seconds * 1000);
+}
 /** Every command the handler issued, in order, by name */
 const commands: string[] = [];
 /**
@@ -67,7 +100,7 @@ let base = '';
  * became the right type, and a broken database looked like a working one.
  */
 function requireType(key: string, kind: StubValue['kind']): void {
-  const existing = store.get(key);
+  const existing = live(key);
   if (existing && existing.kind !== kind) {
     throw new Error('WRONGTYPE Operation against a key holding the wrong kind of value');
   }
@@ -77,25 +110,25 @@ function requireType(key: string, kind: StubValue['kind']): void {
 // that conjured one would put keys in `store` that the handler never wrote.
 function readZset(key: string): Map<string, number> {
   requireType(key, 'zset');
-  const existing = store.get(key);
+  const existing = live(key);
   return existing?.kind === 'zset' ? existing.members : new Map();
 }
 
 function readHash(key: string): Map<string, string> {
   requireType(key, 'hash');
-  const existing = store.get(key);
+  const existing = live(key);
   return existing?.kind === 'hash' ? existing.fields : new Map();
 }
 
 function readSet(key: string): Set<string> {
   requireType(key, 'set');
-  const existing = store.get(key);
+  const existing = live(key);
   return existing?.kind === 'set' ? existing.members : new Set();
 }
 
 function zsetAt(key: string): Map<string, number> {
   requireType(key, 'zset');
-  const existing = store.get(key);
+  const existing = live(key);
   if (existing?.kind === 'zset') return existing.members;
   const members = new Map<string, number>();
   store.set(key, { kind: 'zset', members });
@@ -104,7 +137,7 @@ function zsetAt(key: string): Map<string, number> {
 
 function hashAt(key: string): Map<string, string> {
   requireType(key, 'hash');
-  const existing = store.get(key);
+  const existing = live(key);
   if (existing?.kind === 'hash') return existing.fields;
   const fields = new Map<string, string>();
   store.set(key, { kind: 'hash', fields });
@@ -113,7 +146,7 @@ function hashAt(key: string): Map<string, string> {
 
 function setAt(key: string): Set<string> {
   requireType(key, 'set');
-  const existing = store.get(key);
+  const existing = live(key);
   if (existing?.kind === 'set') return existing.members;
   const members = new Set<string>();
   store.set(key, { kind: 'set', members });
@@ -207,29 +240,38 @@ function execute(cmd: unknown[]): unknown {
   switch (name) {
     case 'get': {
       requireType(key, 'string');
-      const value = store.get(key);
+      const value = live(key);
       return value?.kind === 'string' ? value.value : null;
     }
     // The four kinds this stub holds are named exactly as Redis names them,
     // and a key that is not there is 'none' rather than an error.
     case 'type':
-      return store.get(key)?.kind ?? 'none';
+      return live(key)?.kind ?? 'none';
     // SET with the flags the ticket store uses: NX answers null rather than
     // OK when the key is already there, and EX is the TTL in the same command
     // — which is the whole point of it, there being no second command whose
     // failure could leave a stored ticket with no expiry.
     case 'set': {
       const opts = cmd.slice(3).map(o => String(o).toLowerCase());
-      if (opts.includes('nx') && store.has(key)) return null;
-      if (opts.includes('xx') && !store.has(key)) return null;
+      if (opts.includes('nx') && live(key) !== undefined) return null;
+      if (opts.includes('xx') && live(key) === undefined) return null;
       const ex = opts.indexOf('ex');
-      if (ex !== -1) expires.push([key, Number(opts[ex + 1])]);
+      // SET replaces the key outright — any type, and any TTL it was carrying
+      expiryAt.delete(key);
+      if (ex !== -1) setExpiry(key, Number(opts[ex + 1]));
       store.set(key, { kind: 'string', value: String(cmd[2]) });
       return 'OK';
     }
-    case 'expire':
-      expires.push([key, Number(cmd[2])]);
-      return store.has(key) ? 1 : 0;
+    case 'expire': {
+      if (live(key) === undefined) {
+        // Redis records nothing for a key that is not there, and neither can
+        // a stub that means to enforce what it records.
+        expires.push([key, Number(cmd[2])]);
+        return 0;
+      }
+      setExpiry(key, Number(cmd[2]));
+      return 1;
+    }
     case 'zadd':
       return zadd(cmd);
     case 'zrange':
@@ -295,6 +337,24 @@ function execute(cmd: unknown[]): unknown {
  *
  * Redis runs a script to completion before anything else runs, and the stub
  * is single-threaded, so the atomicity is faithful too.
+ *
+ * **What none of this proves.** The Lua never runs here. This function is a
+ * transcription, and a transcription cannot disagree with itself: a branch
+ * that is wrong in the script and right here passes every test in this file.
+ * Changing the script's different-identity return from 'token' to 'ok' — a
+ * spent ticket accepted for a second, different run — used to do exactly
+ * that. Three assertions stand in for the interpreter, and every one of them
+ * reads the script's own source: the commands it issues ('is mirrored by the
+ * stub'), the statuses it names and the position of its type gate ('names, in
+ * the Lua itself'), and the marker the stub dispatches on ('keeps the claim
+ * script'). They catch drift. They do not catch Lua that means something
+ * other than what it reads like, and nothing short of a real server will.
+ *
+ * The stub is faithful about the two things it used to fake: a key of the
+ * wrong type raises WRONGTYPE rather than being quietly overwritten, and a
+ * TTL is a deadline rather than a note. What it still does not model is
+ * everything these tests do not lean on — eviction under memory pressure,
+ * clustering, replication lag, and the REST API's own retry policy.
  */
 function evalSubmit(cmd: unknown[]): unknown[] {
   const keyCount = Number(cmd[2]);
@@ -433,6 +493,7 @@ afterAll(() => {
 
 beforeEach(() => {
   store.clear();
+  expiryAt.clear();
   expires.length = 0;
   commands.length = 0;
   dropResponseFor = null;
@@ -575,9 +636,9 @@ function storedMeta(key: string, id: string): { name?: string; date?: string } {
   return raw ? JSON.parse(raw) : {};
 }
 
-/** A plain string value, or null where there is none. */
+/** A plain string value, or null where there is none (or none left). */
 function storedString(key: string): string | null {
-  const value = store.get(key);
+  const value = live(key);
   return value?.kind === 'string' ? value.value : null;
 }
 
@@ -2053,5 +2114,88 @@ describe('review 4, finding 2 — a key of the wrong type consumes nothing', () 
     const res = await h(get('classic'));
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Leaderboard unavailable' });
+  });
+});
+
+describe('review 4, finding 6 — the stub is held to the script and to its own TTLs', () => {
+  it('names, in the Lua itself, every status the handler branches on', async () => {
+    const { SUBMIT_SCRIPT, SUBMIT_STATUSES } = await import('../api/leaderboard');
+
+    // `evalSubmit` never reads the script it is handed: it is a transcription,
+    // not an interpreter. So changing the Lua's different-identity return from
+    // 'token' to 'ok' — a spent ticket accepted for a second, different run —
+    // passed every other assertion in this file. These read the contract out
+    // of the script's own source, which is the only place it exists.
+    const named = new Set([
+      ...[...SUBMIT_SCRIPT.matchAll(/status = '([a-z]+)'/g)].map(m => m[1]),
+      ...[...SUBMIT_SCRIPT.matchAll(/return \{ '([a-z]+)'/g)].map(m => m[1]),
+    ]);
+    expect([...named].sort()).toEqual([...SUBMIT_STATUSES].sort());
+
+    // And each of them where the handler expects to find it
+    expect(SUBMIT_SCRIPT).toContain(`return { 'storage', 0 }`);
+    expect(SUBMIT_SCRIPT).toContain(`return { 'token', 0 }`);
+    expect(SUBMIT_SCRIPT).toContain(`local status = 'ok'`);
+    expect(SUBMIT_SCRIPT).toContain(`status = 'replay'`);
+    expect(SUBMIT_SCRIPT).toContain(`status = 'already'`);
+    expect(SUBMIT_SCRIPT).toContain(`return { status, changed }`);
+
+    // The gate comes before every write, or it is not a gate: nothing that
+    // changes state may appear above it in the source.
+    const gate = SUBMIT_SCRIPT.indexOf(`return { 'storage', 0 }`);
+    const writes = [...SUBMIT_SCRIPT.matchAll(/redis\.call\('(SADD|ZADD|HSET|EXPIRE)'/g)];
+    expect(writes.length).toBeGreaterThan(0);
+    expect(writes.every(m => m.index! > gate)).toBe(true);
+  });
+
+  it('keeps the claim script telling the stub which script it is', async () => {
+    const { CLAIM_TICKET_SCRIPT } = await import('../api/run-start');
+    // The stub dispatches on this marker, so losing it would silently route
+    // the compare-and-set through the submission transcription.
+    expect(CLAIM_TICKET_SCRIPT).toContain('-- enclave:claim-ticket');
+    expect(CLAIM_TICKET_SCRIPT).toContain(`if current == false or current == ARGV[1] then`);
+    expect(CLAIM_TICKET_SCRIPT).toContain(`return current`);
+  });
+
+  it('expires a daily board instead of only remembering its TTL', async () => {
+    const h = await handler();
+    const today = daysAgo(0);
+    const played = dailyRun(today, 14);
+    await h(post(`daily-${today}`, await body(played, 'p1', 'Ann')));
+    expect(storedBoard(dailyKeyFor(today))).toHaveLength(1);
+    expect(expiresFor(dailyKeyFor(today))).toEqual([DAILY_TTL]);
+
+    // Only the clock is faked: the stub is a real HTTP server on the other
+    // end of a real socket, and faking its timers would strand the request.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + (DAILY_TTL + 1) * 1000);
+      const redis = new Redis({ url: base, token: SECRET });
+      // A TTL that was recorded and never enforced meant a test could prove a
+      // key had been given eight days and never that it was gone after them —
+      // an expiry set on the wrong key would have read exactly the same.
+      expect(await redis.zrange(dailyKeyFor(today), 0, -1)).toEqual([]);
+      expect(storedString(dailyKeyFor(today))).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('expires a stored daily ticket, TTL and all', async () => {
+    const start = await runStartHandler();
+    const today = daysAgo(0);
+    const ticketKey = `${dailyKeyFor(today)}:ticket:p1`;
+    await start(startRun({ id: 'p1', mode: 'daily' }));
+    expect(storedString(ticketKey)).not.toBeNull();
+
+    // The ticket goes in with `SET ... EX`, which is a different path through
+    // the stub from the board's `EXPIRE`, and it has to expire too.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + (DAILY_TTL + 1) * 1000);
+      expect(await new Redis({ url: base, token: SECRET }).get(ticketKey)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
