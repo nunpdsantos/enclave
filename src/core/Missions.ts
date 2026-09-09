@@ -274,5 +274,11 @@ export function buildSpawnSchedule(
     out.push({ turn, gate: out.length % gateCount });
     turn += turn >= rampTurn ? rampInterval : plan.interval;
   }
+  // The last wave lands *on* the horizon, whatever the interval's rhythm would
+  // otherwise have done with it: a finite mission whose final arrival is two
+  // placements early is a mission that ends with nothing left to answer.
+  if (!endless && out.length > 0 && out[out.length - 1].turn < limit) {
+    out.push({ turn: limit, gate: out.length % gateCount });
+  }
   return out;
 }

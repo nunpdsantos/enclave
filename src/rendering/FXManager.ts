@@ -125,6 +125,13 @@ export class FXManager {
         this.warmColor = 0x8a3428;
         this.bgParticleCount = 34;
         break;
+      // Smoke and ember rather than night sky: the siege's board is already
+      // red, and the backdrop should belong to it
+      case 'siege':
+        this.coolColor = 0x2a1f3a;
+        this.warmColor = 0x7f1d1d;
+        this.bgParticleCount = 20;
+        break;
       default:
         this.coolColor = THEME.bg;
         this.warmColor = 0x6d2f6a;

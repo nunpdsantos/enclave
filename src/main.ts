@@ -72,7 +72,11 @@ async function boot() {
   window.addEventListener('keydown', unlockAudio);
 
   let selectedDifficulty: Difficulty = readLastDifficulty();
-  const leaderboard = new Leaderboard(selectedDifficulty);
+  // The siege has no board, so a run of it must not send the menu asking for
+  // one the server would refuse
+  const leaderboard = new Leaderboard(
+    selectedDifficulty === 'siege' ? 'classic' : selectedDifficulty,
+  );
 
   function showMenu() {
     const layout = layoutManager.recalculate(window.innerWidth, window.innerHeight);

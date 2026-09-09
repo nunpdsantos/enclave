@@ -46,10 +46,25 @@ export function insightsFor(summary: RunSummary, config: GameConfig): string[] {
 
   const territory = config.territory.enabled;
   const isDaily = summary.difficulty === 'daily';
+  const siege = summary.siege ?? null;
   const budget = config.pieceBudget ?? 0;
   const left = summary.piecesLeft;
 
   const candidates: (string | null)[] = [
+    // The siege's own lines come first: what killed the run is the question,
+    // and room size is not the answer to it
+    siege && summary.endCause === 'breach'
+      ? `The Keep fell on placement ${siege.breachTurn}. ${siege.wallsLost} walls were broken getting there.`
+      : null,
+
+    siege && summary.endCause === 'timeout'
+      ? 'The clock ran out. Only a claim that catches something refunds time.'
+      : null,
+
+    siege && siege.enemiesCaptured === 0 && summary.totalTurns >= 6
+      ? 'No captures. A room that catches nothing scores, but buys no time.'
+      : null,
+
     // A run that died this fast has one problem, and it is not room size
     summary.endCause === 'timeout' && summary.gameElapsed < FAST_TIMEOUT_SECONDS
       ? 'Time ran out fast. Every placement adds time; place before you plan.'
@@ -67,7 +82,8 @@ export function insightsFor(summary: RunSummary, config: GameConfig): string[] {
       ? `${summary.litCells}/${INNER_CELLS} floor lit. The survey was close.`
       : null,
 
-    summary.maxStreak <= 1 && summary.claims >= 3
+    // Only worth saying in a mode that has streaks at all
+    config.scoring.streakEnabled && summary.maxStreak <= 1 && summary.claims >= 3
       ? 'No streak. Claims on consecutive placements multiply.'
       : null,
 

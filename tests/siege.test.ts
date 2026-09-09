@@ -2,7 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { Board, INNER_CELLS } from '../src/core/Board';
 import { siegeConfig, SIEGE_ENEMY_BONUS } from '../src/core/Config';
 import { GameState } from '../src/core/GameState';
-import { MISSIONS, buildSpawnSchedule, cellsOfTerrain, terrainOf } from '../src/core/Missions';
+import {
+  FINITE_ARRIVAL_TURN, MISSIONS, MISSION_ORDER, buildSpawnSchedule, cellsOfTerrain,
+  finiteSpawnHorizon, stepsFromNearestGate, terrainOf,
+} from '../src/core/Missions';
 import { makePiece } from '../src/core/Pieces';
 import { mulberry32 } from '../src/core/Random';
 import { simulateRun } from '../src/core/Replay';
@@ -197,19 +200,33 @@ describe('raider movement', () => {
 
 describe('the spawn schedule', () => {
   it('lands a raider every two placements from turn one', () => {
-    const schedule = buildSpawnSchedule(MISSIONS.m1, false, 18);
-    expect(schedule.map(s => s.turn)).toEqual([1, 3, 5, 7, 9, 11, 13, 15, 17]);
+    const schedule = buildSpawnSchedule(MISSIONS.m1, false, finiteSpawnHorizon(MISSIONS.m1));
+    expect(schedule.map(s => s.turn)).toEqual([1, 3, 5, 7, 9, 11, 12]);
     expect(schedule.every(s => s.gate === 0)).toBe(true);
   });
 
   it('alternates gates when the mission has two', () => {
-    const schedule = buildSpawnSchedule(MISSIONS.m2, false, 18);
+    const schedule = buildSpawnSchedule(MISSIONS.m2, false, finiteSpawnHorizon(MISSIONS.m2));
     expect(schedule.slice(0, 4).map(s => s.gate)).toEqual([0, 1, 0, 1]);
   });
 
   it('tightens to one a turn after turn ten on the Old City', () => {
-    const turns = buildSpawnSchedule(MISSIONS.m3, false, 18).map(s => s.turn);
-    expect(turns).toEqual([1, 3, 5, 7, 9, 11, 12, 13, 14, 15, 16, 17, 18]);
+    const turns = buildSpawnSchedule(MISSIONS.m3, false, finiteSpawnHorizon(MISSIONS.m3))
+      .map(s => s.turn);
+    expect(turns).toEqual([1, 3, 5, 7, 9, 11, 12]);
+  });
+
+  it('lands its last finite wave so an unopposed raider arrives on turn 16', () => {
+    for (const id of MISSION_ORDER) {
+      const mission = MISSIONS[id];
+      const walk = stepsFromNearestGate(mission.map);
+      const schedule = buildSpawnSchedule(mission, false, finiteSpawnHorizon(mission));
+      const last = schedule[schedule.length - 1].turn;
+      // A raider does not move on the phase it arrives in, so it lands `walk`
+      // placements after the wave that brought it
+      expect(last + walk).toBe(FINITE_ARRIVAL_TURN);
+      expect(last).toBeLessThan(18);
+    }
   });
 
   it('ramps to one a turn by turn twenty when the mission is endless', () => {
@@ -1063,5 +1080,28 @@ describe('the tunable knobs', () => {
     expect(expensive[0].brokeWall).toBeNull();
     const cheap = stepRaiders(b.clone(), [{ ...raider }], KEEP, mulberry32(0), 2);
     expect(cheap[0].brokeWall).toEqual({ row: 1, col: 4 });
+  });
+});
+
+describe('every square of the matrix plays', () => {
+  it('reaches an ending on all three maps, both enemies, both goals', () => {
+    for (const id of MISSION_ORDER) {
+      for (const enemy of ['raiders', 'tide'] as Enemy[]) {
+        for (const goal of ['finite', 'endless'] as Goal[]) {
+          const gs = new GameState(siegeConfig(id, enemy, goal, 12345), 'siege');
+          gs.start();
+          // A player who does not look at the board: the fastest legal
+          // placement, every time, ignoring the siege entirely
+          playFastDump(gs, 60);
+          runClock(gs, 100);
+          const summary = gs.buildRunSummary();
+          expect(gs.isGameOver).toBe(true);
+          expect(summary.siege?.variant).toEqual({ missionId: id, enemy, mission: goal });
+          // And it loses, on every one of them. A mode a bot can win by
+          // dumping pieces is a mode with no second force in it.
+          expect(summary.endCause).toBe('breach');
+        }
+      }
+    }
   });
 });

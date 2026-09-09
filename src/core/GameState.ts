@@ -63,6 +63,8 @@ const TIDE_SALT = 0x40000;
  */
 const STUCK_TICK_LIMIT = 3;
 
+const EMPTY_KEYS: ReadonlySet<string> = new Set<string>();
+
 /**
  * How many seconds of a run the score timeline keeps. Fifteen minutes is far
  * past any survivable Classic run, and the cap is what stops a tab left open
@@ -1188,7 +1190,11 @@ export class GameState {
     const routeBefore = this.routeSignature();
     // What was already sealed before this piece: a claim pays for rooms this
     // placement closed, never for ground that was standing closed already.
-    const enclosedBefore = this.enclosedCells(this.board);
+    // Only the siege can tell the two apart, so only the siege pays for the
+    // extra flood fill.
+    const enclosedBefore = this.config.siege
+      ? this.enclosedCells(this.board)
+      : EMPTY_KEYS;
     // Recorded before anything is scored: what the log has to carry is the
     // input, and the rules turn that into a score on both sides.
     this.record({ t: 'p', row, col, rot: piece.rotation, at: this.gameElapsed });
