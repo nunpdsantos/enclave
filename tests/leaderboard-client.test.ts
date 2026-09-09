@@ -298,6 +298,45 @@ describe('review 5, finding 1 — a board is selected now and read later', () =>
   });
 });
 
+/**
+ * The menu itself needs a DOM and a renderer, so what is testable here is the
+ * client-level invariant it depends on: entering the menu puts the shared
+ * board back on the selected difficulty, and does it synchronously, because
+ * the heading and the rows are drawn in one pass.
+ */
+describe('review 5, finding 3 — the menu\'s heading and its entries name one board', () => {
+  it('restores the selected board synchronously on the way back to the menu', async () => {
+    deferredFetch();
+    // The menu is on Blitz; the run just finished was played in Classic. Play
+    // was pressed on Classic and the chip tapped while the ticket was in the
+    // air, which is all it takes.
+    const board = new Leaderboard('blitz');
+    only('GET', 'difficulty=blitz').resolve([row('Blitz player', 4000)]);
+    await board.waitForRemote();
+
+    // The game-over screen points the shared client at the run's board
+    void board.showBoard('classic');
+    only('GET', 'difficulty=classic').resolve([row('Classic player', 9000)]);
+    await settle();
+    expect(board.getBoardId()).toBe('classic');
+    expect(board.getEntries().map(e => e.name)).toEqual(['Classic player']);
+
+    // MENU. The heading comes from the menu's own selection and the rows come
+    // from this client, both in one synchronous build — so the board has to
+    // be back on the selection before a single row is read. It used to be
+    // left on Classic, which drew Classic's ten under "LEADERBOARD — BLITZ",
+    // and tapping the already-selected Blitz chip did nothing about it.
+    const read = board.showBoard('blitz');
+    expect(board.getBoardId()).toBe('blitz');
+    // Blitz's own cache, empty here — never Classic's ten under Blitz's name
+    expect(board.getEntries()).toEqual([]);
+
+    only('GET', 'difficulty=blitz').resolve([row('Blitz player', 4000)]);
+    await read;
+    expect(board.getEntries().map(e => e.name)).toEqual(['Blitz player']);
+  });
+});
+
 describe('review 4, finding 1 — a score goes to the board its run was played in', () => {
   /** A ticket the server would have signed, so its payload reads as one. */
   async function ticketFor(mode: Difficulty, seed: number = 7): Promise<RunTicket> {

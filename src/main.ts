@@ -61,6 +61,17 @@ async function boot() {
   function showMenu() {
     const layout = layoutManager.recalculate(window.innerWidth, window.innerHeight);
     app.renderer.background.color = THEME.bg;
+    // The menu's heading names `selectedDifficulty`, and its rows come from
+    // the shared client — so the client has to be put back on the selected
+    // board before the scene is built. The two come apart on the way out of a
+    // run: the game-over screen points the client at the board the run was
+    // played in, which is not the menu's if the mode was switched while the
+    // ticket was in the air. Classic's ten were then drawn under
+    // "LEADERBOARD — BLITZ" with no way to correct it, because tapping the
+    // already-selected Blitz chip does nothing.
+    //
+    // Selected synchronously; the read updates the panel when it lands.
+    const read = leaderboard.showBoard(selectedDifficulty);
     const menu = new MenuScene(
       layout.width, layout.height,
       leaderboard,
@@ -69,7 +80,10 @@ async function boot() {
       (difficulty) => {
         selectedDifficulty = difficulty;
         saveLastDifficulty(difficulty);
-        leaderboard.switchDifficulty(difficulty).then(() => {
+        // Selected here and now, because the menu redraws its heading and its
+        // rows the moment this returns: waiting for the read first drew the
+        // new heading over the old board's entries.
+        leaderboard.showBoard(difficulty).then(() => {
           if (sceneManager.current === menu) menu.refreshLeaderboard();
         });
       },
@@ -77,7 +91,7 @@ async function boot() {
     );
     sceneManager.switchTo(menu);
     // Remote scores may arrive after the menu is drawn
-    leaderboard.waitForRemote().then(() => {
+    read.then(() => {
       if (sceneManager.current === menu) menu.refreshLeaderboard();
     });
   }
